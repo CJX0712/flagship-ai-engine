@@ -1,7 +1,7 @@
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 14 组套件全绿 = 引擎数学正确性的机器证明。
+ * 18 组套件全绿 = 引擎数学正确性的机器证明。
  */
 
 import {
@@ -37,6 +37,12 @@ import {
 import {
   valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld,
 } from '../rl/valueIteration.js';
+import { qLearning, greedyAction, qFromV, bellmanResidualQ } from '../rl/qLearning.js';
+import { dbscan, adjustedRandIndex } from '../ml/dbscan.js';
+import { tsne, knnOverlap, searchBetas } from '../ml/tsne.js';
+import {
+  sgdMomentumStep, rmspropStep, adamStep, minimize,
+} from '../nn/optimizers.js';
 
 /** 向量最大绝对值 */
 function vinf(v) {
@@ -95,6 +101,10 @@ export function runAllInvariants() {
     ['AdaBoost 集成 · Boosting', suiteBoosting],
     ['隐马尔可夫模型 · HMM', suiteHMM],
     ['强化学习 · Reinforcement Learning', suiteRL],
+    ['Q-learning · 免模型TD控制', suiteQLearning],
+    ['密度聚类 · DBSCAN', suiteDBSCAN],
+    ['非线性降维 · t-SNE', suiteTSNE],
+    ['一阶优化器 · Optimizers', suiteOptim],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -699,4 +709,229 @@ function suiteRL(check) {
   check('RL：V*(终点) > V*(陷阱)（最优策略趋利避害）',
     gv.V[gw.goal] > gv.V[gw.trap] && gv.V[gw.goal] > 0 && gv.V[gw.trap] < 0,
     `V(终点)=${gv.V[gw.goal].toFixed(3)} > V(陷阱)=${gv.V[gw.trap].toFixed(3)}`);
+}
+
+/** ⑮ Q-learning：免模型时序差分控制（Watkins 1989） */
+function suiteQLearning(check) {
+  // ① 链式 MDP：Q-learning ≡ 值迭代 Q* ≡ 解析闭式 γ^(n−2−s)
+  const n = 6, gamma = 0.9;
+  const cm = chainMDP({ n, gamma });
+  const ql = qLearning(cm.P, cm.R, {
+    episodes: 20000, alpha: 0.2, epsStart: 1, epsEnd: 0.05, gamma, maxSteps: 60, seed: 42,
+  });
+  const vi = valueIteration(cm.P, cm.R, gamma);
+  const Qstar = qFromV(cm.P, cm.R, gamma, vi.V);
+
+  let closedErr = 0;
+  for (let s = 0; s < n - 1; s++) {
+    closedErr = Math.max(closedErr, Math.abs(ql.Q[s][1] - Math.pow(gamma, n - 2 - s)));
+  }
+  check('Q-learning：链式 MDP Q*(s,→) ≡ γ^(n−2−s)（解析闭式）', closedErr < 5e-2,
+    `最大偏差=${closedErr.toExponential(2)}，Q(0,→)=${ql.Q[0][1].toFixed(4)} vs γ⁴=${Math.pow(gamma, 4).toFixed(4)}`);
+
+  let viErr = 0;
+  for (let s = 0; s < n; s++) {
+    for (let a = 0; a < 2; a++) viErr = Math.max(viErr, Math.abs(ql.Q[s][a] - Qstar[s][a]));
+  }
+  check('Q-learning：Q ≡ 值迭代反推 Q*（免模型 vs 基于模型互证）', viErr < 5e-2,
+    `最大偏差=${viErr.toExponential(2)}`);
+
+  const resid = bellmanResidualQ(cm.P, cm.R, gamma, ql.Q);
+  check('Q-learning：Bellman 残差 → 0（收敛至不动点）', resid < 5e-2,
+    `残差=${resid.toExponential(2)}`);
+
+  // ② 网格世界：贪心策略 ≡ 值迭代最优策略
+  const gw = gridworld();
+  const ql2 = qLearning(gw.P, gw.R, {
+    episodes: 30000, alpha: 0.2, epsStart: 1, epsEnd: 0.05, gamma: gw.gamma, maxSteps: 60, seed: 7,
+  });
+  const vi2 = valueIteration(gw.P, gw.R, gw.gamma);
+  let optErr = 0, exact = 0;
+  for (let s = 0; s < gw.S; s++) {
+    optErr = Math.max(optErr, ql2.Q[s][vi2.policy[s]] - Math.max(...ql2.Q[s]));
+    if (greedyAction(ql2.Q, s) === vi2.policy[s]) exact++;
+  }
+  check('Q-learning：网格世界 π*(s) 动作在 Q 中最优（贪心策略 ≡ 值迭代 π*）', optErr < 5e-2,
+    `次优缺口=${optErr.toExponential(2)}，逐状态一致 ${exact}/${gw.S}`);
+  check('Q-learning：网格世界策略逐状态一致率 ≥ 75%', exact / gw.S >= 0.75,
+    `一致率=${(100 * exact / gw.S).toFixed(1)}%`);
+
+  // ③ 学习改善：后期回合平均回报 > 前期
+  const er = ql.episodeReturns;
+  const k = Math.floor(er.length / 10);
+  const early = er.slice(0, k).reduce((a, b) => a + b, 0) / k;
+  const late = er.slice(-k).reduce((a, b) => a + b, 0) / k;
+  check('Q-learning：后期回合回报 > 前期（探索 → 利用）', late > early,
+    `早期=${early.toFixed(3)} → 后期=${late.toFixed(3)}`);
+}
+
+/** ⑯ DBSCAN：密度聚类（Ester et al. 1996） */
+function suiteDBSCAN(check) {
+  const rng = mulberry32(123);
+  const X = [], truth = [];
+  for (let i = 0; i < 40; i++) { X.push([gaussianSample(rng, 0, 0.3), gaussianSample(rng, 0, 0.3)]); truth.push(0); }
+  for (let i = 0; i < 40; i++) { X.push([gaussianSample(rng, 8, 0.3), gaussianSample(rng, 8, 0.3)]); truth.push(1); }
+  for (let i = 0; i < 5; i++) { X.push([gaussianSample(rng, 20, 1), gaussianSample(rng, 20, 1)]); truth.push(-1); }
+  const n = X.length;
+  const { labels, core, nClusters, noise } = dbscan(X, { eps: 1.0, minPts: 5 });
+
+  const ari = adjustedRandIndex(labels, truth);
+  check('DBSCAN：两团簇 ARI = 1（划分与真实标注完全一致）', ari > 0.999,
+    `ARI=${ari.toFixed(6)}，簇数=${nClusters}，噪声=${noise}`);
+  check('DBSCAN：恰好 2 簇 + 5 个离群点（稀疏区全部识别为噪声）',
+    nClusters === 2 && noise === 5, `簇数=${nClusters}，噪声=${noise}`);
+
+  // 核心见证：每个非噪声点在其标签簇内有 ε-邻域核心点
+  let witnessOk = true;
+  for (let i = 0; i < n; i++) {
+    if (labels[i] === -1) continue;
+    let ok = false;
+    for (let j = 0; j < n; j++) {
+      if (labels[j] !== labels[i] || !core[j]) continue;
+      const d2 = (X[i][0] - X[j][0]) ** 2 + (X[i][1] - X[j][1]) ** 2;
+      if (d2 <= 1.0 + 1e-12) { ok = true; break; }
+    }
+    if (!ok) { witnessOk = false; break; }
+  }
+  check('DBSCAN：核心点见证（每个非噪声点邻域内必有同簇核心点）', witnessOk);
+
+  // 密度连通传递性：每簇核心点在 ε-邻域图上构成单一连通分量
+  let connectedOk = true;
+  for (let c = 0; c < nClusters; c++) {
+    const cores = [];
+    for (let i = 0; i < n; i++) if (labels[i] === c && core[i]) cores.push(i);
+    if (cores.length === 0) { connectedOk = false; break; }
+    const seen = new Set([cores[0]]);
+    const queue = [cores[0]];
+    while (queue.length) {
+      const p = queue.shift();
+      for (const q of cores) {
+        if (seen.has(q)) continue;
+        const d2 = (X[p][0] - X[q][0]) ** 2 + (X[p][1] - X[q][1]) ** 2;
+        if (d2 <= 1.0 + 1e-12) { seen.add(q); queue.push(q); }
+      }
+    }
+    if (seen.size !== cores.length) connectedOk = false;
+  }
+  check('DBSCAN：密度连通传递性（每簇核心点单一连通分量）', connectedOk);
+
+  // 离群稳健：追加孤立远点 → 噪声，且原有划分不变
+  const X2 = [...X, [100, 100]];
+  const r2 = dbscan(X2, { eps: 1.0, minPts: 5 });
+  const stable = r2.labels.slice(0, n).every((v, i) => v === labels[i]);
+  check('DBSCAN：追加孤立远点 → 识别为噪声且原划分逐点不变',
+    r2.labels[n] === -1 && stable && r2.nClusters === 2, `新点标签=${r2.labels[n]}，划分稳定=${stable}`);
+}
+
+/** ⑰ t-SNE：非线性降维（van der Maaten & Hinton 2008） */
+function suiteTSNE(check) {
+  const rng = mulberry32(7);
+  const X = [];
+  for (const c of [[0, 0], [6, 0], [3, 5]]) {
+    for (let i = 0; i < 30; i++) {
+      X.push([gaussianSample(rng, c[0], 0.5), gaussianSample(rng, c[1], 0.5)]);
+    }
+  }
+  const n = X.length;
+  const perplexity = 15;
+  const { Y, P, Q, costs, entropies } = tsne(X, {
+    dims: 2, perplexity, iters: 400, lr: 100, seed: 42,
+  });
+
+  // ① P/Q 对称联合分布、概率质量守恒
+  let symErr = 0, massP = 0, massQ = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      symErr = Math.max(symErr, Math.abs(P[i][j] - P[j][i]), Math.abs(Q[i][j] - Q[j][i]));
+      massP += P[i][j];
+      massQ += Q[i][j];
+    }
+  }
+  check('t-SNE：P/Q 对称联合分布（ΣP = ΣQ = 1）',
+    symErr < 1e-12 && Math.abs(massP - 1) < 1e-9 && Math.abs(massQ - 1) < 1e-9,
+    `对称误差=${symErr.toExponential(2)}，ΣP=${massP.toFixed(9)}，ΣQ=${massQ.toFixed(9)}`);
+
+  // ② 困惑度达成
+  let perpErr = 0;
+  for (const h of entropies) perpErr = Math.max(perpErr, Math.abs(Math.pow(2, h) - perplexity) / perplexity);
+  check('t-SNE：二分搜索困惑度达成（2^H ≈ perplexity）', perpErr < 0.05,
+    `最大相对偏差=${(100 * perpErr).toFixed(2)}%（目标=${perplexity}）`);
+
+  // ③ KL 代价单调不增
+  let mono = true;
+  for (let k = 1; k < costs.length; k++) if (costs[k] > costs[k - 1] + 1e-3) mono = false;
+  check('t-SNE：KL 代价随迭代单调不增（学习有效）',
+    mono && costs[costs.length - 1] < costs[0],
+    `初=${costs[0].toFixed(4)} → 末=${costs[costs.length - 1].toFixed(4)}（${costs.length} 个采样点）`);
+
+  // ④ 结构保持：可分团簇 k-NN 邻域重叠
+  const ov = knnOverlap(X, Y, 5);
+  check('t-SNE：可分团簇 k-NN 邻域重叠率 ≥ 0.85（局部结构保真）', ov >= 0.85,
+    `重叠率=${ov.toFixed(4)}`);
+}
+
+/** ⑱ 一阶优化器：SGD-Momentum / RMSProp / Adam */
+function suiteOptim(check) {
+  // ① Adam 偏差修正首步：Δ = −lr·sign(g)（eps→0 极限下精确成立且尺度不变）
+  const g = [0.5, -2, 0.001];
+  const lr = 0.01;
+  const expected = g.map((v) => -lr * Math.sign(v));
+  const r1 = adamStep([0, 0, 0], g, {}, 1, { lr, eps: 0 });
+  const r2 = adamStep([0, 0, 0], g.map((v) => v * 1000), {}, 1, { lr, eps: 0 });
+  let e1 = 0, e2 = 0;
+  for (let i = 0; i < 3; i++) {
+    e1 = Math.max(e1, Math.abs(r1.x[i] - expected[i]));
+    e2 = Math.max(e2, Math.abs(r2.x[i] - expected[i]));
+  }
+  check('Adam：偏差修正首步 Δ = −lr·sign(g)（m̂/√v̂ = g/|g|，ulp 级精确）', e1 < 1e-12,
+    `首步=[${r1.x.map((v) => v.toFixed(6)).join(', ')}]，期望=[${expected.map((v) => v.toFixed(6)).join(', ')}]`);
+  check('Adam：首步尺度不变（g 与 1000g 产生相同步长）', e2 < 1e-12,
+    `偏差=${e2.toExponential(2)}`);
+
+  // ② 动量重球闭式：v_k = g·(1−m^k)/(1−m)
+  const m = 0.9;
+  let st = {};
+  let x = [0];
+  const vs = [];
+  for (let t = 1; t <= 6; t++) {
+    const out = sgdMomentumStep(x, [1.5], st, t, { lr: 0.1, momentum: m });
+    st = out.state;
+    x = out.x;
+    vs.push(st.v[0]);
+  }
+  let vErr = 0;
+  for (let k = 1; k <= 6; k++) {
+    vErr = Math.max(vErr, Math.abs(vs[k - 1] - 1.5 * (1 - Math.pow(m, k)) / (1 - m)));
+  }
+  check('SGD-Momentum：速度闭式 v_k = g(1−m^k)/(1−m)（重球几何累积）', vErr < 1e-12,
+    `v_6=${vs[5].toFixed(9)} vs 闭式=${(1.5 * (1 - Math.pow(m, 6)) / (1 - m)).toFixed(9)}`);
+
+  // ③ 凸二次型：三优化器均收敛到解析最优 x* = A⁻¹b，损失单调不增
+  const A = [[4, 1], [1, 3]], b = [1, 2];
+  const xStar = solve(A, b);
+  const f = (x) => 0.5 * (A[0][0] * x[0] ** 2 + 2 * A[0][1] * x[0] * x[1] + A[1][1] * x[1] ** 2)
+    - (b[0] * x[0] + b[1] * x[1]);
+  const grad = (x) => [
+    A[0][0] * x[0] + A[0][1] * x[1] - b[0],
+    A[1][0] * x[0] + A[1][1] * x[1] - b[1],
+  ];
+  const cases = [
+    ['SGD-Momentum', 'sgdMomentum', { lr: 0.01, momentum: 0.9 }],
+    ['RMSProp', 'rmsprop', { lr: 0.1, beta: 0.9 }],
+    ['Adam', 'adam', { lr: 0.2 }],
+  ];
+  for (const [name, opt, opts] of cases) {
+    const { x: xf, history } = minimize(f, grad, [3, -2], { optimizer: opt, iters: 2000, ...opts });
+    const err = Math.max(Math.abs(xf[0] - xStar[0]), Math.abs(xf[1] - xStar[1]));
+    // 包络单调：每 20 步采样非增（一阶方法早期过冲属经典行为，逐步单调非普遍保证）
+    let mono = true;
+    for (let k = 20; k < history.length; k += 20) {
+      if (history[k] > history[k - 20] + 1e-6) mono = false;
+    }
+    check(`${name}：凸二次型收敛到解析最优 x* = A⁻¹b`, err < 1e-6,
+      `x=[${xf.map((v) => v.toFixed(8)).join(', ')}]，x*=[${xStar.map((v) => v.toFixed(8)).join(', ')}]`);
+    check(`${name}：损失包络单调不增（每 20 步采样）`,
+      mono && history[history.length - 1] < history[0] * 1e-6,
+      `f: ${history[0].toExponential(3)} → ${history[history.length - 1].toExponential(3)}`);
+  }
 }

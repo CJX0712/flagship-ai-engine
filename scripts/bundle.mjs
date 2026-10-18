@@ -24,12 +24,16 @@ const FILES = [
   'src/ml/svm.js',
   'src/ml/boosting.js',
   'src/ml/hmm.js',
+  'src/ml/dbscan.js',
+  'src/ml/tsne.js',
   'src/nn/dense.js',
   'src/nn/attention.js',
   'src/nn/transformer.js',
   'src/nn/rnn.js',
   'src/nn/lstm.js',
+  'src/nn/optimizers.js',
   'src/rl/valueIteration.js',
+  'src/rl/qLearning.js',
   'src/verify/invariants.js',
 ];
 

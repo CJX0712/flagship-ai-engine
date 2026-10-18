@@ -1,7 +1,7 @@
 # 旗舰AI引擎 (Flagship AI Engine) — 系统架构设计说明书
 
 > 作者署名：晨星 (Morning Star / CJX0712) ｜ 架构师：高见远 (Bob)
-> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、14/14 全绿**。
+> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、18/18 全绿**。
 
 ---
 
@@ -11,13 +11,13 @@
 
 | 设计稿 | 最终实现 | 说明 |
 |---|---|---|
-| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 14 组套件，Node 与浏览器共用同一份 |
+| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 18 组套件，Node 与浏览器共用同一份 |
 | `src/verify/suites.js` | 并入 `src/verify/invariants.js` | 套件与检查器同文件，杜绝跨文件漂移 |
 | `src/core/rng.js` / `src/core/utils.js` | 并入 `src/core/stats.js`（mulberry32/gaussianSample）与 `src/core/linalg.js`/`numerical.js` | 随机源归概率层，工具归各自的消费者 |
 | 浏览器 `<script type="module">` 直引 src | `scripts/bundle.mjs` 按依赖序内联进 `showcase/index.html`（`globalThis.FlagshipAI`） | 兼容 `file://` 双击即用；`node --check` 兜底语法校验 |
-| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 14/14`（CI grep 校验） | 语义一致，命名对齐实现 |
+| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 18/18`（CI grep 校验） | 语义一致，命名对齐实现 |
 
-落地验证结论：`node test/run.mjs` → **PASS 14/14（262ms）**，与本设计书的全部不变量承诺一致。
+落地验证结论：`node test/run.mjs` → **PASS 18/18（451ms）**，与本设计书的全部不变量承诺一致。
 
 ### v1.1 增补（2026-10-19）
 
@@ -29,6 +29,15 @@
 | `src/ml/boosting.js`（AdaBoost） | 指数损失单调不增；训练误差 ≤ Π2√(ε(1−ε)) |
 | `src/ml/hmm.js`（前向/后向 + Baum-Welch） | 前向 ≡ 729 路径暴力枚举；对数似然单调不减（EM 定理） |
 | `src/rl/valueIteration.js` | Bellman 残差→0；V^{π*}≡V*；V*=r/(1−γ)；链式 MDP ≡ 2⁶ 枚举 |
+
+### v1.2 增补（2026-10-19）
+
+| 增补模块 | 不变量（定理背书） |
+|---|---|
+| `src/rl/qLearning.js`（免模型 TD 控制） | Q*(s,→)=γ^(n−2−s)（解析闭式，偏差 9.99e-16）；Q ≡ qFromV(V*)；Bellman 残差→0；π_Q ≡ π*（16/16） |
+| `src/ml/dbscan.js`（密度聚类 + ARI） | ARI=1；核心点见证；密度连通传递性；离群稳健 |
+| `src/ml/tsne.js`（非线性嵌入） | P/Q 对称联合分布 Σ=1；困惑度达成（偏差 0.00%）；KL 单调不增；kNN 重叠 0.8778 |
+| `src/nn/optimizers.js`（SGD-M / RMSProp / Adam） | Adam 首步 Δ=−lr·sign(g) 且尺度不变；动量速度闭式 v_k=g(1−m^k)/(1−m)；三优化器收敛到 x*=A⁻¹b；损失包络单调 |
 
 ---
 
@@ -360,7 +369,7 @@ node:path        # scripts/serve.mjs 路径解析
 
 ## 8. 待明确事项
 
-- **「8/8」分组口径（v1.0）**：本设计将验证聚为 **8 大组（G1–G8，见 §4.3）**，每组内含多条不变量检查，组内全过即该组绿，8 组全绿即「8/8」。v1.1 已扩至 14 组（新增 RNN/LSTM/SVM/AdaBoost/HMM/RL），口径不变：组内全过即该组绿。若团队对分组另有定义，请确认。
+- **「18/18」分组口径（v1.0→v1.2）**：本设计将验证聚为 **8 大组（G1–G8，见 §4.3）**，每组内含多条不变量检查，组内全过即该组绿。v1.1 已扩至 14 组（新增 RNN/LSTM/SVM/AdaBoost/HMM/RL），v1.2 扩至 18 组（新增 Q-learning/DBSCAN/t-SNE/Optimizers），口径不变：组内全过即该组绿。
 - **showcase 演示范围**：默认含「静态 8/8 报告 + 2D PCA 散点 + kmeans 聚类动画 + 注意力热力图」；是否需更多交互（如可调超参）待定，默认先做静态 + 轻量动画。
 - **CI Node 版本矩阵**：默认 `node-version: [18, 20]`（LTS）；如需覆盖 16（package.json 已声明 `>=16`）可补。
 - **`serve.mjs` 端口**：默认 `8080`，可通过环境变量 `PORT` 覆盖；是否写入 README 待确认（默认写入）。

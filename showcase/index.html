@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">14 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">18 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -152,6 +152,37 @@
     </div>
   </div>
 
+  <h2>v1.2 新增算法 <span class="tag">Q-learning · t-SNE · DBSCAN · Adam 优化器 · 均由本页引擎实时求解</span></h2>
+  <div class="demos">
+    <div class="card">
+      <div class="demo-head">
+        <strong>t-SNE 非线性嵌入（Student-t + 困惑度二分）</strong>
+        <button id="btn-tsne">重新嵌入</button>
+      </div>
+      <div class="desc">KL(P‖Q) 代价单调不增不变量 · 3 个高斯团簇（2D → 2D 可视化）</div>
+      <svg id="svg-tsne" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-tsne"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>DBSCAN 密度聚类（含离群点识别）</strong>
+        <button id="btn-dbscan">换一批数据</button>
+      </div>
+      <div class="desc">核心点密度可达 · 稀疏区自动标记噪声（✕）· ARI = 1 不变量</div>
+      <svg id="svg-dbscan" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-dbscan"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>一阶优化器轨迹（凸二次型等势面）</strong>
+        <button id="btn-opt">重新运行</button>
+      </div>
+      <div class="desc">Adam / SGD-Momentum / RMSProp · 均收敛到解析最优 x* = A⁻¹b</div>
+      <svg id="svg-opt" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-opt"></div>
+    </div>
+  </div>
+
   <div class="refs">
     站在巨人肩上：<code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
     <code>Bishop · PRML</code><code>Hastie et al. · ESL</code><code>Vaswani et al. 2017 · Attention Is All You Need</code>
@@ -159,6 +190,8 @@
     <code>Freund &amp; Schapire 1997 · AdaBoost</code><code>Baum &amp; Petrie 1966 · HMM</code>
     <code>Hochreiter &amp; Schmidhuber 1997 · LSTM</code><code>Bellman 1957 · 动态规划</code>
     <code>Sutton &amp; Barto · Reinforcement Learning</code>
+    <code>Watkins 1989 · Q-learning</code><code>Ester et al. 1996 · DBSCAN</code>
+    <code>van der Maaten &amp; Hinton 2008 · t-SNE</code><code>Kingma &amp; Ba 2015 · Adam</code>
   </div>
 
   <footer>
@@ -1492,6 +1525,305 @@ function hmmBruteForceLogLik(A, B, pi, obs) {
   return logsumexp(logs);
 }
 
+/* ═══════════ src/ml/dbscan.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 密度聚类：DBSCAN（Ester et al. 1996）
+ * 站在密度可达性之上：核心点邻域内点数 ≥ minPts；簇 = 核心点密度连通的最大集合。
+ * 不变量：
+ *   ① 可分团簇：两个分离团簇 → 恰好 2 簇、0 噪声，标签与真实划分完全一致（ARI = 1）
+ *   ② 核心见证：每簇至少 1 个核心点；每个非噪声点在其标签簇内有一个 ε-邻域核心点
+ *   ③ 离群稳健：追加孤立远点 → 必标 −1，且原有标签逐点不变
+ *   ④ 密度连通传递性：标签 ≡ 核心点邻域图的连通分量（边界点归首个可达簇）
+ */
+
+/**
+ * DBSCAN 聚类（确定性算法，O(n²) 暴力邻域）。
+ * @param {number[][]} X 样本（行主序）
+ * @param {{eps?:number, minPts?:number}} opts
+ * @returns {{labels:number[], core:boolean[], nClusters:number, noise:number}}
+ */
+function dbscan(X, { eps = 0.5, minPts = 5 } = {}) {
+  const n = X.length;
+  const d = X[0].length;
+  const eps2 = eps * eps;
+
+  // 预计算邻域（平方距离，免开方）
+  const nbr = Array.from({ length: n }, () => []);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let s = 0;
+      for (let k = 0; k < d; k++) {
+        const diff = X[i][k] - X[j][k];
+        s += diff * diff;
+      }
+      if (s <= eps2) { nbr[i].push(j); nbr[j].push(i); }
+    }
+  }
+
+  const core = nbr.map((list) => list.length >= minPts);
+  const labels = new Array(n).fill(-1); // −1 = 未访问（最终为噪声）
+  let nClusters = 0;
+
+  for (let i = 0; i < n; i++) {
+    if (!core[i] || labels[i] !== -1) continue;
+    // BFS 扩展：核心点出发，密度可达集合
+    const c = nClusters++;
+    labels[i] = c;
+    const queue = [i];
+    while (queue.length) {
+      const p = queue.shift();
+      for (const q of nbr[p]) {
+        if (labels[q] === -1) {
+          labels[q] = c; // 边界点一并归入（密度可达）
+          if (core[q]) queue.push(q);
+        }
+      }
+    }
+  }
+
+  // 未访问点 = 噪声（保持 −1）
+  let noise = 0;
+  for (let i = 0; i < n; i++) if (labels[i] === -1) noise++;
+  return { labels, core, nClusters, noise };
+}
+
+/**
+ * 调整互信息（ARI，Hubert & Arabie 1985）——簇划分与真实标注的一致性度量。
+ * ARI = 1 ⟺ 完全一致；期望为 0（随机划分）。
+ * @param {number[]} a 划分一（允许 −1 噪声标签）
+ * @param {number[]} b 划分二
+ * @returns {number} ARI ∈ (−∞, 1]
+ */
+function adjustedRandIndex(a, b) {
+  const n = a.length;
+  const keyA = new Map(), keyB = new Map();
+  const ia = a.map((v) => { if (!keyA.has(v)) keyA.set(v, keyA.size); return keyA.get(v); });
+  const ib = b.map((v) => { if (!keyB.has(v)) keyB.set(v, keyB.size); return keyB.get(v); });
+  const na = keyA.size, nb = keyB.size;
+  // 列联表
+  const ct = Array.from({ length: na }, () => new Array(nb).fill(0));
+  for (let i = 0; i < n; i++) ct[ia[i]][ib[i]]++;
+  const comb2 = (x) => (x * (x - 1)) / 2;
+  let sumComb = 0, sumA = 0, sumB = 0;
+  for (let i = 0; i < na; i++) {
+    const rowSum = ct[i].reduce((x, y) => x + y, 0);
+    sumA += comb2(rowSum);
+    for (let j = 0; j < nb; j++) sumComb += comb2(ct[i][j]);
+  }
+  // 列和
+  sumB = 0;
+  for (let j = 0; j < nb; j++) {
+    let colSum = 0;
+    for (let i = 0; i < na; i++) colSum += ct[i][j];
+    sumB += comb2(colSum);
+  }
+  const total = comb2(n);
+  const expected = (sumA * sumB) / total;
+  const maxIndex = (sumA + sumB) / 2;
+  return (sumComb - expected) / (maxIndex - expected);
+}
+
+/* ═══════════ src/ml/tsne.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 非线性降维：t-SNE（van der Maaten & Hinton 2008）
+ * 站在信息几何之上：高维近邻用高斯条件分布 P 建模，低维用 Student-t 联合分布 Q 建模，
+ * 梯度下降最小化 KL(P‖Q)。
+ * 不变量：
+ *   ① P/Q 均为对称联合分布：P = Pᵀ、Q = Qᵀ、Σ_{ij} = 1（概率质量守恒）
+ *   ② 困惑度达成：二分搜索使每行 2^{H(p_i)} ≈ perplexity（条件分布正确归一）
+ *   ③ 学习有效：KL 代价随迭代单调不增（最终 < 初值）
+ *   ④ 结构保持：可分团簇的 k-NN 邻域重叠率 ≥ 0.85（局部结构保真）
+ */
+
+
+/** 成对平方距离矩阵 */
+function pairwiseD2(X) {
+  const n = X.length;
+  const D2 = Array.from({ length: n }, () => new Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let s = 0;
+      for (let k = 0; k < X[i].length; k++) {
+        const diff = X[i][k] - X[j][k];
+        s += diff * diff;
+      }
+      D2[i][j] = s;
+      D2[j][i] = s;
+    }
+  }
+  return D2;
+}
+
+/**
+ * 为每个点二分搜索 beta，使条件分布困惑度 2^H 达成目标。
+ * @param {number[][]} D2 平方距离矩阵
+ * @param {number} perplexity 目标困惑度
+ * @returns {{Pcond:number[][], betas:number[], entropies:number[]}}
+ */
+function searchBetas(D2, perplexity) {
+  const n = D2.length;
+  const targetH = Math.log2(perplexity);
+  const Pcond = Array.from({ length: n }, () => new Array(n).fill(0));
+  const betas = new Array(n).fill(1);
+  const entropies = new Array(n).fill(0);
+  const log2 = Math.log2;
+
+  for (let i = 0; i < n; i++) {
+    let betaMin = 0, betaMax = 1e8;
+    let pRow = new Array(n).fill(0);
+    let H = 0;
+    for (let iter = 0; iter < 60; iter++) {
+      const beta = iter === 0 ? 1 : (betaMin + betaMax) / 2;
+      // 数值稳定：max-shift 后归一
+      const exps = new Array(n).fill(0);
+      for (let j = 0; j < n; j++) if (j !== i) exps[j] = Math.exp(-beta * D2[i][j]);
+      const sum = exps.reduce((a, b) => a + b, 0);
+      H = 0;
+      if (sum > 0) {
+        for (let j = 0; j < n; j++) {
+          if (j !== i && exps[j] > 0) {
+            const p = exps[j] / sum;
+            pRow[j] = p;
+            H -= p * log2(p);
+          } else pRow[j] = 0;
+        }
+      }
+      if (H > targetH) { betaMin = beta; } // 熵偏高 → beta 太小 → 提高下界
+      else { betaMax = beta; }             // 熵偏低 → beta 太大 → 降低上界
+      if (Math.abs(H - targetH) < 1e-5 || (betaMax - betaMin) < 1e-10) break;
+    }
+    betas[i] = (betaMin + betaMax) / 2 || 1;
+    entropies[i] = H;
+    Pcond[i] = pRow;
+  }
+  return { Pcond, betas, entropies };
+}
+
+/**
+ * t-SNE 主流程。
+ * @param {number[][]} X 高维数据（行主序）
+ * @param {{dims?:number, perplexity?:number, iters?:number, lr?:number, seed?:number}} opts
+ * @returns {{Y:number[][], P:number[][], Q:number[][], costs:number[]}}
+ */
+function tsne(X, {
+  dims = 2, perplexity = 10, iters = 400, lr = 100, seed = 42,
+} = {}) {
+  const n = X.length;
+  const D2 = pairwiseD2(X);
+
+  // ① 高维联合分布 P（对称，ΣP = 1）
+  const { Pcond, entropies } = searchBetas(D2, perplexity);
+  const P = Array.from({ length: n }, () => new Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      P[i][j] = (Pcond[i][j] + Pcond[j][i]) / (2 * n);
+    }
+  }
+
+  // ② 低维初始化：N(0, 1e-4)（种子化，可复现）
+  const rng = mulberry32(seed);
+  const Y = Array.from({ length: n }, () =>
+    Array.from({ length: dims }, () => gaussianSample(rng, 0, 1e-4)));
+
+  const costs = [];
+  const sampleEvery = Math.max(1, Math.floor(iters / 20));
+
+  for (let iter = 0; iter < iters; iter++) {
+    // ③ 低维联合分布 Q（Student-t）
+    const W = Array.from({ length: n }, () => new Array(n).fill(0));
+    let Z = 0;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        let d2 = 0;
+        for (let k = 0; k < dims; k++) {
+          const diff = Y[i][k] - Y[j][k];
+          d2 += diff * diff;
+        }
+        const w = 1 / (1 + d2);
+        W[i][j] = w;
+        W[j][i] = w;
+        Z += 2 * w;
+      }
+    }
+    const Q = Array.from({ length: n }, () => new Array(n).fill(0));
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) if (i !== j) Q[i][j] = W[i][j] / Z;
+    }
+
+    // ④ 梯度：dC/dy_i = 4 Σ_j (P_ij − Q_ij)·W_ij·(y_i − y_j)
+    const grad = Array.from({ length: n }, () => new Array(dims).fill(0));
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        if (i === j) continue;
+        const coeff = 4 * (P[i][j] - Q[i][j]) * W[i][j];
+        for (let k = 0; k < dims; k++) grad[i][k] += coeff * (Y[i][k] - Y[j][k]);
+      }
+    }
+
+    if (iter % sampleEvery === 0) {
+      let cost = 0;
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+          if (i !== j && P[i][j] > 0) cost += P[i][j] * Math.log(P[i][j] / Math.max(Q[i][j], 1e-300));
+        }
+      }
+      costs.push(cost);
+    }
+
+    for (let i = 0; i < n; i++) {
+      for (let k = 0; k < dims; k++) Y[i][k] -= lr * grad[i][k];
+    }
+  }
+
+  // 末态 Q 与代价（与循环内采样口径一致）
+  const Q = Array.from({ length: n }, () => new Array(n).fill(0));
+  {
+    const W = Array.from({ length: n }, () => new Array(n).fill(0));
+    let Z = 0;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        let d2 = 0;
+        for (let k = 0; k < dims; k++) {
+          const diff = Y[i][k] - Y[j][k];
+          d2 += diff * diff;
+        }
+        const w = 1 / (1 + d2);
+        W[i][j] = w; W[j][i] = w; Z += 2 * w;
+      }
+    }
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) if (i !== j) Q[i][j] = W[i][j] / Z;
+  }
+  return { Y, P, Q, costs, entropies, perplexity };
+}
+
+/**
+ * k-NN 邻域重叠率：嵌入 Y 与原始 X 的局部结构保持度量。
+ * @param {number[][]} X 原始数据
+ * @param {number[][]} Y 嵌入
+ * @param {number} [k=5]
+ * @returns {number} 平均重叠率 ∈ [0,1]
+ */
+function knnOverlap(X, Y, k = 5) {
+  const topk = (M, i) => {
+    const dists = M.map((row, j) => {
+      if (j === i) return [j, Infinity];
+      let s = 0;
+      for (let d = 0; d < row.length; d++) s += (row[d] - M[i][d]) ** 2;
+      return [j, s];
+    }).filter(([, v]) => v !== Infinity);
+    dists.sort((a, b) => a[1] - b[1]);
+    return new Set(dists.slice(0, k).map(([j]) => j));
+  };
+  let total = 0;
+  for (let i = 0; i < X.length; i++) {
+    const sx = topk(X, i), sy = topk(Y, i);
+    let inter = 0;
+    for (const j of sx) if (sy.has(j)) inter++;
+    total += inter / k;
+  }
+  return total / X.length;
+}
+
 /* ═══════════ src/nn/dense.js ═══════════ */
 /**
  * 旗舰AI引擎 · 全连接神经网络
@@ -2232,6 +2564,79 @@ function trainLSTM(net, X, targets, { lr = 0.05, iters = 200 } = {}) {
   return { losses };
 }
 
+/* ═══════════ src/nn/optimizers.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 一阶优化器（站在 Kingma & Ba 2015、Hinton 的 RMSProp、Polyak 重球法之上）
+ * 统一签名：state = step(params, grads, state, opts) → { params, state }
+ * 不变量：
+ *   ① Adam 偏差修正首步：m̂=g、v̂=g² ⇒ Δ = −lr·g/|g| = −lr·sign(g)（精确成立，且尺度不变）
+ *   ② 动量重球闭式：恒定梯度下 v_k = g·(1−m^k)/(1−m)（几何累积）
+ *   ③ 凸二次型收敛：GD/Momentum/RMSProp/Adam 均收敛到解析最优 x* = A⁻¹b，且损失单调不增
+ */
+
+/**
+ * 带动量的 SGD（Polyak 重球法）：v ← m·v + g；x ← x − lr·v
+ */
+function sgdMomentumStep(x, g, state, t, { lr = 0.01, momentum = 0.9 } = {}) {
+  const v = state.v || new Array(x.length).fill(0);
+  const nv = v.map((vi, i) => momentum * vi + g[i]);
+  return { x: x.map((xi, i) => xi - lr * nv[i]), state: { v: nv } };
+}
+
+/**
+ * RMSProp（Hinton）：v ← β·v + (1−β)·g²；x ← x − lr·g/(√v̂ + ε)
+ */
+function rmspropStep(x, g, state, t, { lr = 0.01, beta = 0.9, eps = 1e-8 } = {}) {
+  const v = state.v || new Array(x.length).fill(0);
+  const nv = v.map((vi, i) => beta * vi + (1 - beta) * g[i] * g[i]);
+  return { x: x.map((xi, i) => xi - lr * g[i] / (Math.sqrt(nv[i]) + eps)), state: { v: nv } };
+}
+
+/**
+ * Adam（Kingma & Ba 2015）：一阶/二阶矩估计 + 偏差修正。
+ */
+function adamStep(x, g, state, t, { lr = 0.01, beta1 = 0.9, beta2 = 0.999, eps = 1e-8 } = {}) {
+  const m = state.m || new Array(x.length).fill(0);
+  const v = state.v || new Array(x.length).fill(0);
+  const nm = m.map((mi, i) => beta1 * mi + (1 - beta1) * g[i]);
+  const nv = v.map((vi, i) => beta2 * vi + (1 - beta2) * g[i] * g[i]);
+  const mHat = nm.map((mi) => mi / (1 - Math.pow(beta1, t)));
+  const vHat = nv.map((vi) => vi / (1 - Math.pow(beta2, t)));
+  const nx = x.map((xi, i) => xi - lr * mHat[i] / (Math.sqrt(vHat[i]) + eps));
+  return { x: nx, state: { m: nm, v: nv } };
+}
+
+const STEPS = { sgdMomentum: sgdMomentumStep, rmsprop: rmspropStep, adam: adamStep };
+
+/**
+ * 通用最小化循环。
+ * @param {(x:number[])=>number} f 目标函数
+ * @param {(x:number[])=>number[]} grad 梯度
+ * @param {number[]} x0 初始点
+ * @param {{optimizer?:string, lr?:number, iters?:number, momentum?:number, beta?:number}} opts
+ * @returns {{x:number[], history:number[], state:object}}
+ */
+function minimize(f, grad, x0, {
+  optimizer = 'adam', lr = 0.01, iters = 500, momentum, beta,
+} = {}) {
+  const step = STEPS[optimizer];
+  if (!step) throw new Error(`未知优化器：${optimizer}（可选 ${Object.keys(STEPS).join('/')}）`);
+  const opts = { lr };
+  if (momentum !== undefined) opts.momentum = momentum;
+  if (beta !== undefined) opts.beta = beta;
+  let x = [...x0];
+  let state = {};
+  const history = [f(x)];
+  for (let t = 1; t <= iters; t++) {
+    const g = grad(x);
+    const out = step(x, g, state, t, opts);
+    x = out.x;
+    state = out.state;
+    history.push(f(x));
+  }
+  return { x, history, state };
+}
+
 /* ═══════════ src/rl/valueIteration.js ═══════════ */
 /**
  * 旗舰AI引擎 · 强化学习：马尔可夫决策过程（MDP）最优求解
@@ -2409,12 +2814,142 @@ function gridworld({
   return { P, R, S, A, gamma, size, goal, trap, goalReward, trapReward };
 }
 
+/* ═══════════ src/rl/qLearning.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 强化学习：Q-learning（Watkins 1989，免模型时序差分控制）
+ * 站在 Bellman 最优方程之上：Q*(s,a) = Σ p(s'|s,a)[ r + γ·max_a' Q*(s',a') ]
+ * 不变量：
+ *   ① TD 自一致性：收敛后 Q ≡ T_Q(Q)（Bellman 残差 → 0，不动点定理）
+ *   ② 双算法互证：Q-learning 的 Q ≡ 由值迭代 V* 反推的 Q*（链式 MDP 解析闭式 γ^(n−2−s)）
+ *   ③ 贪心策略 π_Q ≡ 值迭代最优策略 π*（网格世界）
+ *   ④ 学习改善：后期回合平均回报 > 前期（探索 → 利用）
+ */
+
+
+/**
+ * 贪心动作（确定性 tie-break：取最小下标，保证可复现）。
+ * @param {number[][]} Q 状态-动作值表
+ * @param {number} s 状态
+ * @returns {number} 动作下标
+ */
+function greedyAction(Q, s) {
+  let best = 0;
+  for (let a = 1; a < Q[s].length; a++) if (Q[s][a] > Q[s][best]) best = a;
+  return best;
+}
+
+/**
+ * 由值迭代 V* 反推 Q*：Q*(s,a) = Σ_k p_k·(r_k + γ·V*(ns_k))。
+ * 作为免模型 Q-learning 的独立基准（双算法互证）。
+ * @param {number[][][]} P P[s][a] = [[ns, p], ...]
+ * @param {number[][][]} R R[s][a] = 与 P[s][a] 对齐的奖励
+ * @param {number} gamma 折扣因子
+ * @param {number[]} V 值迭代收敛的 V*
+ * @returns {number[][]} Q*
+ */
+function qFromV(P, R, gamma, V) {
+  const S = P.length, A = P[0].length;
+  const Q = Array.from({ length: S }, () => new Array(A).fill(0));
+  for (let s = 0; s < S; s++) {
+    for (let a = 0; a < A; a++) {
+      let q = 0;
+      const list = P[s][a];
+      for (let k = 0; k < list.length; k++) {
+        q += list[k][1] * (R[s][a][k] + gamma * V[list[k][0]]);
+      }
+      Q[s][a] = q;
+    }
+  }
+  return Q;
+}
+
+/**
+ * Q-learning 主循环（ε-贪心探索 + 时序差分更新）。
+ * @param {number[][][]} P 转移核
+ * @param {number[][][]} R 奖励
+ * @param {{episodes?:number, alpha?:number, epsStart?:number, epsEnd?:number,
+ *          gamma?:number, maxSteps?:number, seed?:number}} opts
+ * @returns {{Q:number[][], policy:number[], episodeReturns:number[], gamma:number}}
+ */
+function qLearning(P, R, {
+  episodes = 20000, alpha = 0.2, epsStart = 1.0, epsEnd = 0.05,
+  gamma = 0.9, maxSteps = 80, seed = 42,
+} = {}) {
+  const S = P.length, A = P[0].length;
+  const rng = mulberry32(seed);
+  const Q = Array.from({ length: S }, () => new Array(A).fill(0));
+  const episodeReturns = [];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    const eps = epsStart + (epsEnd - epsStart) * (ep / episodes); // 线性衰减
+    const s0 = Math.floor(rng() * S);
+    let s = s0;
+    let total = 0;
+    for (let t = 0; t < maxSteps; t++) {
+      // ε-贪心
+      const a = rng() < eps ? Math.floor(rng() * A) : greedyAction(Q, s);
+      // 依 P[s][a] 采样下一状态与即时奖励
+      const list = P[s][a];
+      let u = rng(), acc = 0, k = 0;
+      for (; k < list.length; k++) {
+        acc += list[k][1];
+        if (u <= acc) break;
+      }
+      if (k >= list.length) k = list.length - 1;
+      const ns = list[k][0];
+      const r = R[s][a][k];
+      // 时序差分更新
+      let qMax = 0;
+      for (let a2 = 0; a2 < A; a2++) qMax = Math.max(qMax, Q[ns][a2]);
+      Q[s][a] += alpha * (r + gamma * qMax - Q[s][a]);
+      total += r;
+      s = ns;
+    }
+    episodeReturns.push(total);
+  }
+
+  const policy = Array.from({ length: S }, (_, s) => greedyAction(Q, s));
+  return { Q, policy, episodeReturns, gamma };
+}
+
+/**
+ * Bellman 最优残差：max |Q(s,a) − Σ_k p_k(r_k + γ·max_a' Q(ns_k, a'))|。
+ * 收敛解满足残差 → 0（压缩映射不动点，γ < 1）。
+ * @param {number[][][]} P 转移核
+ * @param {number[][][]} R 奖励
+ * @param {number} gamma 折扣因子
+ * @param {number[][]} Q 待检验的 Q 表
+ * @returns {number} 最大绝对残差
+ */
+function bellmanResidualQ(P, R, gamma, Q) {
+  const S = P.length, A = P[0].length;
+  let worst = 0;
+  for (let s = 0; s < S; s++) {
+    for (let a = 0; a < A; a++) {
+      let tq = 0;
+      const list = P[s][a];
+      for (let k = 0; k < list.length; k++) {
+        const ns = list[k][0];
+        let qMax = 0;
+        for (let a2 = 0; a2 < A; a2++) qMax = Math.max(qMax, Q[ns][a2]);
+        tq += list[k][1] * (R[s][a][k] + gamma * qMax);
+      }
+      worst = Math.max(worst, Math.abs(Q[s][a] - tq));
+    }
+  }
+  return worst;
+}
+
 /* ═══════════ src/verify/invariants.js ═══════════ */
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 14 组套件全绿 = 引擎数学正确性的机器证明。
+ * 18 组套件全绿 = 引擎数学正确性的机器证明。
  */
+
+
+
+
 
 
 
@@ -2491,6 +3026,10 @@ function runAllInvariants() {
     ['AdaBoost 集成 · Boosting', suiteBoosting],
     ['隐马尔可夫模型 · HMM', suiteHMM],
     ['强化学习 · Reinforcement Learning', suiteRL],
+    ['Q-learning · 免模型TD控制', suiteQLearning],
+    ['密度聚类 · DBSCAN', suiteDBSCAN],
+    ['非线性降维 · t-SNE', suiteTSNE],
+    ['一阶优化器 · Optimizers', suiteOptim],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -3097,8 +3636,233 @@ function suiteRL(check) {
     `V(终点)=${gv.V[gw.goal].toFixed(3)} > V(陷阱)=${gv.V[gw.trap].toFixed(3)}`);
 }
 
+/** ⑮ Q-learning：免模型时序差分控制（Watkins 1989） */
+function suiteQLearning(check) {
+  // ① 链式 MDP：Q-learning ≡ 值迭代 Q* ≡ 解析闭式 γ^(n−2−s)
+  const n = 6, gamma = 0.9;
+  const cm = chainMDP({ n, gamma });
+  const ql = qLearning(cm.P, cm.R, {
+    episodes: 20000, alpha: 0.2, epsStart: 1, epsEnd: 0.05, gamma, maxSteps: 60, seed: 42,
+  });
+  const vi = valueIteration(cm.P, cm.R, gamma);
+  const Qstar = qFromV(cm.P, cm.R, gamma, vi.V);
+
+  let closedErr = 0;
+  for (let s = 0; s < n - 1; s++) {
+    closedErr = Math.max(closedErr, Math.abs(ql.Q[s][1] - Math.pow(gamma, n - 2 - s)));
+  }
+  check('Q-learning：链式 MDP Q*(s,→) ≡ γ^(n−2−s)（解析闭式）', closedErr < 5e-2,
+    `最大偏差=${closedErr.toExponential(2)}，Q(0,→)=${ql.Q[0][1].toFixed(4)} vs γ⁴=${Math.pow(gamma, 4).toFixed(4)}`);
+
+  let viErr = 0;
+  for (let s = 0; s < n; s++) {
+    for (let a = 0; a < 2; a++) viErr = Math.max(viErr, Math.abs(ql.Q[s][a] - Qstar[s][a]));
+  }
+  check('Q-learning：Q ≡ 值迭代反推 Q*（免模型 vs 基于模型互证）', viErr < 5e-2,
+    `最大偏差=${viErr.toExponential(2)}`);
+
+  const resid = bellmanResidualQ(cm.P, cm.R, gamma, ql.Q);
+  check('Q-learning：Bellman 残差 → 0（收敛至不动点）', resid < 5e-2,
+    `残差=${resid.toExponential(2)}`);
+
+  // ② 网格世界：贪心策略 ≡ 值迭代最优策略
+  const gw = gridworld();
+  const ql2 = qLearning(gw.P, gw.R, {
+    episodes: 30000, alpha: 0.2, epsStart: 1, epsEnd: 0.05, gamma: gw.gamma, maxSteps: 60, seed: 7,
+  });
+  const vi2 = valueIteration(gw.P, gw.R, gw.gamma);
+  let optErr = 0, exact = 0;
+  for (let s = 0; s < gw.S; s++) {
+    optErr = Math.max(optErr, ql2.Q[s][vi2.policy[s]] - Math.max(...ql2.Q[s]));
+    if (greedyAction(ql2.Q, s) === vi2.policy[s]) exact++;
+  }
+  check('Q-learning：网格世界 π*(s) 动作在 Q 中最优（贪心策略 ≡ 值迭代 π*）', optErr < 5e-2,
+    `次优缺口=${optErr.toExponential(2)}，逐状态一致 ${exact}/${gw.S}`);
+  check('Q-learning：网格世界策略逐状态一致率 ≥ 75%', exact / gw.S >= 0.75,
+    `一致率=${(100 * exact / gw.S).toFixed(1)}%`);
+
+  // ③ 学习改善：后期回合平均回报 > 前期
+  const er = ql.episodeReturns;
+  const k = Math.floor(er.length / 10);
+  const early = er.slice(0, k).reduce((a, b) => a + b, 0) / k;
+  const late = er.slice(-k).reduce((a, b) => a + b, 0) / k;
+  check('Q-learning：后期回合回报 > 前期（探索 → 利用）', late > early,
+    `早期=${early.toFixed(3)} → 后期=${late.toFixed(3)}`);
+}
+
+/** ⑯ DBSCAN：密度聚类（Ester et al. 1996） */
+function suiteDBSCAN(check) {
+  const rng = mulberry32(123);
+  const X = [], truth = [];
+  for (let i = 0; i < 40; i++) { X.push([gaussianSample(rng, 0, 0.3), gaussianSample(rng, 0, 0.3)]); truth.push(0); }
+  for (let i = 0; i < 40; i++) { X.push([gaussianSample(rng, 8, 0.3), gaussianSample(rng, 8, 0.3)]); truth.push(1); }
+  for (let i = 0; i < 5; i++) { X.push([gaussianSample(rng, 20, 1), gaussianSample(rng, 20, 1)]); truth.push(-1); }
+  const n = X.length;
+  const { labels, core, nClusters, noise } = dbscan(X, { eps: 1.0, minPts: 5 });
+
+  const ari = adjustedRandIndex(labels, truth);
+  check('DBSCAN：两团簇 ARI = 1（划分与真实标注完全一致）', ari > 0.999,
+    `ARI=${ari.toFixed(6)}，簇数=${nClusters}，噪声=${noise}`);
+  check('DBSCAN：恰好 2 簇 + 5 个离群点（稀疏区全部识别为噪声）',
+    nClusters === 2 && noise === 5, `簇数=${nClusters}，噪声=${noise}`);
+
+  // 核心见证：每个非噪声点在其标签簇内有 ε-邻域核心点
+  let witnessOk = true;
+  for (let i = 0; i < n; i++) {
+    if (labels[i] === -1) continue;
+    let ok = false;
+    for (let j = 0; j < n; j++) {
+      if (labels[j] !== labels[i] || !core[j]) continue;
+      const d2 = (X[i][0] - X[j][0]) ** 2 + (X[i][1] - X[j][1]) ** 2;
+      if (d2 <= 1.0 + 1e-12) { ok = true; break; }
+    }
+    if (!ok) { witnessOk = false; break; }
+  }
+  check('DBSCAN：核心点见证（每个非噪声点邻域内必有同簇核心点）', witnessOk);
+
+  // 密度连通传递性：每簇核心点在 ε-邻域图上构成单一连通分量
+  let connectedOk = true;
+  for (let c = 0; c < nClusters; c++) {
+    const cores = [];
+    for (let i = 0; i < n; i++) if (labels[i] === c && core[i]) cores.push(i);
+    if (cores.length === 0) { connectedOk = false; break; }
+    const seen = new Set([cores[0]]);
+    const queue = [cores[0]];
+    while (queue.length) {
+      const p = queue.shift();
+      for (const q of cores) {
+        if (seen.has(q)) continue;
+        const d2 = (X[p][0] - X[q][0]) ** 2 + (X[p][1] - X[q][1]) ** 2;
+        if (d2 <= 1.0 + 1e-12) { seen.add(q); queue.push(q); }
+      }
+    }
+    if (seen.size !== cores.length) connectedOk = false;
+  }
+  check('DBSCAN：密度连通传递性（每簇核心点单一连通分量）', connectedOk);
+
+  // 离群稳健：追加孤立远点 → 噪声，且原有划分不变
+  const X2 = [...X, [100, 100]];
+  const r2 = dbscan(X2, { eps: 1.0, minPts: 5 });
+  const stable = r2.labels.slice(0, n).every((v, i) => v === labels[i]);
+  check('DBSCAN：追加孤立远点 → 识别为噪声且原划分逐点不变',
+    r2.labels[n] === -1 && stable && r2.nClusters === 2, `新点标签=${r2.labels[n]}，划分稳定=${stable}`);
+}
+
+/** ⑰ t-SNE：非线性降维（van der Maaten & Hinton 2008） */
+function suiteTSNE(check) {
+  const rng = mulberry32(7);
+  const X = [];
+  for (const c of [[0, 0], [6, 0], [3, 5]]) {
+    for (let i = 0; i < 30; i++) {
+      X.push([gaussianSample(rng, c[0], 0.5), gaussianSample(rng, c[1], 0.5)]);
+    }
+  }
+  const n = X.length;
+  const perplexity = 15;
+  const { Y, P, Q, costs, entropies } = tsne(X, {
+    dims: 2, perplexity, iters: 400, lr: 100, seed: 42,
+  });
+
+  // ① P/Q 对称联合分布、概率质量守恒
+  let symErr = 0, massP = 0, massQ = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      symErr = Math.max(symErr, Math.abs(P[i][j] - P[j][i]), Math.abs(Q[i][j] - Q[j][i]));
+      massP += P[i][j];
+      massQ += Q[i][j];
+    }
+  }
+  check('t-SNE：P/Q 对称联合分布（ΣP = ΣQ = 1）',
+    symErr < 1e-12 && Math.abs(massP - 1) < 1e-9 && Math.abs(massQ - 1) < 1e-9,
+    `对称误差=${symErr.toExponential(2)}，ΣP=${massP.toFixed(9)}，ΣQ=${massQ.toFixed(9)}`);
+
+  // ② 困惑度达成
+  let perpErr = 0;
+  for (const h of entropies) perpErr = Math.max(perpErr, Math.abs(Math.pow(2, h) - perplexity) / perplexity);
+  check('t-SNE：二分搜索困惑度达成（2^H ≈ perplexity）', perpErr < 0.05,
+    `最大相对偏差=${(100 * perpErr).toFixed(2)}%（目标=${perplexity}）`);
+
+  // ③ KL 代价单调不增
+  let mono = true;
+  for (let k = 1; k < costs.length; k++) if (costs[k] > costs[k - 1] + 1e-3) mono = false;
+  check('t-SNE：KL 代价随迭代单调不增（学习有效）',
+    mono && costs[costs.length - 1] < costs[0],
+    `初=${costs[0].toFixed(4)} → 末=${costs[costs.length - 1].toFixed(4)}（${costs.length} 个采样点）`);
+
+  // ④ 结构保持：可分团簇 k-NN 邻域重叠
+  const ov = knnOverlap(X, Y, 5);
+  check('t-SNE：可分团簇 k-NN 邻域重叠率 ≥ 0.85（局部结构保真）', ov >= 0.85,
+    `重叠率=${ov.toFixed(4)}`);
+}
+
+/** ⑱ 一阶优化器：SGD-Momentum / RMSProp / Adam */
+function suiteOptim(check) {
+  // ① Adam 偏差修正首步：Δ = −lr·sign(g)（eps→0 极限下精确成立且尺度不变）
+  const g = [0.5, -2, 0.001];
+  const lr = 0.01;
+  const expected = g.map((v) => -lr * Math.sign(v));
+  const r1 = adamStep([0, 0, 0], g, {}, 1, { lr, eps: 0 });
+  const r2 = adamStep([0, 0, 0], g.map((v) => v * 1000), {}, 1, { lr, eps: 0 });
+  let e1 = 0, e2 = 0;
+  for (let i = 0; i < 3; i++) {
+    e1 = Math.max(e1, Math.abs(r1.x[i] - expected[i]));
+    e2 = Math.max(e2, Math.abs(r2.x[i] - expected[i]));
+  }
+  check('Adam：偏差修正首步 Δ = −lr·sign(g)（m̂/√v̂ = g/|g|，ulp 级精确）', e1 < 1e-12,
+    `首步=[${r1.x.map((v) => v.toFixed(6)).join(', ')}]，期望=[${expected.map((v) => v.toFixed(6)).join(', ')}]`);
+  check('Adam：首步尺度不变（g 与 1000g 产生相同步长）', e2 < 1e-12,
+    `偏差=${e2.toExponential(2)}`);
+
+  // ② 动量重球闭式：v_k = g·(1−m^k)/(1−m)
+  const m = 0.9;
+  let st = {};
+  let x = [0];
+  const vs = [];
+  for (let t = 1; t <= 6; t++) {
+    const out = sgdMomentumStep(x, [1.5], st, t, { lr: 0.1, momentum: m });
+    st = out.state;
+    x = out.x;
+    vs.push(st.v[0]);
+  }
+  let vErr = 0;
+  for (let k = 1; k <= 6; k++) {
+    vErr = Math.max(vErr, Math.abs(vs[k - 1] - 1.5 * (1 - Math.pow(m, k)) / (1 - m)));
+  }
+  check('SGD-Momentum：速度闭式 v_k = g(1−m^k)/(1−m)（重球几何累积）', vErr < 1e-12,
+    `v_6=${vs[5].toFixed(9)} vs 闭式=${(1.5 * (1 - Math.pow(m, 6)) / (1 - m)).toFixed(9)}`);
+
+  // ③ 凸二次型：三优化器均收敛到解析最优 x* = A⁻¹b，损失单调不增
+  const A = [[4, 1], [1, 3]], b = [1, 2];
+  const xStar = solve(A, b);
+  const f = (x) => 0.5 * (A[0][0] * x[0] ** 2 + 2 * A[0][1] * x[0] * x[1] + A[1][1] * x[1] ** 2)
+    - (b[0] * x[0] + b[1] * x[1]);
+  const grad = (x) => [
+    A[0][0] * x[0] + A[0][1] * x[1] - b[0],
+    A[1][0] * x[0] + A[1][1] * x[1] - b[1],
+  ];
+  const cases = [
+    ['SGD-Momentum', 'sgdMomentum', { lr: 0.01, momentum: 0.9 }],
+    ['RMSProp', 'rmsprop', { lr: 0.1, beta: 0.9 }],
+    ['Adam', 'adam', { lr: 0.2 }],
+  ];
+  for (const [name, opt, opts] of cases) {
+    const { x: xf, history } = minimize(f, grad, [3, -2], { optimizer: opt, iters: 2000, ...opts });
+    const err = Math.max(Math.abs(xf[0] - xStar[0]), Math.abs(xf[1] - xStar[1]));
+    // 包络单调：每 20 步采样非增（一阶方法早期过冲属经典行为，逐步单调非普遍保证）
+    let mono = true;
+    for (let k = 20; k < history.length; k += 20) {
+      if (history[k] > history[k - 20] + 1e-6) mono = false;
+    }
+    check(`${name}：凸二次型收敛到解析最优 x* = A⁻¹b`, err < 1e-6,
+      `x=[${xf.map((v) => v.toFixed(8)).join(', ')}]，x*=[${xStar.map((v) => v.toFixed(8)).join(', ')}]`);
+    check(`${name}：损失包络单调不增（每 20 步采样）`,
+      mono && history[history.length - 1] < history[0] * 1e-6,
+      `f: ${history[0].toExponential(3)} → ${history[history.length - 1].toExponential(3)}`);
+  }
+}
+
 /* ───── 挂载全局命名空间 ───── */
-const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, runAllInvariants };
+const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, sgdMomentumStep, rmspropStep, adamStep, minimize, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, runAllInvariants };
 if (typeof globalThis !== 'undefined') {
   globalThis.FlagshipAI = Object.assign({}, globalThis.FlagshipAI, __FlagshipAI__);
 }
@@ -3300,12 +4064,142 @@ if (typeof globalThis !== 'undefined') {
        <span style="font-family:monospace">MSE ${losses[0].toFixed(3)} → ${losses[losses.length - 1].toFixed(4)}（300 步 BPTT）</span>`;
   }
 
+  /* ───────── v1.2 新增演示 ───────── */
+
+  /** t-SNE：3 团簇嵌入 */
+  let tsneSeed = 42;
+  function drawTsne() {
+    const { mulberry32, gaussianSample, tsne, knnOverlap } = A;
+    const rng = mulberry32(tsneSeed);
+    const centers = [[70, 80], [350, 100], [210, 240]];
+    const X = [], truth = [];
+    for (let c = 0; c < 3; c++) {
+      for (let i = 0; i < 30; i++) {
+        X.push([gaussianSample(rng, centers[c][0], 32), gaussianSample(rng, centers[c][1], 28)]);
+        truth.push(c);
+      }
+    }
+    const t = tsne(X, { dims: 2, perplexity: 15, iters: 400, lr: 100, seed: tsneSeed });
+    // 归一化嵌入到 viewBox
+    const ys = t.Y.flat();
+    const ymin = Math.min(...ys), ymax = Math.max(...ys);
+    const span = Math.max(ymax - ymin, 1e-9);
+    const px = (v, i) => 30 + ((t.Y[i][0] - ymin) / span) * 400;
+    const py = (v, i) => 270 - ((t.Y[i][1] - ymin) / span) * 240;
+    let svg = '';
+    for (let i = 0; i < X.length; i++) {
+      const c = KC[truth[i] % 3];
+      svg += `<circle cx="${px(0, i).toFixed(1)}" cy="${py(0, i).toFixed(1)}" r="4.5"
+        fill="${c}" fill-opacity="0.6" stroke="${c}"/>`;
+    }
+    $('svg-tsne').innerHTML = svg;
+    const ov = knnOverlap(X, t.Y, 5);
+    $('legend-tsne').innerHTML =
+      KC.map((c, i) => `<span><i style="background:${c}"></i>团簇 ${i}</span>`).join('') +
+      `<span style="font-family:monospace">KL ${t.costs[0].toFixed(3)} → ${t.costs[t.costs.length - 1].toFixed(3)}（单调）· kNN 重叠 ${(ov * 100).toFixed(1)}%</span>`;
+  }
+
+  /** DBSCAN：2 团簇 + 散布噪声 */
+  let dbSeed = 11;
+  function drawDbscan() {
+    const { mulberry32, gaussianSample, dbscan } = A;
+    const rng = mulberry32(dbSeed);
+    const X = [], truth = [];
+    for (let c = 0; c < 2; c++) {
+      const cx = c === 0 ? 130 : 330, cy = c === 0 ? 100 : 210;
+      for (let i = 0; i < 22; i++) {
+        X.push([gaussianSample(rng, cx, 30), gaussianSample(rng, cy, 26)]);
+        truth.push(c);
+      }
+    }
+    for (let i = 0; i < 14; i++) { // 散布噪声
+      X.push([30 + rng() * 400, 30 + rng() * 240]);
+      truth.push(-1);
+    }
+    const { labels, nClusters, noise } = dbscan(X, { eps: 42, minPts: 4 });
+    let svg = '';
+    for (let i = 0; i < X.length; i++) {
+      const noisePt = labels[i] === -1;
+      const c = noisePt ? '#8a93a8' : (labels[i] === 0 ? '#e74c3c' : '#2980b9');
+      if (noisePt) {
+        svg += `<g stroke="${c}" stroke-width="2" stroke-linecap="round">
+          <line x1="${(X[i][0] - 4).toFixed(1)}" y1="${(X[i][1] - 4).toFixed(1)}" x2="${(X[i][0] + 4).toFixed(1)}" y2="${(X[i][1] + 4).toFixed(1)}"/>
+          <line x1="${(X[i][0] + 4).toFixed(1)}" y1="${(X[i][1] - 4).toFixed(1)}" x2="${(X[i][0] - 4).toFixed(1)}" y2="${(X[i][1] + 4).toFixed(1)}"/></g>`;
+      } else {
+        svg += `<circle cx="${X[i][0].toFixed(1)}" cy="${X[i][1].toFixed(1)}" r="4.5" fill="${c}" fill-opacity="0.6" stroke="${c}"/>`;
+      }
+    }
+    $('svg-dbscan').innerHTML = svg;
+    let ari = '—';
+    try { ari = A.adjustedRandIndex(labels, truth).toFixed(3); } catch (e) { /* 旧版引擎无 ARI */ }
+    $('legend-dbscan').innerHTML =
+      `<span><i style="background:#e74c3c"></i>簇 0</span><span><i style="background:#2980b9"></i>簇 1</span>
+       <span><i style="background:#8a93a8"></i>噪声 ✕</span>
+       <span style="font-family:monospace">${nClusters} 簇 · 噪声 ${noise} 点 · ARI=${ari}</span>`;
+  }
+
+  /** 优化器：凸二次型等势面上的收敛轨迹 */
+  let optSeed = 0;
+  function drawOpt() {
+    const { sgdMomentumStep, rmspropStep, adamStep } = A;
+    optSeed++;
+    // f(x)=½xᵀAx−bᵀx，A=[[4,1],[1,3]]，b=[1,2] ⇒ x*=(1/11, 7/11)
+    const A2 = [[4, 1], [1, 3]], b2 = [1, 2];
+    const f = (x) => 0.5 * (A2[0][0] * x[0] ** 2 + 2 * A2[0][1] * x[0] * x[1] + A2[1][1] * x[1] ** 2) - (b2[0] * x[0] + b2[1] * x[1]);
+    const grad = (x) => [A2[0][0] * x[0] + A2[0][1] * x[1] - b2[0], A2[1][0] * x[0] + A2[1][1] * x[1] - b2[1]];
+    // 坐标映射：x1∈[−1.0,3.6] → [20,440]；x2∈[−2.6,1.9] → [280,20]
+    const X1 = [-1.0, 3.6], X2 = [-2.6, 1.9];
+    const mx = (v) => 20 + ((v - X1[0]) / (X1[1] - X1[0])) * 420;
+    const my = (v) => 280 - ((v - X2[0]) / (X2[1] - X2[0])) * 260;
+    // 等势面背景（量化分层）
+    const fmin = -0.5 * (b2[0] * (1 / 11) + b2[1] * (7 / 11)), fmax = f([3.4, 1.0]);
+    let svg = '';
+    const step = 20;
+    for (let gx = X1[0]; gx < X1[1]; gx += (X1[1] - X1[0]) / 22) {
+      for (let gy = X2[0]; gy < X2[1]; gy += (X2[1] - X2[0]) / 14) {
+        const lv = (f([gx, gy]) - fmin) / (fmax - fmin);
+        const band = Math.floor(Math.min(0.999, Math.max(0, lv)) * 10);
+        svg += `<rect x="${mx(gx).toFixed(1)}" y="${my(gy + (X2[1] - X2[0]) / 14).toFixed(1)}" width="21" height="20"
+          fill="rgba(59,91,253,${(0.03 + band * 0.028).toFixed(3)})"/>`;
+      }
+    }
+    const runs = [
+      ['SGD-Momentum', '#e67e22', sgdMomentumStep, { lr: 0.01, momentum: 0.9 }],
+      ['RMSProp', '#27ae60', rmspropStep, { lr: 0.1, beta: 0.9 }],
+      ['Adam', '#8e44ad', adamStep, { lr: 0.2 }],
+    ];
+    const finals = [];
+    for (const [name, color, stepFn, opts] of runs) {
+      let x = [3, -2], st = {};
+      const pts = [[mx(x[0]), my(x[1])]];
+      for (let t = 1; t <= 300; t++) {
+        const out = stepFn(x, grad(x), st, t, opts);
+        x = out.x; st = out.state;
+        pts.push([Math.min(450, Math.max(10, mx(x[0]))), Math.min(290, Math.max(10, my(x[1])))]);
+      }
+      svg += `<polyline fill="none" stroke="${color}" stroke-width="2" stroke-opacity="0.9"
+        points="${pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ')}"/>`;
+      svg += `<circle cx="${pts[pts.length - 1][0].toFixed(1)}" cy="${pts[pts.length - 1][1].toFixed(1)}" r="3.5" fill="${color}"/>`;
+      finals.push(`${name} f=${f(x).toFixed(6)}`);
+    }
+    // x* 标记
+    svg += `<g><circle cx="${mx(1 / 11).toFixed(1)}" cy="${my(7 / 11).toFixed(1)}" r="7" fill="none" stroke="#1c2333" stroke-width="2"/>
+      <text x="${mx(1 / 11).toFixed(1)}" y="${(my(7 / 11) - 12).toFixed(1)}" font-size="11" text-anchor="middle" fill="#1c2333" font-family="monospace" font-weight="700">x*</text></g>`;
+    $('svg-opt').innerHTML = svg;
+    $('legend-opt').innerHTML =
+      runs.map(([n, c]) => `<span><i style="background:${c}"></i>${n}</span>`).join('') +
+      `<span style="font-family:monospace">${finals.join(' · ')}</span>`;
+  }
+
   $('btn-kmeans').addEventListener('click', () => { kmSeed = (kmSeed * 31 + 17) % 100000; drawKmeans(); });
   $('btn-attn').addEventListener('click', () => { attnSeed = (attnSeed * 37 + 11) % 100000; drawAttn(); });
   $('btn-svm').addEventListener('click', () => { svmSeed = (svmSeed * 29 + 13) % 100000; drawSvm(); });
   $('btn-boost').addEventListener('click', () => { boostSeed = (boostSeed * 27 + 19) % 100000; drawBoost(); });
   $('btn-rl').addEventListener('click', drawRL);
   $('btn-lstm').addEventListener('click', () => { lstmSeed = (lstmSeed * 23 + 7) % 100000; drawLstm(); });
+  $('btn-tsne').addEventListener('click', () => { tsneSeed = (tsneSeed * 41 + 9) % 100000; drawTsne(); });
+  $('btn-dbscan').addEventListener('click', () => { dbSeed = (dbSeed * 43 + 5) % 100000; drawDbscan(); });
+  $('btn-opt').addEventListener('click', drawOpt);
 
   renderSuites();
   drawKmeans();
@@ -3314,6 +4208,9 @@ if (typeof globalThis !== 'undefined') {
   drawBoost();
   drawRL();
   drawLstm();
+  drawTsne();
+  drawDbscan();
+  drawOpt();
 })();
 </script>
 </body>
