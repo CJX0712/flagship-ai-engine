@@ -1,0 +1,132 @@
+classDiagram
+    direction LR
+
+    class Linalg {
+        +matmul(A, B) Matrix
+        +transpose(A) Matrix
+        +solve(A, b) Vector
+        +inverse(A) Matrix
+        +norm(x, p) number
+        +cholesky(A) Matrix
+        +qr(A) QrResult
+        +eig(A) EigenResult
+        +svd(A) SvdResult
+    }
+    class Numerical {
+        +logsumexp(x) number
+        +softmax(x) Vector
+        +powerIteration(A, seed) EigenResult
+        +jacobiEig(A) EigenResult
+    }
+    class Stats {
+        +gaussianPDF(x, mu, Sigma) number
+        +klDivergence(p, q) number
+        +entropy(p) number
+        +crossEntropy(p, q) number
+    }
+    class RngUtils {
+        +mulberry32(seed) RNG
+        +randn(rng) number
+        +EPS number
+        +REL_TOL number
+        +ABS_TOL number
+        +relErr(a, b) number
+        +isSymmetric(A) boolean
+        +isPSD(A) boolean
+    }
+    class Regression {
+        +linearRegression(X, y) Model
+        +ridgeRegression(X, y, lambda) Model
+        +logisticRegression(X, y, opts) LogitModel
+    }
+    class Clustering {
+        +knn(X, y, k) Model
+        +kmeans(X, k, opts) KMeansModel
+        +gmm(X, k, opts) GmmModel
+    }
+    class DimReduction {
+        +pca(X, d) PcaModel
+        +naiveBayes(X, y) BayesModel
+        +decisionTree(X, y, opts) TreeModel
+    }
+    class Dense {
+        +forward(x) Vector
+        +backward(yTrue, lr) void
+        +gradCheck(x, yTrue) GradResult
+    }
+    class Attention {
+        +scaledDotProductAttention(Q, K, V, mask) AttnResult
+        +multiHeadAttention(Q, K, V, h, dModel) AttnResult
+    }
+    class Transformer {
+        +positionalEncoding(seqLen, dModel) Matrix
+        +transformerBlock(x, opts) BlockResult
+    }
+    class Invariants {
+        +checkOrthogonal(Q) boolean
+        +checkOrthonormalVecs(V) boolean
+        +checkPSD(Sigma) boolean
+        +checkRowSumOne(M) boolean
+        +checkColSumOne(v) boolean
+    }
+    class VerifySuites {
+        +buildSuites() VerifyGroup[8]
+    }
+    class VerifyIndex {
+        +runVerify() VerifyReport
+    }
+    class TestRun {
+        +main() void
+    }
+    class Showcase {
+        +renderReport(r) void
+        +runDemos() void
+    }
+    class CoreIndex {
+        +barrel export
+    }
+
+    %% 依赖关系（..> 表示 import / 依赖）
+    Linalg ..> RngUtils : uses
+    Numerical ..> RngUtils : uses
+    Stats ..> RngUtils : uses
+    Regression ..> Linalg : uses
+    Regression ..> Numerical : uses
+    Clustering ..> Linalg : uses
+    Clustering ..> Stats : uses
+    Clustering ..> RngUtils : uses
+    DimReduction ..> Linalg : uses
+    DimReduction ..> Stats : uses
+    Dense ..> Linalg : uses
+    Dense ..> Numerical : uses
+    Attention ..> Linalg : uses
+    Attention ..> Numerical : uses
+    Transformer ..> Attention : uses
+    Transformer ..> Linalg : uses
+
+    VerifySuites ..> Linalg
+    VerifySuites ..> Numerical
+    VerifySuites ..> Stats
+    VerifySuites ..> Regression
+    VerifySuites ..> Clustering
+    VerifySuites ..> DimReduction
+    VerifySuites ..> Dense
+    VerifySuites ..> Attention
+    VerifySuites ..> Transformer
+    VerifySuites ..> Invariants
+
+    VerifyIndex ..> VerifySuites
+    VerifyIndex ..> Invariants
+    TestRun ..> VerifyIndex
+    Showcase ..> VerifyIndex
+
+    CoreIndex ..> Linalg
+    CoreIndex ..> Numerical
+    CoreIndex ..> Stats
+    CoreIndex ..> Regression
+    CoreIndex ..> Clustering
+    CoreIndex ..> DimReduction
+    CoreIndex ..> Dense
+    CoreIndex ..> Attention
+    CoreIndex ..> Transformer
+    CoreIndex ..> VerifyIndex

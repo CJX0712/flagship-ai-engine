@@ -1,0 +1,31 @@
+sequenceDiagram
+    autonumber
+    participant CLI as test/run.mjs (Node 无头)
+    participant VI as verify/index.js (runVerify)
+    participant VS as verify/suites.js (buildSuites)
+    participant INV as verify/invariants.js
+    participant MOD as core/ml/nn 各算法模块
+
+    Note over CLI,MOD: 路径 A — 无头 Node 自检（CI / npm test）
+    CLI->>VI: runVerify()
+    VI->>VS: buildSuites()
+    loop 8 个验证组 (G1..G8)
+        VS->>MOD: 调用算法 (e.g. svd(A), logisticRegression(X,y), DenseNet.gradCheck)
+        MOD-->>VS: 返回结果与参数
+        VS->>INV: checkOrthogonal(Q) / checkPSD(Sigma) / checkRowSumOne(R)
+        VS->>INV: relErr(analyticGrad, numericGrad) vs REL_TOL
+        INV-->>VS: {passed, detail}
+        VS-->>VI: VerifyGroup{name, checks[], passed}
+    end
+    VI-->>CLI: VerifyReport{groups[], allPass, summary, passedCount}
+    CLI->>CLI: 打印报告文本
+    CLI->>CLI: process.exit(allPass ? 0 : 1)
+
+    Note over CLI,MOD: 路径 B — 浏览器展示（showcase/index.html）
+    participant DOM as 页面 DOM
+    participant DEMO as 演示模块
+    DOM->>VI: import { runVerify }
+    VI-->>DOM: 同一 VerifyReport（同源逻辑）
+    DOM->>DOM: renderReport(r) 实时渲染 8/8 报告
+    DOM->>DEMO: runDemos() 驱动 PCA/kmeans/注意力演示
+    DEMO-->>DOM: 可视化结果（散点/聚类/热力图）

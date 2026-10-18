@@ -1,0 +1,31 @@
+{
+  "name": "flagship-ai-engine",
+  "version": "1.0.0",
+  "description": "旗舰AI引擎：零依赖、可验证、世界顶级 AI 算法集大成引擎（浏览器 + Node 双跑）。",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node test/run.mjs",
+    "verify": "node test/run.mjs",
+    "serve": "node scripts/serve.mjs"
+  },
+  "keywords": [
+    "ai",
+    "machine-learning",
+    "deep-learning",
+    "transformer",
+    "linear-algebra",
+    "numerical",
+    "verification",
+    "zero-dependency"
+  ],
+  "author": "晨星 (Morning Star / CJX0712)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CJX0712/flagship-ai-engine.git"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
