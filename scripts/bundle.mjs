@@ -21,9 +21,15 @@ const FILES = [
   'src/ml/clustering.js',
   'src/ml/dimreduction.js',
   'src/ml/tree.js',
+  'src/ml/svm.js',
+  'src/ml/boosting.js',
+  'src/ml/hmm.js',
   'src/nn/dense.js',
   'src/nn/attention.js',
   'src/nn/transformer.js',
+  'src/nn/rnn.js',
+  'src/nn/lstm.js',
+  'src/rl/valueIteration.js',
   'src/verify/invariants.js',
 ];
 

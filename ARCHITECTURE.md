@@ -29,16 +29,23 @@ flagship-ai-engine/
 │   │   ├── classification.js    # kNN / 高斯朴素贝叶斯
 │   │   ├── clustering.js        # k-means(++初始化) / GMM(EM)
 │   │   ├── dimreduction.js      # PCA(经 Jacobi 特征分解)
+│   │   ├── svm.js               # RBF 核 SVM（SMO 对偶求解，KKT 自检）
+│   │   ├── boosting.js          # AdaBoost（决策树桩加权集成）
+│   │   ├── hmm.js               # HMM 前向/后向 + Baum-Welch(EM)
 │   │   └── tree.js              # CART 决策树(Gini)
 │   ├── nn/
 │   │   ├── dense.js             # 全连接网络(前向/反向/梯度检验)
 │   │   ├── attention.js         # 缩放点积注意力(前向/反向/梯度检验)/多头
-│   │   └── transformer.js       # LayerNorm/位置编码/Transformer 块
+│   │   ├── transformer.js       # LayerNorm/位置编码/Transformer 块
+│   │   ├── rnn.js               # Elman RNN + BPTT(梯度检验)
+│   │   └── lstm.js              # LSTM 门控网络 + BPTT(梯度检验)
+│   ├── rl/
+│   │   └── valueIteration.js    # 值迭代/策略评估/网格世界/链式 MDP 暴力枚举
 │   └── verify/
-│       └── invariants.js        # 8 组不变量自检套件（Node 与浏览器共用同一份）
-├── test/run.mjs                 # 无头自检入口 → PASS 8/8
+│       └── invariants.js        # 14 组不变量自检套件（Node 与浏览器共用同一份）
+├── test/run.mjs                 # 无头自检入口 → PASS 14/14
 ├── showcase/
-│   ├── template.html            # 旗舰展示页模板
+│   ├── template.html            # 旗舰展示页模板（6 个实时演示）
 │   └── index.html               # 生成物：单文件、内联引擎、双击即用
 ├── scripts/
 │   ├── serve.mjs                # 零依赖静态服务器（可选）
@@ -105,8 +112,8 @@ graph LR
 | T4 | ml/classification + clustering + dimreduction + tree | T1,T2 |
 | T5 | nn/dense（反向传播 + 梯度检验） | T1,T2 |
 | T6 | nn/attention + transformer | T1,T2,T5 |
-| T7 | verify/invariants（8 组套件） | T1–T6 |
-| T8 | test/run.mjs 跑通 8/8 | T7 |
+| T7 | verify/invariants（14 组套件） | T1–T6 |
+| T8 | test/run.mjs 跑通 14/14 | T7 |
 | T9 | bundle + showcase 单文件页 | T7 |
 | T10 | 文档 + GitHub 推送 + CI 绿 | T8,T9 |
 

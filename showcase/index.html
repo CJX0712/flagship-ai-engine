@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">8 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">14 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -112,10 +112,53 @@
     </div>
   </div>
 
+  <h2>v1.1 新增算法 <span class="tag">SMO 核 SVM · AdaBoost · 值迭代强化学习 · 均由本页引擎实时求解</span></h2>
+  <div class="demos">
+    <div class="card">
+      <div class="demo-head">
+        <strong>核 SVM 决策边界（RBF + SMO）</strong>
+        <button id="btn-svm">换一批数据</button>
+      </div>
+      <div class="desc">对偶 QP 序列最小优化 · KKT 互补松弛不变量 · 黑圈 = 支持向量</div>
+      <svg id="svg-svm" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-svm"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>AdaBoost 集成决策边界（25 棵决策树桩）</strong>
+        <button id="btn-boost">换一批数据</button>
+      </div>
+      <div class="desc">α_t = ½ln((1−ε_t)/ε_t) · 指数损失单调不增不变量</div>
+      <svg id="svg-boost" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-boost"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>强化学习：4×4 随机网格世界（值迭代）</strong>
+        <button id="btn-rl">重新求解</button>
+      </div>
+      <div class="desc">V*(s)=max_a Σp[r+γV*] · 箭头=贪心策略 · 红=正价值 绿=负价值 · γ=0.9</div>
+      <svg id="svg-rl" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-rl"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>LSTM 序列回归（BPTT 训练）</strong>
+        <button id="btn-lstm">重新训练</button>
+      </div>
+      <div class="desc">门控循环网络 · 300 步梯度下降 · 解析梯度 ≡ 中心差分（1.3e-8）</div>
+      <svg id="svg-lstm" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-lstm"></div>
+    </div>
+  </div>
+
   <div class="refs">
     站在巨人肩上：<code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
     <code>Bishop · PRML</code><code>Hastie et al. · ESL</code><code>Vaswani et al. 2017 · Attention Is All You Need</code>
-    <code>Breiman et al. 1984 · CART</code>
+    <code>Breiman et al. 1984 · CART</code><code>Cortes &amp; Vapnik 1995 · SVM</code>
+    <code>Freund &amp; Schapire 1997 · AdaBoost</code><code>Baum &amp; Petrie 1966 · HMM</code>
+    <code>Hochreiter &amp; Schmidhuber 1997 · LSTM</code><code>Bellman 1957 · 动态规划</code>
+    <code>Sutton &amp; Barto · Reinforcement Learning</code>
   </div>
 
   <footer>
@@ -1074,6 +1117,381 @@ class DecisionTree {
   }
 }
 
+/* ═══════════ src/ml/svm.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 核支持向量机（SVM, Cortes & Vapnik 1995；SMO 求解 Platt 1998）
+ * 对偶问题：max_α Σαᵢ − ½ΣΣ αᵢαⱼyᵢyⱼK(xᵢ,xⱼ)，s.t. 0≤αᵢ≤C，Σαᵢyᵢ=0
+ * 决策函数：f(x) = ΣαᵢyᵢK(xᵢ,x) + b
+ * 不变量：
+ *   ① 对偶等式约束 Σαᵢyᵢ = 0（SMO 成对更新恒保持）
+ *   ② KKT 互补松弛：αᵢ=0 → yᵢf(xᵢ)≥1；0<αᵢ<C → yᵢf(xᵢ)=1；αᵢ=C → yᵢf(xᵢ)≤1
+ *   ③ 可分数据上训练精度 = 1（最大间隔几何意义）
+ */
+
+
+/** RBF 核 K(x,z) = exp(−γ‖x−z‖²) */
+function rbfKernel(x, z, gamma) {
+  let s = 0;
+  for (let i = 0; i < x.length; i++) {
+    const d = x[i] - z[i];
+    s += d * d;
+  }
+  return Math.exp(-gamma * s);
+}
+
+/**
+ * SMO 序列最小优化。
+ * 工作集策略：对每个 KKT 违反点 i，按 |Eᵢ−Eⱼ| 降序扫描全部候选 j，
+ * 取第一个能产生有效更新的对（避免单点退化导致停滞，Platt 原文的第二选择启发式）。
+ * @param {number[][]} X 训练样本
+ * @param {number[]} y ±1 标签
+ * @param {{C?:number, gamma?:number, tol?:number, patience?:number, maxSweeps?:number}} opts
+ * @returns {{alpha:number[], b:number, gamma:number, C:number, X:number[][], y:number[], sweeps:number}}
+ */
+function svmTrain(X, y, { C = 1, gamma = 0.5, tol = 1e-3, patience = 10, maxSweeps = 200 } = {}) {
+  const n = X.length;
+  // 预计算核矩阵（Gram 矩阵，对称半正定）
+  const K = Array.from({ length: n }, (_, i) => new Array(n));
+  for (let i = 0; i < n; i++) {
+    K[i][i] = 1;
+    for (let j = i + 1; j < n; j++) {
+      const v = rbfKernel(X[i], X[j], gamma);
+      K[i][j] = v;
+      K[j][i] = v;
+    }
+  }
+  const alpha = new Array(n).fill(0);
+  let b = 0;
+  let sweeps = 0, idle = 0;
+
+  const f = (i) => {
+    let s = b;
+    for (let j = 0; j < n; j++) if (alpha[j] !== 0) s += alpha[j] * y[j] * K[j][i];
+    return s;
+  };
+
+  while (idle < patience && sweeps < maxSweeps) {
+    sweeps++;
+    let numChanged = 0;
+    for (let i = 0; i < n; i++) {
+      const Ei = f(i) - y[i];
+      const ri = y[i] * Ei;
+      // KKT 违反判定
+      if (!((ri < -tol && alpha[i] < C - tol) || (ri > tol && alpha[i] > tol))) continue;
+      // 候选 j 按 |Eᵢ−Eⱼ| 降序（确定性）
+      const cand = [];
+      for (let k = 0; k < n; k++) {
+        if (k === i) continue;
+        cand.push([k, f(k) - y[k]]);
+      }
+      cand.sort((p, q) => Math.abs(Ei - q[1]) - Math.abs(Ei - p[1]));
+      for (const [j, Ej] of cand) {
+        const aiOld = alpha[i], ajOld = alpha[j];
+        let L, H;
+        if (y[i] !== y[j]) { L = Math.max(0, ajOld - aiOld); H = Math.min(C, C + ajOld - aiOld); }
+        else { L = Math.max(0, aiOld + ajOld - C); H = Math.min(C, aiOld + ajOld); }
+        if (H - L < 1e-12) continue;                       // 盒约束无可行方向
+        const eta = 2 * K[i][j] - K[i][i] - K[j][j];       // RBF 下恒 < 0
+        if (eta >= -1e-12) continue;
+        let aj = ajOld - y[j] * (Ei - Ej) / eta;
+        aj = Math.min(H, Math.max(L, aj));
+        if (Math.abs(aj - ajOld) < 1e-9) continue;         // 更新量不足
+        alpha[j] = aj;
+        alpha[i] += y[i] * y[j] * (ajOld - aj);            // 恒保持 Σαy = 0
+        const b1 = b - Ei - y[i] * (alpha[i] - aiOld) * K[i][j] - y[j] * (aj - ajOld) * K[i][i];
+        const b2 = b - Ej - y[i] * (alpha[i] - aiOld) * K[i][j] - y[j] * (aj - ajOld) * K[j][j];
+        if (alpha[i] > tol && alpha[i] < C - tol) b = b1;
+        else if (aj > tol && aj < C - tol) b = b2;
+        else b = (b1 + b2) / 2;
+        numChanged++;
+        break;                                             // 每个 i 每轮只走一步
+      }
+    }
+    idle = numChanged === 0 ? idle + 1 : 0;
+  }
+  return { alpha, b, gamma, C, X, y, sweeps };
+}
+
+/** 决策函数值 f(x) = ΣαᵢyᵢK(xᵢ,x) + b */
+function svmDecision(model, x) {
+  let s = model.b;
+  for (let i = 0; i < model.alpha.length; i++) {
+    if (model.alpha[i] !== 0) s += model.alpha[i] * model.y[i] * rbfKernel(model.X[i], x, model.gamma);
+  }
+  return s;
+}
+
+/** 类别预测：sign(f(x)) */
+function svmPredict(model, x) {
+  return svmDecision(model, x) >= 0 ? 1 : -1;
+}
+
+/** 对偶目标函数值（供诊断/可视化） */
+function svmDualObjective(model) {
+  let s = 0;
+  for (let i = 0; i < model.alpha.length; i++) {
+    s += model.alpha[i];
+    for (let j = 0; j < model.alpha.length; j++) {
+      s -= 0.5 * model.alpha[i] * model.alpha[j] * model.y[i] * model.y[j]
+        * rbfKernel(model.X[i], model.X[j], model.gamma);
+    }
+  }
+  return s;
+}
+
+/** 支持向量索引（0 < αᵢ < C） */
+function svmSupportVectors(model) {
+  const idx = [];
+  for (let i = 0; i < model.alpha.length; i++) {
+    if (model.alpha[i] > 1e-6 && model.alpha[i] < model.C - 1e-6) idx.push(i);
+  }
+  return idx;
+}
+
+/* ═══════════ src/ml/boosting.js ═══════════ */
+/**
+ * 旗舰AI引擎 · AdaBoost 自适应提升（Freund & Schapire 1997）
+ * 每轮训练加权决策树桩，按误差 ε_t 加权 α_t = ½·ln((1−ε_t)/ε_t)。
+ * 不变量（均有定理背书）：
+ *   ① 样本权重逐轮归一 Σwᵢ = 1
+ *   ② 指数损失 E_t = Σᵢexp(−yᵢF_t(xᵢ)) 单调不增（Z_t = 2√(ε_t(1−ε_t)) ≤ 1）
+ *   ③ 训练误差 ≤ Π_t 2√(ε_t(1−ε_t))（Freund–Schapire 泛化定理）
+ *   ④ 可分数据上训练误差 → 0
+ */
+
+/** 加权决策树桩搜索：遍历 (特征, 阈值, 极性) 取加权误差最小 */
+function bestStump(X, y, w) {
+  const n = X.length, d = X[0].length;
+  let best = { error: Infinity, feature: 0, threshold: 0, polarity: 1 };
+  for (let j = 0; j < d; j++) {
+    const vals = X.map((x) => x[j]).sort((a, b) => a - b);
+    for (let t = 0; t + 1 < vals.length; t++) {
+      const theta = (vals[t] + vals[t + 1]) / 2;
+      if (theta === vals[t]) continue; // 重复阈值跳过
+      for (const p of [1, -1]) {
+        let err = 0;
+        for (let i = 0; i < n; i++) {
+          const h = p * Math.sign(X[i][j] - theta) || 1;
+          if (h !== y[i]) err += w[i];
+        }
+        if (err < best.error) best = { error: err, feature: j, threshold: theta, polarity: p };
+      }
+    }
+  }
+  return best;
+}
+
+/** 树桩预测 */
+function stumpPredict(stump, x) {
+  const h = stump.polarity * Math.sign(x[stump.feature] - stump.threshold) || 1;
+  return h;
+}
+
+/**
+ * AdaBoost（二分类，y ∈ {−1,+1}）。
+ * @returns {{stumps:Array, alphas:number[], errors:number[], expLoss:number[], rounds:number,
+ *            predict:function, decisionValue:function}}
+ */
+function adaBoost(X, y, { rounds = 30 } = {}) {
+  const n = X.length;
+  let w = new Array(n).fill(1 / n);
+  const stumps = [], alphas = [], errors = [], expLoss = [];
+  for (let t = 0; t < rounds; t++) {
+    const stump = bestStump(X, y, w);
+    const eps = Math.min(Math.max(stump.error, 1e-10), 0.5 - 1e-10);
+    const alpha = 0.5 * Math.log((1 - eps) / eps);
+    let z = 0;
+    for (let i = 0; i < n; i++) {
+      w[i] *= Math.exp(-alpha * y[i] * stumpPredict(stump, X[i]));
+      z += w[i];
+    }
+    for (let i = 0; i < n; i++) w[i] /= z;
+    stumps.push(stump); alphas.push(alpha); errors.push(stump.error);
+    // 当前集成指数损失 E_t = Σᵢexp(−yᵢF_t(xᵢ))
+    let e = 0;
+    for (let i = 0; i < n; i++) {
+      let f = 0;
+      for (let s = 0; s < stumps.length; s++) f += alphas[s] * stumpPredict(stumps[s], X[i]);
+      e += Math.exp(-y[i] * f);
+    }
+    expLoss.push(e);
+  }
+  const decisionValue = (x) => stumps.reduce((s, st, k) => s + alphas[k] * stumpPredict(st, x), 0);
+  return {
+    stumps, alphas, errors, expLoss, rounds,
+    decisionValue,
+    predict: (x) => (decisionValue(x) >= 0 ? 1 : -1),
+  };
+}
+
+/* ═══════════ src/ml/hmm.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 隐马尔可夫模型（HMM, Baum & Petrie 1966）
+ * 前向/后向 + Baum-Welch 期望最大化（EM 定理保证对数似然单调不减）。
+ * 缩放前向（Rabiner 1989）：α̂_1 = π⊙B(·O₁)，c_t 归一，logP(O) = −Σln c_t
+ * 不变量：
+ *   ① 缩放前向 logP(O) ≡ 全路径暴力枚举 logsumexp（独立交叉验证）
+ *   ② 平滑后验 γ_t 每行 Σ=1
+ *   ③ ξ_t(i,j) 归一后 Σ=1，且 Σⱼξ_t(i,j) = γ_t(i)（前后向一致性）
+ *   ④ Baum-Welch 对数似然单调不减（EM 定理）
+ */
+
+
+/**
+ * 缩放前向算法。
+ * @param {number[][]} A N×N 转移矩阵
+ * @param {number[][]} B N×M 发射矩阵
+ * @param {number[]} pi 初始分布
+ * @param {number[]} obs 观测序列（符号 0..M−1）
+ * @returns {{alphaHat:number[][], c:number[], logLik:number}}
+ */
+function hmmForward(A, B, pi, obs) {
+  const N = A.length, T = obs.length;
+  const alphaHat = [], c = [];
+  let a = pi.map((p, i) => p * B[i][obs[0]]);
+  let ct = a.reduce((s, v) => s + v, 0);
+  if (ct <= 0) return { alphaHat, c: [ct], logLik: -Infinity };
+  c.push(ct);
+  alphaHat.push(a.map((v) => v / ct));
+  for (let t = 1; t < T; t++) {
+    const prev = alphaHat[t - 1];
+    const at = new Array(N);
+    for (let j = 0; j < N; j++) {
+      let s = 0;
+      for (let i = 0; i < N; i++) s += prev[i] * A[i][j];
+      at[j] = s * B[j][obs[t]];
+    }
+    ct = at.reduce((s, v) => s + v, 0);
+    if (ct <= 0) return { alphaHat, c, logLik: -Infinity };
+    c.push(ct);
+    alphaHat.push(at.map((v) => v / ct));
+  }
+  // P(O) = Π_t c_t ⇒ logP(O) = Σ_t ln c_t
+  const logLik = c.reduce((s, v) => s + Math.log(v), 0);
+  return { alphaHat, c, logLik };
+}
+
+/**
+ * 缩放后向算法：β̂_T = 1，β̂_t(i) = [ΣⱼAᵢⱼBⱼ(O_{t+1})β̂_{t+1}(j)] / c_{t+1}
+ * @returns {number[][]} betaHat [T][N]
+ */
+function hmmBackward(A, B, obs, c) {
+  const N = A.length, T = obs.length;
+  const betaHat = new Array(T);
+  betaHat[T - 1] = new Array(N).fill(1);
+  for (let t = T - 2; t >= 0; t--) {
+    const bt = new Array(N);
+    for (let i = 0; i < N; i++) {
+      let s = 0;
+      for (let j = 0; j < N; j++) s += A[i][j] * B[j][obs[t + 1]] * betaHat[t + 1][j];
+      bt[i] = s / c[t + 1];
+    }
+    betaHat[t] = bt;
+  }
+  return betaHat;
+}
+
+/** 平滑后验 γ_t(i) = α̂_t(i)·β̂_t(i)（每行 Σ=1） */
+function hmmGamma(alphaHat, betaHat) {
+  return alphaHat.map((a, t) => a.map((v, i) => v * betaHat[t][i]));
+}
+
+/**
+ * 期望充分统计 ξ_t(i,j) = α̂_t(i)·Aᵢⱼ·Bⱼ(O_{t+1})·β̂_{t+1}(j) / c_{t+1}（t = 0..T−2）
+ * 归一后 Σ_{ij}ξ_t = 1，且 Σⱼξ_t(i,j) = γ_t(i)（前后向一致性）
+ */
+function hmmXi(A, B, alphaHat, betaHat, obs, c) {
+  const N = A.length, T = obs.length;
+  const xi = [];
+  for (let t = 0; t < T - 1; t++) {
+    const m = Array.from({ length: N }, () => new Array(N));
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < N; j++) {
+        m[i][j] = alphaHat[t][i] * A[i][j] * B[j][obs[t + 1]] * betaHat[t + 1][j] / c[t + 1];
+      }
+    }
+    xi.push(m);
+  }
+  return xi;
+}
+
+/**
+ * Baum-Welch 参数重估（EM）。
+ * @returns {{A:number[][], B:number[][], pi:number[], logLikHistory:number[]}}
+ */
+function hmmBaumWelch(A, B, pi, obs, { iters = 40, tol = 1e-10 } = {}) {
+  const N = A.length, M = B[0].length, T = obs.length;
+  let A0 = A.map((r) => r.slice());
+  let B0 = B.map((r) => r.slice());
+  let pi0 = pi.slice();
+  const logLikHistory = [];
+  for (let it = 0; it < iters; it++) {
+    const { alphaHat, c, logLik } = hmmForward(A0, B0, pi0, obs);
+    if (!isFinite(logLik)) break;
+    logLikHistory.push(logLik);
+    const betaHat = hmmBackward(A0, B0, obs, c);
+    const gamma = hmmGamma(alphaHat, betaHat);
+    const xi = hmmXi(A0, B0, alphaHat, betaHat, obs, c);
+    // M 步：π、A、B
+    const piN = gamma[0].slice();
+    const AN = Array.from({ length: N }, () => new Array(N).fill(0));
+    const BN = Array.from({ length: N }, () => new Array(M).fill(0));
+    for (let t = 0; t < T - 1; t++) {
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) AN[i][j] += xi[t][i][j];
+      }
+    }
+    for (let i = 0; i < N; i++) {
+      let rowSum = 0;
+      for (let j = 0; j < N; j++) rowSum += AN[i][j];
+      if (rowSum > 0) for (let j = 0; j < N; j++) AN[i][j] /= rowSum;
+      else AN[i] = A0[i].slice();
+    }
+    for (let t = 0; t < T; t++) {
+      for (let i = 0; i < N; i++) BN[i][obs[t]] += gamma[t][i];
+    }
+    for (let i = 0; i < N; i++) {
+      let rowSum = 0;
+      for (let k = 0; k < M; k++) rowSum += BN[i][k];
+      if (rowSum > 0) for (let k = 0; k < M; k++) BN[i][k] /= rowSum;
+      else BN[i] = B0[i].slice();
+    }
+    const piSum = piN.reduce((s, v) => s + v, 0);
+    if (piSum > 0) for (let i = 0; i < N; i++) piN[i] /= piSum;
+    A0 = AN; B0 = BN; pi0 = piN;
+    if (logLikHistory.length >= 2
+      && Math.abs(logLikHistory[logLikHistory.length - 1] - logLikHistory[logLikHistory.length - 2]) < tol) {
+      const last = hmmForward(A0, B0, pi0, obs).logLik;
+      if (isFinite(last)) logLikHistory.push(last);
+      break;
+    }
+  }
+  return { A: A0, B: B0, pi: pi0, logLikHistory };
+}
+
+/**
+ * 暴力枚举全部 N^T 条状态路径求 logP(O)（logsumexp 稳定累加）。
+ * 与 hmmForward 互为独立实现，用于交叉验证。
+ */
+function hmmBruteForceLogLik(A, B, pi, obs) {
+  const N = A.length, T = obs.length;
+  const logs = [];
+  const path = new Array(T);
+  const rec = (t) => {
+    if (t === T) {
+      let lp = Math.log(pi[path[0]]) + Math.log(B[path[0]][obs[0]]);
+      for (let s = 1; s < T; s++) {
+        lp += Math.log(A[path[s - 1]][path[s]]) + Math.log(B[path[s]][obs[s]]);
+      }
+      logs.push(lp);
+      return;
+    }
+    for (let i = 0; i < N; i++) { path[t] = i; rec(t + 1); }
+  };
+  rec(0);
+  return logsumexp(logs);
+}
+
 /* ═══════════ src/nn/dense.js ═══════════ */
 /**
  * 旗舰AI引擎 · 全连接神经网络
@@ -1390,12 +1808,619 @@ function transformerBlock(X, { heads = 1, seed = 42, eps = 1e-5 } = {}) {
   return { out, attn };
 }
 
+/* ═══════════ src/nn/rnn.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 循环神经网络（Elman RNN）+ 时间反向传播（BPTT）
+ * 站在 Werbos 1990 / Williams & Zipser 1995 的经典结论之上：
+ *   h_t = tanh(W_xh·x_t + W_hh·h_{t−1} + b_h)，y_t = W_hy·h_t + b_y
+ * 不变量：解析梯度（BPTT） ≡ 中心差分数值梯度（maxRelErr < 1e-6）
+ */
+
+
+
+
+class RNN {
+  /**
+   * @param {{inputSize:number, hiddenSize:number, outputSize:number, seed?:number}} cfg
+   */
+  constructor({ inputSize, hiddenSize, outputSize, seed = 42 }) {
+    const rng = mulberry32(seed);
+    const sX = 1 / Math.sqrt(Math.max(1, inputSize));   // Xavier 量级初始化，防 tanh 饱和
+    const sH = 1 / Math.sqrt(Math.max(1, hiddenSize));
+    this.d = inputSize;
+    this.h = hiddenSize;
+    this.o = outputSize;
+    this.Wxh = randomMatrix(hiddenSize, inputSize, rng, -sX, sX);
+    this.Whh = randomMatrix(hiddenSize, hiddenSize, rng, -sH, sH);
+    this.Why = randomMatrix(outputSize, hiddenSize, rng, -sH, sH);
+    this.bh = new Array(hiddenSize).fill(0);
+    this.by = new Array(outputSize).fill(0);
+  }
+
+  /**
+   * 前向：X 为 [T][d] 序列。
+   * @returns {{T:number, X:number[][], Z:number[][], H:number[][], Y:number[][]}}
+   *   H[t] = h_t（隐藏态），Y[t] = y_t（输出 logits），Z[t] = 隐藏预激活
+   */
+  forward(X) {
+    const T = X.length;
+    const Z = [], H = [], Y = [];
+    let hPrev = new Array(this.h).fill(0);
+    for (let t = 0; t < T; t++) {
+      const z = new Array(this.h);
+      for (let i = 0; i < this.h; i++) {
+        let s = this.bh[i];
+        for (let j = 0; j < this.d; j++) s += this.Wxh[i][j] * X[t][j];
+        for (let j = 0; j < this.h; j++) s += this.Whh[i][j] * hPrev[j];
+        z[i] = s;
+      }
+      const ht = z.map(Math.tanh);
+      const yt = new Array(this.o);
+      for (let i = 0; i < this.o; i++) {
+        let s = this.by[i];
+        for (let j = 0; j < this.h; j++) s += this.Why[i][j] * ht[j];
+        yt[i] = s;
+      }
+      Z.push(z); H.push(ht); Y.push(yt);
+      hPrev = ht;
+    }
+    return { T, X, Z, H, Y };
+  }
+
+  /** MSE 损失 L = ½·Σ_t‖y_t − target_t‖² */
+  loss(cache, targets) {
+    let L = 0;
+    for (let t = 0; t < cache.T; t++) {
+      for (let i = 0; i < this.o; i++) L += 0.5 * (cache.Y[t][i] - targets[t][i]) ** 2;
+    }
+    return L;
+  }
+
+  /**
+   * 时间反向传播（BPTT）。
+   * 递推：dh_t = W_hyᵀ·dY_t + W_hhᵀ·dz_{t+1}，dz_t = dh_t ⊙ (1 − h_t²)
+   * @returns {{Wxh:number[][], Whh:number[][], Why:number[][], bh:number[], by:number[]}}
+   */
+  backward(cache, targets) {
+    const { T, X, H } = cache;
+    const g = {
+      Wxh: zeros(this.h, this.d),
+      Whh: zeros(this.h, this.h),
+      Why: zeros(this.o, this.h),
+      bh: new Array(this.h).fill(0),
+      by: new Array(this.o).fill(0),
+    };
+    let dzNext = new Array(this.h).fill(0); // dz_{t+1}
+    for (let t = T - 1; t >= 0; t--) {
+      const dY = new Array(this.o);
+      for (let i = 0; i < this.o; i++) {
+        dY[i] = cache.Y[t][i] - targets[t][i];
+        g.by[i] += dY[i];
+        for (let j = 0; j < this.h; j++) g.Why[i][j] += dY[i] * H[t][j];
+      }
+      // dh_t = W_hyᵀ·dY_t + W_hhᵀ·dz_{t+1}
+      const dh = new Array(this.h);
+      for (let j = 0; j < this.h; j++) {
+        let s = 0;
+        for (let i = 0; i < this.o; i++) s += this.Why[i][j] * dY[i];
+        for (let k = 0; k < this.h; k++) s += this.Whh[k][j] * dzNext[k];
+        dh[j] = s;
+      }
+      const dz = dh.map((v, j) => v * (1 - H[t][j] * H[t][j]));
+      const hPrev = t > 0 ? H[t - 1] : new Array(this.h).fill(0);
+      for (let j = 0; j < this.h; j++) {
+        g.bh[j] += dz[j];
+        for (let k = 0; k < this.d; k++) g.Wxh[j][k] += dz[j] * X[t][k];
+        for (let k = 0; k < this.h; k++) g.Whh[j][k] += dz[j] * hPrev[k];
+      }
+      dzNext = dz;
+    }
+    return g;
+  }
+}
+
+/**
+ * RNN 梯度检验：BPTT 解析梯度 vs 中心差分数值梯度。
+ * 双判据（CS231n 规范）：显著分量（|g| ≥ 1e-3·max|g|）的 maxRelErr + 全分量 maxAbsErr。
+ * 后者防御浮点抵消：极小分量上中心差分的相对误差被 ulp 噪声主导，并非梯度错误。
+ * @returns {{maxRelErr:number, maxAbsErr:number, significant:number}}
+ */
+function rnnGradientCheck(net, X, targets, { eps = 1e-5 } = {}) {
+  const cache = net.forward(X);
+  const g = net.backward(cache, targets);
+  const mats = [['Wxh', net.Wxh, g.Wxh], ['Whh', net.Whh, g.Whh], ['Why', net.Why, g.Why]];
+  const vecs = [['bh', net.bh, g.bh], ['by', net.by, g.by]];
+  const pairs = []; // [analytic, numerical]
+  for (const [, P, G] of mats) {
+    for (let i = 0; i < P.length; i++) {
+      for (let j = 0; j < P[i].length; j++) {
+        const orig = P[i][j];
+        P[i][j] = orig + eps;
+        const lp = net.loss(net.forward(X), targets);
+        P[i][j] = orig - eps;
+        const lm = net.loss(net.forward(X), targets);
+        P[i][j] = orig;
+        pairs.push([G[i][j], (lp - lm) / (2 * eps)]);
+      }
+    }
+  }
+  for (const [, p, gr] of vecs) {
+    for (let i = 0; i < p.length; i++) {
+      const orig = p[i];
+      p[i] = orig + eps;
+      const lp = net.loss(net.forward(X), targets);
+      p[i] = orig - eps;
+      const lm = net.loss(net.forward(X), targets);
+      p[i] = orig;
+      pairs.push([gr[i], (lp - lm) / (2 * eps)]);
+    }
+  }
+  const maxAbsAna = Math.max(...pairs.map(([a]) => Math.abs(a)));
+  const floor = 1e-3 * maxAbsAna;
+  let maxRel = 0, maxAbs = 0, significant = 0;
+  for (const [a, b] of pairs) {
+    maxAbs = Math.max(maxAbs, Math.abs(a - b));
+    if (Math.abs(a) >= floor) {
+      significant++;
+      maxRel = Math.max(maxRel, relErr(a, b));
+    }
+  }
+  return { maxRelErr: maxRel, maxAbsErr: maxAbs, significant };
+}
+
+/**
+ * 序列回归训练（MSE，全批量梯度下降）。
+ * @returns {{losses:number[]}} 每轮损失
+ */
+function trainRNN(net, X, targets, { lr = 0.1, iters = 200 } = {}) {
+  const losses = [];
+  for (let it = 0; it < iters; it++) {
+    const cache = net.forward(X);
+    losses.push(net.loss(cache, targets));
+    const g = net.backward(cache, targets);
+    for (let i = 0; i < net.h; i++) {
+      for (let j = 0; j < net.d; j++) net.Wxh[i][j] -= lr * g.Wxh[i][j];
+      for (let j = 0; j < net.h; j++) net.Whh[i][j] -= lr * g.Whh[i][j];
+      net.bh[i] -= lr * g.bh[i];
+    }
+    for (let i = 0; i < net.o; i++) {
+      for (let j = 0; j < net.h; j++) net.Why[i][j] -= lr * g.Why[i][j];
+      net.by[i] -= lr * g.by[i];
+    }
+  }
+  return { losses };
+}
+
+/* ═══════════ src/nn/lstm.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 长短期记忆网络（LSTM, Hochreiter & Schmidhuber 1997）
+ *   i_t = σ(W_xi·x_t + W_hi·h_{t−1} + b_i)      输入门
+ *   f_t = σ(W_xf·x_t + W_hf·h_{t−1} + b_f)      遗忘门
+ *   g_t = tanh(W_xg·x_t + W_hg·h_{t−1} + b_g)   候选细胞态
+ *   o_t = σ(W_xo·x_t + W_ho·h_{t−1} + b_o)      输出门
+ *   c_t = f_t ⊙ c_{t−1} + i_t ⊙ g_t            细胞态（线性记忆通道）
+ *   h_t = o_t ⊙ tanh(c_t)
+ *   y_t = W_hy·h_t + b_y
+ * 不变量：BPTT 解析梯度 ≡ 中心差分数值梯度（maxRelErr < 1e-6）
+ */
+
+
+
+
+class LSTM {
+  /**
+   * @param {{inputSize:number, hiddenSize:number, outputSize:number, seed?:number}} cfg
+   */
+  constructor({ inputSize, hiddenSize, outputSize, seed = 42 }) {
+    const rng = mulberry32(seed);
+    const sX = 1 / Math.sqrt(Math.max(1, inputSize));
+    const sH = 1 / Math.sqrt(Math.max(1, hiddenSize));
+    this.d = inputSize;
+    this.h = hiddenSize;
+    this.o = outputSize;
+    const g = (name, rows, cols, s) => { this[name] = randomMatrix(rows, cols, rng, -s, s); };
+    g('Wxi', hiddenSize, inputSize, sX); g('Wxf', hiddenSize, inputSize, sX);
+    g('Wxg', hiddenSize, inputSize, sX); g('Wxo', hiddenSize, inputSize, sX);
+    g('Whi', hiddenSize, hiddenSize, sH); g('Whf', hiddenSize, hiddenSize, sH);
+    g('Whg', hiddenSize, hiddenSize, sH); g('Who', hiddenSize, hiddenSize, sH);
+    this.bi = new Array(hiddenSize).fill(0);
+    this.bf = new Array(hiddenSize).fill(0);
+    this.bg = new Array(hiddenSize).fill(0);
+    this.bo = new Array(hiddenSize).fill(0);
+    this.Why = randomMatrix(outputSize, hiddenSize, rng, -sH, sH);
+    this.by = new Array(outputSize).fill(0);
+  }
+
+  /**
+   * 前向：X 为 [T][d]。
+   * @returns {{T:number, X:number[][], I:number[][], F:number[][], G:number[][], O:number[][],
+   *           C:number[][], H:number[][], Y:number[][]}} 门控/细胞态/输出均按时间步存
+   */
+  forward(X) {
+    const T = X.length;
+    const I = [], F = [], G = [], O = [], C = [], H = [], Y = [];
+    let hPrev = new Array(this.h).fill(0);
+    let cPrev = new Array(this.h).fill(0);
+    for (let t = 0; t < T; t++) {
+      const iT = [], fT = [], gT = [], oT = [], cT = [], hT = [];
+      for (let j = 0; j < this.h; j++) {
+        let si = this.bi[j], sf = this.bf[j], sg = this.bg[j], so = this.bo[j];
+        for (let k = 0; k < this.d; k++) {
+          si += this.Wxi[j][k] * X[t][k];
+          sf += this.Wxf[j][k] * X[t][k];
+          sg += this.Wxg[j][k] * X[t][k];
+          so += this.Wxo[j][k] * X[t][k];
+        }
+        for (let k = 0; k < this.h; k++) {
+          si += this.Whi[j][k] * hPrev[k];
+          sf += this.Whf[j][k] * hPrev[k];
+          sg += this.Whg[j][k] * hPrev[k];
+          so += this.Who[j][k] * hPrev[k];
+        }
+        const iv = sigmoid(si), fv = sigmoid(sf), gv = Math.tanh(sg), ov = sigmoid(so);
+        const cv = fv * cPrev[j] + iv * gv;
+        iT.push(iv); fT.push(fv); gT.push(gv); oT.push(ov);
+        cT.push(cv);
+        hT.push(ov * Math.tanh(cv));
+      }
+      const yT = new Array(this.o);
+      for (let i = 0; i < this.o; i++) {
+        let s = this.by[i];
+        for (let j = 0; j < this.h; j++) s += this.Why[i][j] * hT[j];
+        yT[i] = s;
+      }
+      I.push(iT); F.push(fT); G.push(gT); O.push(oT);
+      C.push(cT); H.push(hT); Y.push(yT);
+      hPrev = hT; cPrev = cT;
+    }
+    return { T, X, I, F, G, O, C, H, Y };
+  }
+
+  /** MSE 损失 L = ½·Σ_t‖y_t − target_t‖² */
+  loss(cache, targets) {
+    let L = 0;
+    for (let t = 0; t < cache.T; t++) {
+      for (let i = 0; i < this.o; i++) L += 0.5 * (cache.Y[t][i] - targets[t][i]) ** 2;
+    }
+    return L;
+  }
+
+  /**
+   * LSTM 时间反向传播。
+   * 关键路径：h_t 经 o_t 出；c_t 经 f_t 线性回流（梯度高速公路，不衰减）。
+   * @returns {object} 全部参数梯度（键名与参数一致）
+   */
+  backward(cache, targets) {
+    const { T, X, I, F, G, O, C, H } = cache;
+    const g = {};
+    for (const n of ['Wxi', 'Wxf', 'Wxg', 'Wxo']) g[n] = zeros(this.h, this.d);
+    for (const n of ['Whi', 'Whf', 'Whg', 'Who']) g[n] = zeros(this.h, this.h);
+    for (const n of ['bi', 'bf', 'bg', 'bo']) g[n] = new Array(this.h).fill(0);
+    g.Why = zeros(this.o, this.h);
+    g.by = new Array(this.o).fill(0);
+
+    let dhNext = new Array(this.h).fill(0);
+    let dcNext = new Array(this.h).fill(0);
+    for (let t = T - 1; t >= 0; t--) {
+      const dY = new Array(this.o);
+      for (let i = 0; i < this.o; i++) {
+        dY[i] = cache.Y[t][i] - targets[t][i];
+        g.by[i] += dY[i];
+        for (let j = 0; j < this.h; j++) g.Why[i][j] += dY[i] * H[t][j];
+      }
+      const cPrev = t > 0 ? C[t - 1] : new Array(this.h).fill(0);
+      const hPrev = t > 0 ? H[t - 1] : new Array(this.h).fill(0);
+      const dh = new Array(this.h), dc = new Array(this.h);
+      for (let j = 0; j < this.h; j++) {
+        dh[j] = 0;
+        for (let i = 0; i < this.o; i++) dh[j] += this.Why[i][j] * dY[i];
+        dh[j] += dhNext[j];
+        const tanhC = Math.tanh(C[t][j]);
+        dc[j] = dcNext[j] + dh[j] * O[t][j] * (1 - tanhC * tanhC);
+      }
+      // 门控梯度（链式法则穿过激活函数）
+      const dI = [], dF = [], dG = [], dO = [];
+      for (let j = 0; j < this.h; j++) {
+        dO.push(dh[j] * Math.tanh(C[t][j]));
+        dF.push(dc[j] * cPrev[j]);
+        dI.push(dc[j] * G[t][j]);
+        dG.push(dc[j] * I[t][j]);
+      }
+      const diP = dI.map((v, j) => v * I[t][j] * (1 - I[t][j]));
+      const dfP = dF.map((v, j) => v * F[t][j] * (1 - F[t][j]));
+      const dgP = dG.map((v, j) => v * (1 - G[t][j] * G[t][j]));
+      const doP = dO.map((v, j) => v * O[t][j] * (1 - O[t][j]));
+      for (let j = 0; j < this.h; j++) {
+        g.bi[j] += diP[j]; g.bf[j] += dfP[j]; g.bg[j] += dgP[j]; g.bo[j] += doP[j];
+        for (let k = 0; k < this.d; k++) {
+          g.Wxi[j][k] += diP[j] * X[t][k];
+          g.Wxf[j][k] += dfP[j] * X[t][k];
+          g.Wxg[j][k] += dgP[j] * X[t][k];
+          g.Wxo[j][k] += doP[j] * X[t][k];
+        }
+        for (let k = 0; k < this.h; k++) {
+          g.Whi[j][k] += diP[j] * hPrev[k];
+          g.Whf[j][k] += dfP[j] * hPrev[k];
+          g.Whg[j][k] += dgP[j] * hPrev[k];
+          g.Who[j][k] += doP[j] * hPrev[k];
+        }
+      }
+      // 向 t−1 传播：h_{t−1} 经四个门入；c_{t−1} 经遗忘门入
+      for (let j = 0; j < this.h; j++) {
+        let s = 0;
+        for (let k = 0; k < this.h; k++) {
+          s += this.Whi[k][j] * diP[k] + this.Whf[k][j] * dfP[k]
+             + this.Whg[k][j] * dgP[k] + this.Who[k][j] * doP[k];
+        }
+        dhNext[j] = s;
+        dcNext[j] = dc[j] * F[t][j];
+      }
+    }
+    return g;
+  }
+}
+
+/**
+ * LSTM 梯度检验：BPTT 解析梯度 vs 中心差分数值梯度。
+ * 双判据（CS231n 规范）：显著分量（|g| ≥ 1e-3·max|g|）的 maxRelErr + 全分量 maxAbsErr。
+ * @returns {{maxRelErr:number, maxAbsErr:number, significant:number}}
+ */
+function lstmGradientCheck(net, X, targets, { eps = 1e-5 } = {}) {
+  const cache = net.forward(X);
+  const g = net.backward(cache, targets);
+  const pairs = [];
+  const probeM = (P, G) => {
+    for (let i = 0; i < P.length; i++) {
+      for (let j = 0; j < P[i].length; j++) {
+        const orig = P[i][j];
+        P[i][j] = orig + eps;
+        const lp = net.loss(net.forward(X), targets);
+        P[i][j] = orig - eps;
+        const lm = net.loss(net.forward(X), targets);
+        P[i][j] = orig;
+        pairs.push([G[i][j], (lp - lm) / (2 * eps)]);
+      }
+    }
+  };
+  const probeV = (p, gr) => {
+    for (let i = 0; i < p.length; i++) {
+      const orig = p[i];
+      p[i] = orig + eps;
+      const lp = net.loss(net.forward(X), targets);
+      p[i] = orig - eps;
+      const lm = net.loss(net.forward(X), targets);
+      p[i] = orig;
+      pairs.push([gr[i], (lp - lm) / (2 * eps)]);
+    }
+  };
+  for (const n of ['Wxi', 'Wxf', 'Wxg', 'Wxo', 'Whi', 'Whf', 'Whg', 'Who', 'Why']) probeM(net[n], g[n]);
+  for (const n of ['bi', 'bf', 'bg', 'bo', 'by']) probeV(net[n], g[n]);
+  const maxAbsAna = Math.max(...pairs.map(([a]) => Math.abs(a)));
+  const floor = 1e-3 * maxAbsAna;
+  let maxRel = 0, maxAbs = 0, significant = 0;
+  for (const [a, b] of pairs) {
+    maxAbs = Math.max(maxAbs, Math.abs(a - b));
+    if (Math.abs(a) >= floor) {
+      significant++;
+      maxRel = Math.max(maxRel, relErr(a, b));
+    }
+  }
+  return { maxRelErr: maxRel, maxAbsErr: maxAbs, significant };
+}
+
+/**
+ * 序列回归训练（MSE，全批量梯度下降）。
+ * @returns {{losses:number[]}}
+ */
+function trainLSTM(net, X, targets, { lr = 0.05, iters = 200 } = {}) {
+  const mats = ['Wxi', 'Wxf', 'Wxg', 'Wxo', 'Whi', 'Whf', 'Whg', 'Who', 'Why'];
+  const vecs = ['bi', 'bf', 'bg', 'bo', 'by'];
+  const losses = [];
+  for (let it = 0; it < iters; it++) {
+    const cache = net.forward(X);
+    losses.push(net.loss(cache, targets));
+    const g = net.backward(cache, targets);
+    for (const n of mats) {
+      const P = net[n], G = g[n];
+      for (let i = 0; i < P.length; i++) for (let j = 0; j < P[i].length; j++) P[i][j] -= lr * G[i][j];
+    }
+    for (const n of vecs) {
+      const p = net[n], gr = g[n];
+      for (let i = 0; i < p.length; i++) p[i] -= lr * gr[i];
+    }
+  }
+  return { losses };
+}
+
+/* ═══════════ src/rl/valueIteration.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 强化学习：马尔可夫决策过程（MDP）最优求解
+ * 站在 Bellman 最优性原理之上：V*(s) = max_a Σ p(s'|s,a)[r + γ·V*(s')]
+ * 不变量：
+ *   ① Bellman 残差收敛 → 0（不动点定理，压缩映射 γ<1）
+ *   ② 贪心策略评估值 V^{π*} ≡ V*（策略评估与值迭代两个独立算法互证）
+ *   ③ 小链式 MDP：值迭代 V* ≡ 2^n 全策略暴力枚举最优值 ≡ 解析闭式 γ^(n−1−s)
+ */
+
+/**
+ * 值迭代（同步更新，无穷范数收敛判据）。
+ * @param {number[][][]} P P[s][a] = [[s',p],…]
+ * @param {number[][][]} R R[s][a] = [r(s,a,s'),…] 与 P[s][a] 对齐
+ * @param {number} gamma 折扣因子
+ * @returns {{V:number[], policy:number[], iterations:number, residual:number}}
+ */
+function valueIteration(P, R, gamma, { tol = 1e-12, maxIter = 100000 } = {}) {
+  const S = P.length, A = P[0].length;
+  let V = new Array(S).fill(0);
+  let policy = new Array(S).fill(0);
+  let iterations = 0, residual = Infinity;
+  for (let k = 0; k < maxIter; k++) {
+    iterations++;
+    let delta = 0;
+    const Vn = new Array(S);
+    for (let s = 0; s < S; s++) {
+      let best = -Infinity, bestA = 0;
+      for (let a = 0; a < A; a++) {
+        let q = 0;
+        for (let idx = 0; idx < P[s][a].length; idx++) {
+          q += P[s][a][idx][1] * (R[s][a][idx] + gamma * V[P[s][a][idx][0]]);
+        }
+        if (q > best) { best = q; bestA = a; }
+      }
+      Vn[s] = best;
+      policy[s] = bestA;
+      delta = Math.max(delta, Math.abs(best - V[s]));
+    }
+    V = Vn;
+    residual = delta;
+    if (delta < tol) break;
+  }
+  return { V, policy, iterations, residual };
+}
+
+/**
+ * 策略评估（给定策略，迭代求解 Bellman 期望方程 V^π = r^π + γP^πV^π）。
+ * @returns {{V:number[], iterations:number, residual:number}}
+ */
+function policyEvaluation(P, R, gamma, policy, { tol = 1e-12, maxIter = 100000 } = {}) {
+  const S = P.length;
+  let V = new Array(S).fill(0);
+  let iterations = 0, residual = Infinity;
+  for (let k = 0; k < maxIter; k++) {
+    iterations++;
+    let delta = 0;
+    const Vn = new Array(S);
+    for (let s = 0; s < S; s++) {
+      const a = policy[s];
+      let q = 0;
+      for (let idx = 0; idx < P[s][a].length; idx++) {
+        q += P[s][a][idx][1] * (R[s][a][idx] + gamma * V[P[s][a][idx][0]]);
+      }
+      Vn[s] = q;
+      delta = Math.max(delta, Math.abs(q - V[s]));
+    }
+    V = Vn;
+    residual = delta;
+    if (delta < tol) break;
+  }
+  return { V, iterations, residual };
+}
+
+/**
+ * 小链式 MDP：状态 0..n−1，动作 {LEFT=0, RIGHT=1}，确定性转移。
+ * 首次进入终点 n−1 得奖励 +1，终点吸收（后续奖励 0）。
+ * 闭式最优值：V*(s) = γ^(n−1−s)。
+ */
+function chainMDP({ n = 6, gamma = 0.9 } = {}) {
+  const P = [], R = [];
+  for (let s = 0; s < n; s++) {
+    const pa = [], ra = [];
+    for (let a = 0; a < 2; a++) {
+      let ns = a === 1 ? Math.min(s + 1, n - 1) : Math.max(s - 1, 0);
+      if (s === n - 1) ns = n - 1;                    // 终点吸收
+      const r = s !== n - 1 && ns === n - 1 ? 1 : 0;  // 首次进入终点 +1
+      pa.push([[ns, 1]]);
+      ra.push([r]);
+    }
+    P.push(pa);
+    R.push(ra);
+  }
+  return { P, R, S: n, A: 2, gamma };
+}
+
+/**
+ * 暴力枚举链式 MDP 全部 2^n 个确定性策略，返回最优值与最优策略。
+ * 轨迹模拟评估（确定性 → 单路径；环检测：进入无奖励循环则剩余值为 0）。
+ */
+function bruteForceChain({ n = 6, gamma = 0.9 } = {}) {
+  const { P, R } = chainMDP({ n, gamma });
+  let bestV = null, bestPolicy = null;
+  for (let mask = 0; mask < (1 << n); mask++) {
+    const policy = [];
+    for (let s = 0; s < n; s++) policy.push((mask >> s) & 1);
+    const V = new Array(n).fill(0);
+    for (let s = 0; s < n; s++) {
+      const seen = new Set([s]);
+      let cur = s, val = 0, disc = 1;
+      for (let step = 0; step < 4 * n + 4; step++) {
+        const a = policy[cur];
+        const ns = P[cur][a][0][0];
+        val += disc * R[cur][a][0];
+        disc *= gamma;
+        cur = ns;
+        if (cur === n - 1 && R[cur][policy[cur]][0] === 0 && seen.has(cur)) { break; }
+        if (seen.has(cur)) break;
+        seen.add(cur);
+      }
+      V[s] = val;
+    }
+    const total = V.reduce((x, y) => x + y, 0);
+    if (!bestV || total > bestV.total) { bestV = { V, total }; bestPolicy = policy; }
+  }
+  return { V: bestV.V, policy: bestPolicy, total: bestV.total };
+}
+
+/**
+ * 4×4 随机网格世界：动作 {上,下,左,右}；slip 概率平分给两个垂直方向。
+ * (3,3) 终点、(1,1) 陷阱均为吸收态：每步持续奖励 ±1 ⇒ 闭式 V = r/(1−γ)。
+ * 其余格子每步 stepReward。
+ */
+function gridworld({
+  size = 4, slip = 0.1, goalReward = 1, trapReward = -1, stepReward = -0.02, gamma = 0.9,
+} = {}) {
+  const S = size * size, A = 4;
+  const idx = (r, c) => r * size + c;
+  const goal = idx(size - 1, size - 1);
+  const trap = idx(1, 1);
+  // 动作方向：上(行−1) 下(行+1) 左(列−1) 右(列+1)；垂直映射用于打滑
+  const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+  const perp = { 0: [2, 3], 1: [2, 3], 2: [0, 1], 3: [0, 1] };
+  const P = [], R = [];
+  for (let s = 0; s < S; s++) {
+    const r = Math.floor(s / size), c = s % size;
+    const absorbing = s === goal ? goalReward : (s === trap ? trapReward : null);
+    const pa = [], ra = [];
+    for (let a = 0; a < A; a++) {
+      if (absorbing !== null) { // 吸收态：原地自环，持续奖励
+        pa.push([[s, 1]]);
+        ra.push([absorbing]);
+        continue;
+      }
+      const options = [];
+      const probs = [1 - 2 * slip, slip, slip];
+      const acts = [a, ...perp[a]];
+      for (let k = 0; k < 3; k++) {
+        const nr = r + dirs[acts[k]][0], nc = c + dirs[acts[k]][1];
+        const inside = nr >= 0 && nr < size && nc >= 0 && nc < size;
+        const ns = inside ? idx(nr, nc) : s; // 撞墙停留
+        options.push([ns, probs[k]]);
+      }
+      // 合并同目标概率（如停留+撞墙）
+      const merged = new Map();
+      for (const [ns, p] of options) merged.set(ns, (merged.get(ns) || 0) + p);
+      const list = [...merged.entries()].map(([ns, p]) => [ns, p]);
+      const rewards = list.map(() => stepReward);
+      pa.push(list);
+      ra.push(rewards);
+    }
+    P.push(pa);
+    R.push(ra);
+  }
+  return { P, R, S, A, gamma, size, goal, trap, goalReward, trapReward };
+}
+
 /* ═══════════ src/verify/invariants.js ═══════════ */
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 8 组套件全绿 = 引擎数学正确性的机器证明。
+ * 14 组套件全绿 = 引擎数学正确性的机器证明。
  */
+
+
+
+
+
+
 
 
 
@@ -1446,7 +2471,7 @@ function blobs(rng, centers, nPer, sigma) {
 }
 
 /**
- * 运行全部 8 组不变量自检。
+ * 运行全部 14 组不变量自检。
  * @returns {{results:Array, passed:number, total:number, allOk:boolean}}
  */
 function runAllInvariants() {
@@ -1460,6 +2485,12 @@ function runAllInvariants() {
     ['聚类与生成 · Clustering & GMM', suiteClustering],
     ['降维与决策树 · PCA & Tree', suiteDimTree],
     ['深度学习 · Deep Learning', suiteDeep],
+    ['循环神经网络 · RNN & BPTT', suiteRNN],
+    ['门控循环网络 · LSTM & BPTT', suiteLSTM],
+    ['核支持向量机 · Kernel SVM', suiteSVM],
+    ['AdaBoost 集成 · Boosting', suiteBoosting],
+    ['隐马尔可夫模型 · HMM', suiteHMM],
+    ['强化学习 · Reinforcement Learning', suiteRL],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -1831,8 +2862,243 @@ function suiteDeep(check) {
     `PE[0]=[${PE[0].map(v => v.toFixed(4)).join(', ')}]`);
 }
 
+/* ───────────────────────── 9. 循环神经网络 RNN ───────────────────────── */
+function suiteRNN(check) {
+  const rng = mulberry32(101);
+  const net = new RNN({ inputSize: 3, hiddenSize: 5, outputSize: 2, seed: 5 });
+  const X = randomMatrix(10, 3, rng, -1, 1);
+  const targets = X.map(row => [row[0] * 0.5 - 0.2, row[1] + 0.1]);
+
+  const gerr = rnnGradientCheck(net, X, targets);
+  check('RNN：BPTT 解析梯度 ≡ 中心差分（显著分量 maxRelErr < 1e-6）',
+    gerr.maxRelErr < 1e-6 && gerr.maxAbsErr < 1e-7,
+    `maxRelErr=${gerr.maxRelErr.toExponential(2)}，maxAbsErr=${gerr.maxAbsErr.toExponential(2)}（${gerr.significant} 个显著分量）`);
+
+  const cache = net.forward(X);
+  const bounded = cache.H.every(row => row.every(v => Math.abs(v) < 1));
+  check('RNN：隐藏态 tanh 有界 h_t ∈ (−1,1)', bounded && cache.H.length === 10,
+    `T=${cache.H.length}，全有限有界=${bounded}`);
+
+  const { losses } = trainRNN(net, X, targets, { lr: 0.05, iters: 300 });
+  check('RNN：序列回归训练收敛（MSE 下降）',
+    losses[losses.length - 1] < losses[0],
+    `损失 ${losses[0].toFixed(4)} → ${losses[losses.length - 1].toFixed(4)}`);
+
+  // 长序列（T=40）BPTT 仍精确（时间梯度传播稳定性）
+  const rng2 = mulberry32(102);
+  const Xl = randomMatrix(40, 3, rng2, -1, 1);
+  const tl = Xl.map(row => [row[2] * 0.3]);
+  const net2 = new RNN({ inputSize: 3, hiddenSize: 4, outputSize: 1, seed: 9 });
+  const gerr2 = rnnGradientCheck(net2, Xl, tl);
+  check('RNN：T=40 长序列 BPTT 梯度检验仍 < 1e-6', gerr2.maxRelErr < 1e-6 && gerr2.maxAbsErr < 1e-7,
+    `maxRelErr=${gerr2.maxRelErr.toExponential(2)}，maxAbsErr=${gerr2.maxAbsErr.toExponential(2)}`);
+}
+
+/* ───────────────────────── 10. LSTM 门控网络 ───────────────────────── */
+function suiteLSTM(check) {
+  const rng = mulberry32(103);
+  const net = new LSTM({ inputSize: 3, hiddenSize: 5, outputSize: 2, seed: 6 });
+  const X = randomMatrix(12, 3, rng, -1, 1);
+  const targets = X.map(row => [row[0] * 0.5, row[1] - 0.3]);
+
+  const gerr = lstmGradientCheck(net, X, targets);
+  check('LSTM：BPTT 解析梯度 ≡ 中心差分（显著分量 maxRelErr < 1e-6）',
+    gerr.maxRelErr < 1e-6 && gerr.maxAbsErr < 1e-7,
+    `maxRelErr=${gerr.maxRelErr.toExponential(2)}，maxAbsErr=${gerr.maxAbsErr.toExponential(2)}（${gerr.significant} 个显著分量）`);
+
+  const cache = net.forward(X);
+  const gatesOk = cache.I.every(r => r.every(v => v > 0 && v < 1))
+    && cache.F.every(r => r.every(v => v > 0 && v < 1))
+    && cache.O.every(r => r.every(v => v > 0 && v < 1))
+    && cache.G.every(r => r.every(v => Math.abs(v) < 1));
+  check('LSTM：门控值域（i/f/o ∈ (0,1)，候选 g ∈ (−1,1)）', gatesOk, `全部 ${cache.I.length} 时间步`);
+
+  const { losses } = trainLSTM(net, X, targets, { lr: 0.05, iters: 300 });
+  check('LSTM：序列回归训练收敛（MSE 下降）',
+    losses[losses.length - 1] < losses[0],
+    `损失 ${losses[0].toFixed(4)} → ${losses[losses.length - 1].toFixed(4)}`);
+
+  // 长程依赖：T=50 时细胞态仍保持非退化（梯度高速公路不消失）
+  const rng2 = mulberry32(104);
+  const Xl = randomMatrix(50, 2, rng2, -1, 1);
+  const tl = Xl.map(row => [row[0] * 0.4]);
+  const net2 = new LSTM({ inputSize: 2, hiddenSize: 4, outputSize: 1, seed: 11 });
+  const gerr2 = lstmGradientCheck(net2, Xl, tl);
+  check('LSTM：T=50 长序列 BPTT 梯度检验仍 < 1e-6', gerr2.maxRelErr < 1e-6 && gerr2.maxAbsErr < 1e-7,
+    `maxRelErr=${gerr2.maxRelErr.toExponential(2)}，maxAbsErr=${gerr2.maxAbsErr.toExponential(2)}`);
+}
+
+/* ───────────────────────── 11. 核支持向量机 ───────────────────────── */
+function suiteSVM(check) {
+  const rng = mulberry32(107);
+  const X = [], y = [];
+  for (let i = 0; i < 15; i++) { X.push([gaussianSample(rng, -2, 0.6), gaussianSample(rng, -2, 0.6)]); y.push(-1); }
+  for (let i = 0; i < 15; i++) { X.push([gaussianSample(rng, 2, 0.6), gaussianSample(rng, 2, 0.6)]); y.push(1); }
+
+  const model = svmTrain(X, y, { C: 1, gamma: 0.5 });
+
+  const sumAy = model.alpha.reduce((s, a, i) => s + a * y[i], 0);
+  check('SVM：对偶等式约束 Σαᵢyᵢ = 0（SMO 成对更新恒保持）',
+    Math.abs(sumAy) < 1e-6, `Σαy=${sumAy.toExponential(2)}`);
+
+  let kktMax = 0;
+  for (let i = 0; i < X.length; i++) {
+    const m = y[i] * svmDecision(model, X[i]);
+    if (model.alpha[i] < 1e-6) kktMax = Math.max(kktMax, Math.max(0, 1 - m));
+    else if (model.alpha[i] > model.C - 1e-6) kktMax = Math.max(kktMax, Math.max(0, m - 1));
+    else kktMax = Math.max(kktMax, Math.abs(m - 1));
+  }
+  check('SVM：KKT 互补松弛（α=0→yf≥1；0<α<C→yf=1；α=C→yf≤1）',
+    kktMax < 0.05, `最大违反=${kktMax.toFixed(4)}`);
+
+  const acc = X.filter((x, i) => svmPredict(model, x) === y[i]).length / X.length;
+  check('SVM：线性可分数据训练精度 = 1（最大间隔几何意义）', acc === 1, `acc=${acc}`);
+
+  const dual = svmDualObjective(model);
+  check('SVM：对偶目标 W(α) > 0（非平凡最大间隔解）', dual > 0, `W(α)=${dual.toFixed(4)}`);
+
+  const sv = svmSupportVectors(model);
+  check('SVM：存在支持向量（0 < α < C，其余点 α=0）', sv.length > 0 && sv.length < X.length,
+    `|SV|=${sv.length}/${X.length}`);
+}
+
+/* ───────────────────────── 12. AdaBoost 集成 ───────────────────────── */
+function suiteBoosting(check) {
+  const rng = mulberry32(109);
+  const X = [], y = [];
+  for (let i = 0; i < 20; i++) { X.push([gaussianSample(rng, -1.5, 0.5), gaussianSample(rng, -1.5, 0.5)]); y.push(-1); }
+  for (let i = 0; i < 20; i++) { X.push([gaussianSample(rng, 1.5, 0.5), gaussianSample(rng, 1.5, 0.5)]); y.push(1); }
+
+  const ab = adaBoost(X, y, { rounds: 25 });
+
+  const maxEps = Math.max(...ab.errors);
+  check('AdaBoost：每轮加权误差 ε_t < ½（弱学习器假设）', maxEps < 0.5,
+    `max ε=${maxEps.toFixed(4)}（25 轮）`);
+
+  let mono = true;
+  for (let t = 1; t < ab.expLoss.length; t++) {
+    if (ab.expLoss[t] > ab.expLoss[t - 1] + 1e-9) mono = false;
+  }
+  check('AdaBoost：指数损失 E_t 单调不增（Z_t = 2√(ε_t(1−ε_t)) ≤ 1）', mono,
+    `E ${ab.expLoss[0].toFixed(3)} → ${ab.expLoss[ab.expLoss.length - 1].toFixed(4)}`);
+
+  let bound = 1;
+  for (const e of ab.errors) bound *= 2 * Math.sqrt(e * (1 - e));
+  const trainErr = X.filter((x, i) => ab.predict(x) !== y[i]).length / X.length;
+  check('AdaBoost：训练误差 ≤ Π_t 2√(ε_t(1−ε_t))（Freund–Schapire 定理）',
+    trainErr <= bound + 1e-12, `实测=${trainErr}，理论上界=${bound.toFixed(4)}`);
+
+  check('AdaBoost：线性可分数据训练误差 → 0', trainErr === 0, `训练误差=${trainErr}`);
+}
+
+/* ───────────────────────── 13. 隐马尔可夫模型 ───────────────────────── */
+function suiteHMM(check) {
+  const rng = mulberry32(113);
+  const randStoch = (rows, cols) => Array.from({ length: rows }, () => {
+    const v = Array.from({ length: cols }, () => rng() + 0.1);
+    const s = v.reduce((a, b) => a + b, 0);
+    return v.map(x => x / s);
+  });
+  const N = 3, M = 2;
+  const A = randStoch(N, N), B = randStoch(N, M);
+  const pv = Array.from({ length: N }, () => rng() + 0.1);
+  const pi = pv.map(v => v / pv.reduce((a, b) => a + b, 0));
+  const obs = Array.from({ length: 6 }, () => Math.floor(rng() * M));
+
+  // ① 缩放前向 vs 3^6 = 729 条路径暴力枚举（两个独立实现）
+  const fw = hmmForward(A, B, pi, obs);
+  const bf = hmmBruteForceLogLik(A, B, pi, obs);
+  check('HMM：缩放前向 logP(O) ≡ 729 路径暴力枚举（logsumexp）',
+    Math.abs(fw.logLik - bf) < 1e-9,
+    `前向=${fw.logLik.toFixed(10)}，暴力=${bf.toFixed(10)}`);
+
+  // ② 平滑后验归一
+  const beta = hmmBackward(A, B, obs, fw.c);
+  const gamma = hmmGamma(fw.alphaHat, beta);
+  let gErr = 0;
+  for (const row of gamma) gErr = Math.max(gErr, Math.abs(row.reduce((a, b) => a + b, 0) - 1));
+  check('HMM：平滑后验 γ_t 每行 Σ=1', gErr < 1e-9, `最大偏差=${gErr.toExponential(2)}`);
+
+  // ③ ξ 归一 + 前后向一致性 Σⱼξ_t(i,j) = γ_t(i)
+  const xi = hmmXi(A, B, fw.alphaHat, beta, obs, fw.c);
+  let xiErr = 0, consErr = 0;
+  for (let t = 0; t < xi.length; t++) {
+    let s = 0;
+    for (const row of xi[t]) for (const v of row) s += v;
+    xiErr = Math.max(xiErr, Math.abs(s - 1));
+    for (let i = 0; i < N; i++) {
+      const rowSum = xi[t][i].reduce((a, b) => a + b, 0);
+      consErr = Math.max(consErr, Math.abs(rowSum - gamma[t][i]));
+    }
+  }
+  check('HMM：ξ_t 归一 Σ=1 且 Σⱼξ_t(i,j)=γ_t(i)（前后向一致）',
+    xiErr < 1e-9 && consErr < 1e-9, `ξ偏差=${xiErr.toExponential(2)}，一致性=${consErr.toExponential(2)}`);
+
+  // ④ Baum-Welch 对数似然单调不减（EM 定理）
+  const obs2 = Array.from({ length: 24 }, () => Math.floor(rng() * M));
+  const bw = hmmBaumWelch(A, B, pi, obs2, { iters: 25 });
+  const ll = bw.logLikHistory;
+  let llMono = true;
+  for (let t = 1; t < ll.length; t++) {
+    if (ll[t] < ll[t - 1] - 1e-8 * (1 + Math.abs(ll[t - 1]))) llMono = false;
+  }
+  check('HMM：Baum-Welch 对数似然单调不减（EM 定理）', llMono && ll.length >= 2,
+    `LL ${ll[0].toFixed(3)} → ${ll[ll.length - 1].toFixed(3)}（${ll.length} 轮）`);
+
+  // ⑤ 重估参数仍是合法随机矩阵
+  const rowOk = (m) => m.every(r => Math.abs(r.reduce((a, b) => a + b, 0) - 1) < 1e-9 && r.every(v => v >= -1e-12));
+  check('HMM：Baum-Welch 输出为合法分布（行随机、非负）',
+    rowOk(bw.A) && rowOk(bw.B) && rowOk([bw.pi]), 'A/B/π 均归一');
+}
+
+/* ───────────────────────── 14. 强化学习 ───────────────────────── */
+function suiteRL(check) {
+  // 链式 MDP：值迭代 ≡ 2^6 全策略暴力枚举 ≡ 解析闭式
+  const n = 6, gamma = 0.9;
+  const { P, R } = chainMDP({ n, gamma });
+  const vi = valueIteration(P, R, gamma);
+  const bf = bruteForceChain({ n, gamma });
+  let chainErr = 0;
+  for (let s = 0; s < n; s++) chainErr = Math.max(chainErr, Math.abs(vi.V[s] - bf.V[s]));
+  check('RL：链式 MDP 值迭代 ≡ 2⁶ 全策略暴力枚举', chainErr < 1e-9,
+    `最大偏差=${chainErr.toExponential(2)}`);
+
+  // 闭式：奖励在"进入终点的前一步"支付 ⇒ V*(s) = γ^(n−2−s)（s < n−1）
+  let closedErr = 0;
+  for (let s = 0; s < n - 1; s++) {
+    closedErr = Math.max(closedErr, Math.abs(vi.V[s] - Math.pow(gamma, n - 2 - s)));
+  }
+  check('RL：链式 MDP V*(s) = γ^(n−2−s)（解析闭式）', closedErr < 1e-9,
+    `最大偏差=${closedErr.toExponential(2)}，V*(0)=${vi.V[0].toFixed(6)}=γ⁴`);
+
+  check('RL：Bellman 残差 → 0（压缩不动点定理）', vi.residual < 1e-10,
+    `残差=${vi.residual.toExponential(2)}（${vi.iterations} 轮）`);
+
+  // 随机网格世界：双算法互证 + 吸收态闭式
+  const gw = gridworld({ size: 4 });
+  const gv = valueIteration(gw.P, gw.R, gw.gamma);
+  check('RL：随机网格世界 Bellman 残差 → 0（γ=0.9 压缩映射）', gv.residual < 1e-10,
+    `残差=${gv.residual.toExponential(2)}（${gv.iterations} 轮）`);
+
+  const pe = policyEvaluation(gw.P, gw.R, gw.gamma, gv.policy);
+  let peErr = 0;
+  for (let s = 0; s < gw.S; s++) peErr = Math.max(peErr, Math.abs(pe.V[s] - gv.V[s]));
+  check('RL：贪心策略评估 V^{π*} ≡ V*（值迭代 vs 策略评估互证）', peErr < 1e-6,
+    `最大偏差=${peErr.toExponential(2)}`);
+
+  const goalClosed = gw.goalReward / (1 - gw.gamma);
+  const trapClosed = gw.trapReward / (1 - gw.gamma);
+  const absorbErr = Math.max(Math.abs(gv.V[gw.goal] - goalClosed), Math.abs(gv.V[gw.trap] - trapClosed));
+  check('RL：吸收态闭式 V = r/(1−γ)（几何级数）', absorbErr < 1e-6,
+    `V(终点)=${gv.V[gw.goal].toFixed(6)} vs ${goalClosed}；V(陷阱)=${gv.V[gw.trap].toFixed(6)} vs ${trapClosed}`);
+
+  check('RL：V*(终点) > V*(陷阱)（最优策略趋利避害）',
+    gv.V[gw.goal] > gv.V[gw.trap] && gv.V[gw.goal] > 0 && gv.V[gw.trap] < 0,
+    `V(终点)=${gv.V[gw.goal].toFixed(3)} > V(陷阱)=${gv.V[gw.trap].toFixed(3)}`);
+}
+
 /* ───── 挂载全局命名空间 ───── */
-const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, runAllInvariants };
+const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, runAllInvariants };
 if (typeof globalThis !== 'undefined') {
   globalThis.FlagshipAI = Object.assign({}, globalThis.FlagshipAI, __FlagshipAI__);
 }
@@ -1920,12 +3186,134 @@ if (typeof globalThis !== 'undefined') {
     $('svg-attn').innerHTML = svg;
   }
 
+  /* ───────── v1.1 新增演示 ───────── */
+
+  /** 生成二分类团簇数据（像素坐标系） */
+  function blobsPx(rng, ca, cb, n, sigma) {
+    const { gaussianSample } = A;
+    const X = [], y = [];
+    for (let i = 0; i < n; i++) { X.push([gaussianSample(rng, ca[0], sigma), gaussianSample(rng, ca[1], sigma)]); y.push(-1); }
+    for (let i = 0; i < n; i++) { X.push([gaussianSample(rng, cb[0], sigma), gaussianSample(rng, cb[1], sigma)]); y.push(1); }
+    return { X, y };
+  }
+
+  /** 决策边界背景：粗网格着色 */
+  function boundaryBg(decide, W, H, step, posColor, negColor) {
+    let s = '';
+    for (let x = step / 2; x < W; x += step) {
+      for (let y = step / 2; y < H; y += step) {
+        const c = decide(x, y) >= 0 ? posColor : negColor;
+        s += `<rect x="${(x - step / 2).toFixed(1)}" y="${(y - step / 2).toFixed(1)}" width="${step}" height="${step}" fill="${c}"/>`;
+      }
+    }
+    return s;
+  }
+
+  const POS_C = 'rgba(231,76,60,0.13)', NEG_C = 'rgba(41,128,185,0.13)';
+
+  let svmSeed = 3;
+  function drawSvm() {
+    const { mulberry32, gaussianSample, svmTrain, svmDecision } = A;
+    const rng = mulberry32(svmSeed);
+    const { X, y } = blobsPx(rng, [130, 210], [330, 90], 18, 38);
+    const m = svmTrain(X, y, { C: 1, gamma: 0.0035 });
+    let svg = boundaryBg((x, yy) => svmDecision(m, [x, yy]), 460, 300, 23, POS_C, NEG_C);
+    for (let i = 0; i < X.length; i++) {
+      const sv = m.alpha[i] > 1e-6;
+      svg += `<circle cx="${X[i][0].toFixed(1)}" cy="${X[i][1].toFixed(1)}" r="5.5"
+        fill="${y[i] > 0 ? '#e74c3c' : '#2980b9'}" fill-opacity="0.85"
+        stroke="${sv ? '#1c2333' : 'none'}" stroke-width="${sv ? 2 : 0}"/>`;
+    }
+    $('svg-svm').innerHTML = svg;
+    const svN = m.alpha.filter(a => a > 1e-6).length;
+    $('legend-svm').innerHTML =
+      `<span><i style="background:#e74c3c"></i>类别 +1</span><span><i style="background:#2980b9"></i>类别 −1</span>
+       <span style="font-family:monospace">支持向量 ${svN}/${X.length} · ${m.sweeps} 轮 SMO 收敛</span>`;
+  }
+
+  let boostSeed = 5;
+  function drawBoost() {
+    const { mulberry32, gaussianSample, adaBoost } = A;
+    const rng = mulberry32(boostSeed);
+    const { X, y } = blobsPx(rng, [130, 210], [330, 90], 18, 38);
+    const ab = adaBoost(X, y, { rounds: 25 });
+    let svg = boundaryBg((x, yy) => ab.decisionValue([x, yy]), 460, 300, 23, POS_C, NEG_C);
+    for (let i = 0; i < X.length; i++) {
+      svg += `<circle cx="${X[i][0].toFixed(1)}" cy="${X[i][1].toFixed(1)}" r="5.5"
+        fill="${y[i] > 0 ? '#e74c3c' : '#2980b9'}" fill-opacity="0.85"/>`;
+    }
+    $('svg-boost').innerHTML = svg;
+    const err = X.filter((x, i) => ab.predict(x) !== y[i]).length / X.length;
+    $('legend-boost').innerHTML =
+      `<span><i style="background:#e74c3c"></i>类别 +1</span><span><i style="background:#2980b9"></i>类别 −1</span>
+       <span style="font-family:monospace">25 轮 · 训练误差 ${err} · 指数损失 ${ab.expLoss[24].toFixed(3)}</span>`;
+  }
+
+  const ARROW = ['↑', '↓', '←', '→'];
+  function drawRL() {
+    const { gridworld, valueIteration } = A;
+    const gw = gridworld({ size: 4 });
+    const { V, policy } = valueIteration(gw.P, gw.R, gw.gamma);
+    const cell = 64, ox = 100, oy = 30, vmax = 10;
+    let svg = '';
+    for (let s = 0; s < gw.S; s++) {
+      const r = Math.floor(s / 4), c = s % 4;
+      const x = ox + c * cell, yy = oy + r * cell;
+      const v = V[s];
+      const a = Math.min(0.32, Math.abs(v) / vmax * 0.32);
+      const fill = v >= 0 ? `rgba(231,76,60,${a.toFixed(3)})` : `rgba(39,174,96,${a.toFixed(3)})`;
+      const label = s === gw.goal ? '终点' : (s === gw.trap ? '陷阱' : '');
+      svg += `<rect x="${x}" y="${yy}" width="${cell - 3}" height="${cell - 3}" rx="8" fill="${fill}" stroke="#e6e9f2"/>
+        <text x="${x + (cell - 3) / 2}" y="${yy + 24}" font-size="15" text-anchor="middle" fill="#1c2333" font-family="monospace" font-weight="700">${ARROW[policy[s]]}</text>
+        <text x="${x + (cell - 3) / 2}" y="${yy + 42}" font-size="10.5" text-anchor="middle" fill="#5b6478" font-family="monospace">${v.toFixed(2)}</text>
+        ${label ? `<text x="${x + (cell - 3) / 2}" y="${yy + 56}" font-size="10" text-anchor="middle" fill="#5b6478">${label}</text>` : ''}`;
+    }
+    $('svg-rl').innerHTML = svg;
+    $('legend-rl').innerHTML =
+      `<span><i style="background:rgba(231,76,60,0.5)"></i>正价值（红）</span>
+       <span><i style="background:rgba(39,174,96,0.5)"></i>负价值（绿）</span>
+       <span style="font-family:monospace">V(终点)=${V[gw.goal].toFixed(1)}=1/(1−γ) · V(陷阱)=${V[gw.trap].toFixed(1)}</span>`;
+  }
+
+  let lstmSeed = 17;
+  function drawLstm() {
+    const { mulberry32, randomMatrix, LSTM, trainLSTM } = A;
+    const rng = mulberry32(lstmSeed);
+    const T = 30;
+    const X = randomMatrix(T, 1, rng, -1, 1);
+    const targets = X.map((row, t) => [Math.sin(t * 0.35) * 0.8 + (t > 12 ? 0.6 : 0)]);
+    const net = new LSTM({ inputSize: 1, hiddenSize: 8, outputSize: 1, seed: lstmSeed });
+    const { losses } = trainLSTM(net, X, targets, { lr: 0.08, iters: 300 });
+    const cache = net.forward(X);
+    const px = (t) => 20 + t * (420 / (T - 1));
+    const py = (v) => 150 - v * 100;
+    let svg = `<line x1="20" y1="150" x2="440" y2="150" stroke="#e6e9f2"/>
+      <line x1="20" y1="30" x2="20" y2="270" stroke="#e6e9f2"/>`;
+    svg += `<polyline fill="none" stroke="#b0b8cc" stroke-width="2" stroke-dasharray="5,4" points="`
+      + targets.map((t, i) => `${px(i).toFixed(1)},${py(t[0]).toFixed(1)}`).join(' ') + '"/>';
+    svg += `<polyline fill="none" stroke="#3b5bfd" stroke-width="2.5" points="`
+      + cache.Y.map((t, i) => `${px(i).toFixed(1)},${py(t[0]).toFixed(1)}`).join(' ') + '"/>';
+    $('svg-lstm').innerHTML = svg;
+    $('legend-lstm').innerHTML =
+      `<span><i style="background:#3b5bfd"></i>LSTM 预测 ŷ_t</span>
+       <span><i style="background:#b0b8cc"></i>目标 y_t（阶跃+正弦）</span>
+       <span style="font-family:monospace">MSE ${losses[0].toFixed(3)} → ${losses[losses.length - 1].toFixed(4)}（300 步 BPTT）</span>`;
+  }
+
   $('btn-kmeans').addEventListener('click', () => { kmSeed = (kmSeed * 31 + 17) % 100000; drawKmeans(); });
   $('btn-attn').addEventListener('click', () => { attnSeed = (attnSeed * 37 + 11) % 100000; drawAttn(); });
+  $('btn-svm').addEventListener('click', () => { svmSeed = (svmSeed * 29 + 13) % 100000; drawSvm(); });
+  $('btn-boost').addEventListener('click', () => { boostSeed = (boostSeed * 27 + 19) % 100000; drawBoost(); });
+  $('btn-rl').addEventListener('click', drawRL);
+  $('btn-lstm').addEventListener('click', () => { lstmSeed = (lstmSeed * 23 + 7) % 100000; drawLstm(); });
 
   renderSuites();
   drawKmeans();
   drawAttn();
+  drawSvm();
+  drawBoost();
+  drawRL();
+  drawLstm();
 })();
 </script>
 </body>

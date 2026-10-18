@@ -1,7 +1,7 @@
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 8 组套件全绿 = 引擎数学正确性的机器证明。
+ * 14 组套件全绿 = 引擎数学正确性的机器证明。
  */
 
 import {
@@ -27,6 +27,16 @@ import {
   multiHeadAttention, randomAttentionTensors,
 } from '../nn/attention.js';
 import { layerNorm, positionalEncoding, transformerBlock } from '../nn/transformer.js';
+import { RNN, rnnGradientCheck, trainRNN } from '../nn/rnn.js';
+import { LSTM, lstmGradientCheck, trainLSTM } from '../nn/lstm.js';
+import { svmTrain, svmPredict, svmDecision, svmDualObjective, svmSupportVectors } from '../ml/svm.js';
+import { adaBoost } from '../ml/boosting.js';
+import {
+  hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik,
+} from '../ml/hmm.js';
+import {
+  valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld,
+} from '../rl/valueIteration.js';
 
 /** 向量最大绝对值 */
 function vinf(v) {
@@ -65,7 +75,7 @@ function blobs(rng, centers, nPer, sigma) {
 }
 
 /**
- * 运行全部 8 组不变量自检。
+ * 运行全部 14 组不变量自检。
  * @returns {{results:Array, passed:number, total:number, allOk:boolean}}
  */
 export function runAllInvariants() {
@@ -79,6 +89,12 @@ export function runAllInvariants() {
     ['聚类与生成 · Clustering & GMM', suiteClustering],
     ['降维与决策树 · PCA & Tree', suiteDimTree],
     ['深度学习 · Deep Learning', suiteDeep],
+    ['循环神经网络 · RNN & BPTT', suiteRNN],
+    ['门控循环网络 · LSTM & BPTT', suiteLSTM],
+    ['核支持向量机 · Kernel SVM', suiteSVM],
+    ['AdaBoost 集成 · Boosting', suiteBoosting],
+    ['隐马尔可夫模型 · HMM', suiteHMM],
+    ['强化学习 · Reinforcement Learning', suiteRL],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -448,4 +464,239 @@ function suiteDeep(check) {
     Math.abs(PE[0][0]) < 1e-12 && Math.abs(PE[0][1] - 1) < 1e-12 &&
     PE.every(row => row.every(v => Math.abs(v) <= 1 + 1e-12)),
     `PE[0]=[${PE[0].map(v => v.toFixed(4)).join(', ')}]`);
+}
+
+/* ───────────────────────── 9. 循环神经网络 RNN ───────────────────────── */
+function suiteRNN(check) {
+  const rng = mulberry32(101);
+  const net = new RNN({ inputSize: 3, hiddenSize: 5, outputSize: 2, seed: 5 });
+  const X = randomMatrix(10, 3, rng, -1, 1);
+  const targets = X.map(row => [row[0] * 0.5 - 0.2, row[1] + 0.1]);
+
+  const gerr = rnnGradientCheck(net, X, targets);
+  check('RNN：BPTT 解析梯度 ≡ 中心差分（显著分量 maxRelErr < 1e-6）',
+    gerr.maxRelErr < 1e-6 && gerr.maxAbsErr < 1e-7,
+    `maxRelErr=${gerr.maxRelErr.toExponential(2)}，maxAbsErr=${gerr.maxAbsErr.toExponential(2)}（${gerr.significant} 个显著分量）`);
+
+  const cache = net.forward(X);
+  const bounded = cache.H.every(row => row.every(v => Math.abs(v) < 1));
+  check('RNN：隐藏态 tanh 有界 h_t ∈ (−1,1)', bounded && cache.H.length === 10,
+    `T=${cache.H.length}，全有限有界=${bounded}`);
+
+  const { losses } = trainRNN(net, X, targets, { lr: 0.05, iters: 300 });
+  check('RNN：序列回归训练收敛（MSE 下降）',
+    losses[losses.length - 1] < losses[0],
+    `损失 ${losses[0].toFixed(4)} → ${losses[losses.length - 1].toFixed(4)}`);
+
+  // 长序列（T=40）BPTT 仍精确（时间梯度传播稳定性）
+  const rng2 = mulberry32(102);
+  const Xl = randomMatrix(40, 3, rng2, -1, 1);
+  const tl = Xl.map(row => [row[2] * 0.3]);
+  const net2 = new RNN({ inputSize: 3, hiddenSize: 4, outputSize: 1, seed: 9 });
+  const gerr2 = rnnGradientCheck(net2, Xl, tl);
+  check('RNN：T=40 长序列 BPTT 梯度检验仍 < 1e-6', gerr2.maxRelErr < 1e-6 && gerr2.maxAbsErr < 1e-7,
+    `maxRelErr=${gerr2.maxRelErr.toExponential(2)}，maxAbsErr=${gerr2.maxAbsErr.toExponential(2)}`);
+}
+
+/* ───────────────────────── 10. LSTM 门控网络 ───────────────────────── */
+function suiteLSTM(check) {
+  const rng = mulberry32(103);
+  const net = new LSTM({ inputSize: 3, hiddenSize: 5, outputSize: 2, seed: 6 });
+  const X = randomMatrix(12, 3, rng, -1, 1);
+  const targets = X.map(row => [row[0] * 0.5, row[1] - 0.3]);
+
+  const gerr = lstmGradientCheck(net, X, targets);
+  check('LSTM：BPTT 解析梯度 ≡ 中心差分（显著分量 maxRelErr < 1e-6）',
+    gerr.maxRelErr < 1e-6 && gerr.maxAbsErr < 1e-7,
+    `maxRelErr=${gerr.maxRelErr.toExponential(2)}，maxAbsErr=${gerr.maxAbsErr.toExponential(2)}（${gerr.significant} 个显著分量）`);
+
+  const cache = net.forward(X);
+  const gatesOk = cache.I.every(r => r.every(v => v > 0 && v < 1))
+    && cache.F.every(r => r.every(v => v > 0 && v < 1))
+    && cache.O.every(r => r.every(v => v > 0 && v < 1))
+    && cache.G.every(r => r.every(v => Math.abs(v) < 1));
+  check('LSTM：门控值域（i/f/o ∈ (0,1)，候选 g ∈ (−1,1)）', gatesOk, `全部 ${cache.I.length} 时间步`);
+
+  const { losses } = trainLSTM(net, X, targets, { lr: 0.05, iters: 300 });
+  check('LSTM：序列回归训练收敛（MSE 下降）',
+    losses[losses.length - 1] < losses[0],
+    `损失 ${losses[0].toFixed(4)} → ${losses[losses.length - 1].toFixed(4)}`);
+
+  // 长程依赖：T=50 时细胞态仍保持非退化（梯度高速公路不消失）
+  const rng2 = mulberry32(104);
+  const Xl = randomMatrix(50, 2, rng2, -1, 1);
+  const tl = Xl.map(row => [row[0] * 0.4]);
+  const net2 = new LSTM({ inputSize: 2, hiddenSize: 4, outputSize: 1, seed: 11 });
+  const gerr2 = lstmGradientCheck(net2, Xl, tl);
+  check('LSTM：T=50 长序列 BPTT 梯度检验仍 < 1e-6', gerr2.maxRelErr < 1e-6 && gerr2.maxAbsErr < 1e-7,
+    `maxRelErr=${gerr2.maxRelErr.toExponential(2)}，maxAbsErr=${gerr2.maxAbsErr.toExponential(2)}`);
+}
+
+/* ───────────────────────── 11. 核支持向量机 ───────────────────────── */
+function suiteSVM(check) {
+  const rng = mulberry32(107);
+  const X = [], y = [];
+  for (let i = 0; i < 15; i++) { X.push([gaussianSample(rng, -2, 0.6), gaussianSample(rng, -2, 0.6)]); y.push(-1); }
+  for (let i = 0; i < 15; i++) { X.push([gaussianSample(rng, 2, 0.6), gaussianSample(rng, 2, 0.6)]); y.push(1); }
+
+  const model = svmTrain(X, y, { C: 1, gamma: 0.5 });
+
+  const sumAy = model.alpha.reduce((s, a, i) => s + a * y[i], 0);
+  check('SVM：对偶等式约束 Σαᵢyᵢ = 0（SMO 成对更新恒保持）',
+    Math.abs(sumAy) < 1e-6, `Σαy=${sumAy.toExponential(2)}`);
+
+  let kktMax = 0;
+  for (let i = 0; i < X.length; i++) {
+    const m = y[i] * svmDecision(model, X[i]);
+    if (model.alpha[i] < 1e-6) kktMax = Math.max(kktMax, Math.max(0, 1 - m));
+    else if (model.alpha[i] > model.C - 1e-6) kktMax = Math.max(kktMax, Math.max(0, m - 1));
+    else kktMax = Math.max(kktMax, Math.abs(m - 1));
+  }
+  check('SVM：KKT 互补松弛（α=0→yf≥1；0<α<C→yf=1；α=C→yf≤1）',
+    kktMax < 0.05, `最大违反=${kktMax.toFixed(4)}`);
+
+  const acc = X.filter((x, i) => svmPredict(model, x) === y[i]).length / X.length;
+  check('SVM：线性可分数据训练精度 = 1（最大间隔几何意义）', acc === 1, `acc=${acc}`);
+
+  const dual = svmDualObjective(model);
+  check('SVM：对偶目标 W(α) > 0（非平凡最大间隔解）', dual > 0, `W(α)=${dual.toFixed(4)}`);
+
+  const sv = svmSupportVectors(model);
+  check('SVM：存在支持向量（0 < α < C，其余点 α=0）', sv.length > 0 && sv.length < X.length,
+    `|SV|=${sv.length}/${X.length}`);
+}
+
+/* ───────────────────────── 12. AdaBoost 集成 ───────────────────────── */
+function suiteBoosting(check) {
+  const rng = mulberry32(109);
+  const X = [], y = [];
+  for (let i = 0; i < 20; i++) { X.push([gaussianSample(rng, -1.5, 0.5), gaussianSample(rng, -1.5, 0.5)]); y.push(-1); }
+  for (let i = 0; i < 20; i++) { X.push([gaussianSample(rng, 1.5, 0.5), gaussianSample(rng, 1.5, 0.5)]); y.push(1); }
+
+  const ab = adaBoost(X, y, { rounds: 25 });
+
+  const maxEps = Math.max(...ab.errors);
+  check('AdaBoost：每轮加权误差 ε_t < ½（弱学习器假设）', maxEps < 0.5,
+    `max ε=${maxEps.toFixed(4)}（25 轮）`);
+
+  let mono = true;
+  for (let t = 1; t < ab.expLoss.length; t++) {
+    if (ab.expLoss[t] > ab.expLoss[t - 1] + 1e-9) mono = false;
+  }
+  check('AdaBoost：指数损失 E_t 单调不增（Z_t = 2√(ε_t(1−ε_t)) ≤ 1）', mono,
+    `E ${ab.expLoss[0].toFixed(3)} → ${ab.expLoss[ab.expLoss.length - 1].toFixed(4)}`);
+
+  let bound = 1;
+  for (const e of ab.errors) bound *= 2 * Math.sqrt(e * (1 - e));
+  const trainErr = X.filter((x, i) => ab.predict(x) !== y[i]).length / X.length;
+  check('AdaBoost：训练误差 ≤ Π_t 2√(ε_t(1−ε_t))（Freund–Schapire 定理）',
+    trainErr <= bound + 1e-12, `实测=${trainErr}，理论上界=${bound.toFixed(4)}`);
+
+  check('AdaBoost：线性可分数据训练误差 → 0', trainErr === 0, `训练误差=${trainErr}`);
+}
+
+/* ───────────────────────── 13. 隐马尔可夫模型 ───────────────────────── */
+function suiteHMM(check) {
+  const rng = mulberry32(113);
+  const randStoch = (rows, cols) => Array.from({ length: rows }, () => {
+    const v = Array.from({ length: cols }, () => rng() + 0.1);
+    const s = v.reduce((a, b) => a + b, 0);
+    return v.map(x => x / s);
+  });
+  const N = 3, M = 2;
+  const A = randStoch(N, N), B = randStoch(N, M);
+  const pv = Array.from({ length: N }, () => rng() + 0.1);
+  const pi = pv.map(v => v / pv.reduce((a, b) => a + b, 0));
+  const obs = Array.from({ length: 6 }, () => Math.floor(rng() * M));
+
+  // ① 缩放前向 vs 3^6 = 729 条路径暴力枚举（两个独立实现）
+  const fw = hmmForward(A, B, pi, obs);
+  const bf = hmmBruteForceLogLik(A, B, pi, obs);
+  check('HMM：缩放前向 logP(O) ≡ 729 路径暴力枚举（logsumexp）',
+    Math.abs(fw.logLik - bf) < 1e-9,
+    `前向=${fw.logLik.toFixed(10)}，暴力=${bf.toFixed(10)}`);
+
+  // ② 平滑后验归一
+  const beta = hmmBackward(A, B, obs, fw.c);
+  const gamma = hmmGamma(fw.alphaHat, beta);
+  let gErr = 0;
+  for (const row of gamma) gErr = Math.max(gErr, Math.abs(row.reduce((a, b) => a + b, 0) - 1));
+  check('HMM：平滑后验 γ_t 每行 Σ=1', gErr < 1e-9, `最大偏差=${gErr.toExponential(2)}`);
+
+  // ③ ξ 归一 + 前后向一致性 Σⱼξ_t(i,j) = γ_t(i)
+  const xi = hmmXi(A, B, fw.alphaHat, beta, obs, fw.c);
+  let xiErr = 0, consErr = 0;
+  for (let t = 0; t < xi.length; t++) {
+    let s = 0;
+    for (const row of xi[t]) for (const v of row) s += v;
+    xiErr = Math.max(xiErr, Math.abs(s - 1));
+    for (let i = 0; i < N; i++) {
+      const rowSum = xi[t][i].reduce((a, b) => a + b, 0);
+      consErr = Math.max(consErr, Math.abs(rowSum - gamma[t][i]));
+    }
+  }
+  check('HMM：ξ_t 归一 Σ=1 且 Σⱼξ_t(i,j)=γ_t(i)（前后向一致）',
+    xiErr < 1e-9 && consErr < 1e-9, `ξ偏差=${xiErr.toExponential(2)}，一致性=${consErr.toExponential(2)}`);
+
+  // ④ Baum-Welch 对数似然单调不减（EM 定理）
+  const obs2 = Array.from({ length: 24 }, () => Math.floor(rng() * M));
+  const bw = hmmBaumWelch(A, B, pi, obs2, { iters: 25 });
+  const ll = bw.logLikHistory;
+  let llMono = true;
+  for (let t = 1; t < ll.length; t++) {
+    if (ll[t] < ll[t - 1] - 1e-8 * (1 + Math.abs(ll[t - 1]))) llMono = false;
+  }
+  check('HMM：Baum-Welch 对数似然单调不减（EM 定理）', llMono && ll.length >= 2,
+    `LL ${ll[0].toFixed(3)} → ${ll[ll.length - 1].toFixed(3)}（${ll.length} 轮）`);
+
+  // ⑤ 重估参数仍是合法随机矩阵
+  const rowOk = (m) => m.every(r => Math.abs(r.reduce((a, b) => a + b, 0) - 1) < 1e-9 && r.every(v => v >= -1e-12));
+  check('HMM：Baum-Welch 输出为合法分布（行随机、非负）',
+    rowOk(bw.A) && rowOk(bw.B) && rowOk([bw.pi]), 'A/B/π 均归一');
+}
+
+/* ───────────────────────── 14. 强化学习 ───────────────────────── */
+function suiteRL(check) {
+  // 链式 MDP：值迭代 ≡ 2^6 全策略暴力枚举 ≡ 解析闭式
+  const n = 6, gamma = 0.9;
+  const { P, R } = chainMDP({ n, gamma });
+  const vi = valueIteration(P, R, gamma);
+  const bf = bruteForceChain({ n, gamma });
+  let chainErr = 0;
+  for (let s = 0; s < n; s++) chainErr = Math.max(chainErr, Math.abs(vi.V[s] - bf.V[s]));
+  check('RL：链式 MDP 值迭代 ≡ 2⁶ 全策略暴力枚举', chainErr < 1e-9,
+    `最大偏差=${chainErr.toExponential(2)}`);
+
+  // 闭式：奖励在"进入终点的前一步"支付 ⇒ V*(s) = γ^(n−2−s)（s < n−1）
+  let closedErr = 0;
+  for (let s = 0; s < n - 1; s++) {
+    closedErr = Math.max(closedErr, Math.abs(vi.V[s] - Math.pow(gamma, n - 2 - s)));
+  }
+  check('RL：链式 MDP V*(s) = γ^(n−2−s)（解析闭式）', closedErr < 1e-9,
+    `最大偏差=${closedErr.toExponential(2)}，V*(0)=${vi.V[0].toFixed(6)}=γ⁴`);
+
+  check('RL：Bellman 残差 → 0（压缩不动点定理）', vi.residual < 1e-10,
+    `残差=${vi.residual.toExponential(2)}（${vi.iterations} 轮）`);
+
+  // 随机网格世界：双算法互证 + 吸收态闭式
+  const gw = gridworld({ size: 4 });
+  const gv = valueIteration(gw.P, gw.R, gw.gamma);
+  check('RL：随机网格世界 Bellman 残差 → 0（γ=0.9 压缩映射）', gv.residual < 1e-10,
+    `残差=${gv.residual.toExponential(2)}（${gv.iterations} 轮）`);
+
+  const pe = policyEvaluation(gw.P, gw.R, gw.gamma, gv.policy);
+  let peErr = 0;
+  for (let s = 0; s < gw.S; s++) peErr = Math.max(peErr, Math.abs(pe.V[s] - gv.V[s]));
+  check('RL：贪心策略评估 V^{π*} ≡ V*（值迭代 vs 策略评估互证）', peErr < 1e-6,
+    `最大偏差=${peErr.toExponential(2)}`);
+
+  const goalClosed = gw.goalReward / (1 - gw.gamma);
+  const trapClosed = gw.trapReward / (1 - gw.gamma);
+  const absorbErr = Math.max(Math.abs(gv.V[gw.goal] - goalClosed), Math.abs(gv.V[gw.trap] - trapClosed));
+  check('RL：吸收态闭式 V = r/(1−γ)（几何级数）', absorbErr < 1e-6,
+    `V(终点)=${gv.V[gw.goal].toFixed(6)} vs ${goalClosed}；V(陷阱)=${gv.V[gw.trap].toFixed(6)} vs ${trapClosed}`);
+
+  check('RL：V*(终点) > V*(陷阱)（最优策略趋利避害）',
+    gv.V[gw.goal] > gv.V[gw.trap] && gv.V[gw.goal] > 0 && gv.V[gw.trap] < 0,
+    `V(终点)=${gv.V[gw.goal].toFixed(3)} > V(陷阱)=${gv.V[gw.trap].toFixed(3)}`);
 }
