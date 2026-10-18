@@ -5,6 +5,22 @@
 
 ---
 
+## ⚡ 实现落地注记（设计 → 实现最终映射）
+
+本设计书为架构蓝图；工程落地时为减小模块面与打包面做了如下收敛，**以实现为准**：
+
+| 设计稿 | 最终实现 | 说明 |
+|---|---|---|
+| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 8 组套件，Node 与浏览器共用同一份 |
+| `src/verify/suites.js` | 并入 `src/verify/invariants.js` | 套件与检查器同文件，杜绝跨文件漂移 |
+| `src/core/rng.js` / `src/core/utils.js` | 并入 `src/core/stats.js`（mulberry32/gaussianSample）与 `src/core/linalg.js`/`numerical.js` | 随机源归概率层，工具归各自的消费者 |
+| 浏览器 `<script type="module">` 直引 src | `scripts/bundle.mjs` 按依赖序内联进 `showcase/index.html`（`globalThis.FlagshipAI`） | 兼容 `file://` 双击即用；`node --check` 兜底语法校验 |
+| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 8/8`（CI grep 校验） | 语义一致，命名对齐实现 |
+
+落地验证结论：`node test/run.mjs` → **PASS 8/8（55ms）**，与本设计书的全部不变量承诺一致。
+
+---
+
 ## 0. 设计总览
 
 | 维度 | 决策 |
