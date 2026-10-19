@@ -1,6 +1,6 @@
 {
   "name": "flagship-ai-engine",
-  "version": "1.0.0",
+  "version": "1.6.0",
   "description": "旗舰AI引擎：零依赖、可验证、世界顶级 AI 算法集大成引擎（浏览器 + Node 双跑）。",
   "type": "module",
   "main": "src/index.js",

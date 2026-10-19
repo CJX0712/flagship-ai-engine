@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">30 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">34 组套件 · 206 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -237,6 +237,46 @@
     </div>
   </div>
 
+  <h2>v1.6 新增算法 <span class="tag">归一化层 · 残差网络 · 网页排名 · 吉布斯采样 · 均由本页引擎实时求解</span></h2>
+  <div class="demos">
+    <div class="card">
+      <div class="demo-head">
+        <strong>归一化层（BatchNorm + LayerNorm）</strong>
+        <button id="btn-norm">换一批数据</button>
+      </div>
+      <div class="desc">Ioffe &amp; Szegedy 2015 / Ba 2016 · 逐通道归一：输出均值≈0、方差=1（不变量）· 4 通道对照</div>
+      <svg id="svg-norm" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-norm"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>残差网络 ResNet（两月亮分类）</strong>
+        <button id="btn-resnet">重新训练</button>
+      </div>
+      <div class="desc">He et al. 2015 · 跳过连接 y=F(x)+x · 决策边界 + 准确率 · 梯度高速公路消除梯度消失</div>
+      <svg id="svg-resnet" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-resnet"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>网页排名 PageRank（有向图）</strong>
+        <button id="btn-pr">换一张图</button>
+      </div>
+      <div class="desc">Page &amp; Brin 1998 · 随机游走平稳分布 r=G·r · 节点半径 ∝ 重要性 · 含悬挂节点质量守恒</div>
+      <svg id="svg-pr" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-pr"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>吉布斯采样 Gibbs（二元高斯）</strong>
+        <button id="btn-gibbs">重新采样</button>
+      </div>
+      <div class="desc">Geman &amp; Geman 1984 / Casella &amp; George 1992 · 逐坐标条件抽样 · 经验矩 ≡ 解析矩（ρ=0.49）</div>
+      <svg id="svg-gibbs" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-gibbs"></div>
+    </div>
+  </div>
+
   <div class="refs">
     站在巨人肩上：<code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
     <code>Bishop · PRML</code><code>Hastie et al. · ESL</code><code>Vaswani et al. 2017 · Attention Is All You Need</code>
@@ -252,6 +292,9 @@
     <code>Friedman 2001 · Gradient Boosting</code><code>Kalman 1960 · 最优滤波</code>
     <code>Kingma &amp; Welling 2013 · VAE</code><code>Metropolis 1953 / Hastings 1970 · MCMC</code>
     <code>Mikolov et al. 2013 · Word2Vec</code><code>Lee &amp; Seung 1999 · NMF</code>
+    <code>Ioffe &amp; Szegedy 2015 · BatchNorm</code><code>Ba et al. 2016 · LayerNorm</code>
+    <code>He et al. 2015 · Deep Residual Learning</code><code>Page &amp; Brin 1998 · PageRank</code>
+    <code>Geman &amp; Geman 1984 · Gibbs Sampling</code><code>Casella &amp; George 1992 · Gibbs Sampler</code>
   </div>
 
   <footer>
@@ -842,6 +885,168 @@
   $('btn-mcmc').addEventListener('click', () => { mcmcIdx = (mcmcIdx + 1) % mcmcSigmas.length; drawMCMC(); });
   $('btn-w2v').addEventListener('click', () => { w2vSeed = (w2vSeed * 61 + 13) % 100000; drawW2V(); });
 
+  /* ================= v1.6 · 归一化层（BatchNorm + LayerNorm） ================= */
+  let normSeed = 7;
+  function drawNorm() {
+    const { mulberry32, gaussianSample, batchNormForward, layerNorm2d } = A;
+    const rng = mulberry32(normSeed);
+    const n = 64, d = 4;
+    const centers = [], scales = [];
+    for (let j = 0; j < d; j++) { centers.push(rng() * 6 - 3); scales.push(0.4 + rng() * 3.6); }
+    const X = [];
+    for (let i = 0; i < n; i++) { const row = []; for (let j = 0; j < d; j++) row.push(gaussianSample(rng, centers[j], scales[j])); X.push(row); }
+    const gamma = new Array(d).fill(1), beta = new Array(d).fill(0);
+    const { Y } = batchNormForward(X, gamma, beta, { training: true });
+    const preMean = [], preStd = [], postMean = [], postStd = [];
+    for (let j = 0; j < d; j++) {
+      let m = 0; for (let i = 0; i < n; i++) m += X[i][j]; m /= n;
+      let v = 0; for (let i = 0; i < n; i++) v += (X[i][j] - m) ** 2; v /= n;
+      preMean.push(m); preStd.push(Math.sqrt(v));
+    }
+    for (let j = 0; j < d; j++) {
+      let m = 0; for (let i = 0; i < n; i++) m += Y[i][j]; m /= n;
+      let v = 0; for (let i = 0; i < n; i++) v += (Y[i][j] - m) ** 2; v /= n;
+      postMean.push(m); postStd.push(Math.sqrt(v));
+    }
+    const ln = layerNorm2d(X.slice(0, 1));
+    const row = ln.Y[0]; let lm = 0; for (const v of row) lm += v; lm /= d;
+    let lv = 0; for (const v of row) lv += (v - lm) ** 2; lv /= d;
+    const baseY = 250, sc = 42;
+    const cw = 460 / d;
+    let svg = '';
+    for (let j = 0; j < d; j++) {
+      const cx = cw * j + cw / 2;
+      const preH = Math.min(200, preStd[j] * sc);
+      const postH = Math.min(200, postStd[j] * sc);
+      svg += `<rect x="${(cx - 16).toFixed(1)}" y="${(baseY - preH).toFixed(1)}" width="14" height="${preH.toFixed(1)}" fill="#b0b8cc"/>`;
+      svg += `<rect x="${(cx + 2).toFixed(1)}" y="${(baseY - postH).toFixed(1)}" width="14" height="${postH.toFixed(1)}" fill="#3b5bfd"/>`;
+      svg += `<text x="${(cx - 9).toFixed(1)}" y="${(baseY - preH - 4).toFixed(1)}" font-size="9" text-anchor="middle" fill="#5b6478" font-family="monospace">${preStd[j].toFixed(2)}</text>`;
+      svg += `<text x="${(cx + 9).toFixed(1)}" y="${(baseY - postH - 4).toFixed(1)}" font-size="9" text-anchor="middle" fill="#3b5bfd" font-family="monospace">${postStd[j].toFixed(2)}</text>`;
+      svg += `<text x="${cx.toFixed(1)}" y="${(baseY + 14).toFixed(1)}" font-size="10" text-anchor="middle" fill="#1c2333" font-family="monospace">ch${j}</text>`;
+    }
+    svg += `<line x1="20" y1="${(baseY - sc).toFixed(1)}" x2="440" y2="${(baseY - sc).toFixed(1)}" stroke="#17994f" stroke-width="1" stroke-dasharray="4,3"/>`;
+    svg += `<text x="24" y="${(baseY - sc - 3).toFixed(1)}" font-size="9" fill="#17994f" font-family="monospace">σ=1 目标线</text>`;
+    $('svg-norm').innerHTML = svg;
+    const maxPostMean = Math.max(...postMean.map(Math.abs));
+    $('legend-norm').innerHTML =
+      `<span><i style="background:#b0b8cc"></i>BN 前 σ</span><span><i style="background:#3b5bfd"></i>BN 后 σ</span>` +
+      `<span style="font-family:monospace">BN 后 |μ|max=${maxPostMean.toExponential(1)}（≈0）· LayerNorm 单样本 σ²=${lv.toFixed(3)}（≈1）</span>`;
+  }
+
+  /* ================= v1.6 · 残差网络 ResNet（两月亮分类） ================= */
+  let resnetSeed = 42;
+  function drawResNet() {
+    const { twoMoons, ResNet, trainResNet, resnetAccuracy } = A;
+    const { X, y } = twoMoons({ n: 100, sigma: 0.05, seed: resnetSeed });
+    const net = new ResNet({ inputDim: 2, hiddenDim: 8, numBlocks: 2, numClasses: 2, seed: resnetSeed, useSkip: true });
+    const losses = trainResNet(net, X, y, { lr: 0.1, iters: 400 });
+    const acc = resnetAccuracy(net, X, y);
+    const xs = X.map(r => r[0]), ys = X.map(r => r[1]);
+    const xmin = Math.min(...xs), xmax = Math.max(...xs), ymin = Math.min(...ys), ymax = Math.max(...ys);
+    const px = (v) => 20 + (v - xmin) / (xmax - xmin) * 420;
+    const py = (v) => 280 - (v - ymin) / (ymax - ymin) * 260;
+    const G = 30;
+    const grid = [];
+    for (let r = 0; r < G; r++) { const gy = ymin + (r + 0.5) / G * (ymax - ymin); for (let c = 0; c < G; c++) { const gx = xmin + (c + 0.5) / G * (xmax - xmin); grid.push([gx, gy]); } }
+    const P = net.forward(grid).P;
+    let svg = '';
+    const cellW = 420 / G, cellH = 260 / G;
+    for (let i = 0; i < grid.length; i++) {
+      const r = Math.floor(i / G), c = i % G;
+      const cls = P[i][1] > P[i][0] ? 1 : 0;
+      const col = cls === 0 ? 'rgba(41,128,185,0.16)' : 'rgba(231,76,60,0.16)';
+      svg += `<rect x="${(20 + c * cellW).toFixed(1)}" y="${(20 + r * cellH).toFixed(1)}" width="${cellW.toFixed(1)}" height="${cellH.toFixed(1)}" fill="${col}"/>`;
+    }
+    for (let i = 0; i < X.length; i++) {
+      const col = y[i] === 0 ? '#2980b9' : '#e74c3c';
+      svg += `<circle cx="${px(X[i][0]).toFixed(1)}" cy="${py(X[i][1]).toFixed(1)}" r="4" fill="${col}" stroke="#fff" stroke-width="0.8"/>`;
+    }
+    $('svg-resnet').innerHTML = svg;
+    $('legend-resnet').innerHTML =
+      `<span><i style="background:#2980b9"></i>类 0 真值</span><span><i style="background:#e74c3c"></i>类 1 真值</span>` +
+      `<span style="font-family:monospace">CE ${losses[0].toFixed(3)}→${losses[losses.length - 1].toFixed(4)} · 准确率 ${acc.toFixed(3)}</span>`;
+  }
+
+  /* ================= v1.6 · 网页排名 PageRank（有向图） ================= */
+  let prSeed = 7;
+  function drawPR() {
+    const { mulberry32, pageRank, pagerankSum } = A;
+    const rng = mulberry32(prSeed);
+    const n = 6;
+    const A2 = Array.from({ length: n }, () => new Array(n).fill(0));
+    for (let i = 0; i < n; i++) {
+      const outs = 1 + Math.floor(rng() * 2);
+      for (let k = 0; k < outs; k++) { const j = Math.floor(rng() * n); if (j !== i) A2[i][j] = 1; }
+    }
+    for (let i = 0; i < n - 1; i++) A2[n - 1][i] = 0; // 保证节点 5 为悬挂节点（质量重分配）
+    const { ranks, iterations } = pageRank(A2, { damping: 0.85, iters: 300, tol: 1e-12 });
+    const sum = pagerankSum(ranks);
+    const cx = 230, cy = 150, R = 110;
+    const pos = [];
+    for (let i = 0; i < n; i++) { const a = -Math.PI / 2 + i * 2 * Math.PI / n; pos.push([cx + R * Math.cos(a), cy + R * Math.sin(a)]); }
+    let svg = '';
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) if (A2[i][j]) {
+      const [x1, y1] = pos[i], [x2, y2] = pos[j];
+      const dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1;
+      const sx = x1 + dx / L * 14, sy = y1 + dy / L * 14, ex = x2 - dx / L * 16, ey = y2 - dy / L * 16;
+      svg += `<line x1="${sx.toFixed(1)}" y1="${sy.toFixed(1)}" x2="${ex.toFixed(1)}" y2="${ey.toFixed(1)}" stroke="#95a5a6" stroke-width="1.4"/>`;
+      const ang = Math.atan2(dy, dx), ah = 6;
+      const p1 = [ex - ah * Math.cos(ang - 0.4), ey - ah * Math.sin(ang - 0.4)];
+      const p2 = [ex - ah * Math.cos(ang + 0.4), ey - ah * Math.sin(ang + 0.4)];
+      svg += `<polygon points="${ex.toFixed(1)},${ey.toFixed(1)} ${p1[0].toFixed(1)},${p1[1].toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}" fill="#95a5a6"/>`;
+    }
+    for (let i = 0; i < n; i++) {
+      const rr = Math.max(10, 10 + ranks[i] * 150);
+      svg += `<circle cx="${pos[i][0].toFixed(1)}" cy="${pos[i][1].toFixed(1)}" r="${rr.toFixed(1)}" fill="rgba(59,91,253,0.18)" stroke="#3b5bfd" stroke-width="1.6"/>`;
+      svg += `<text x="${pos[i][0].toFixed(1)}" y="${(pos[i][1] + 3).toFixed(1)}" font-size="10" text-anchor="middle" fill="#1c2333" font-family="monospace" font-weight="700">${ranks[i].toFixed(3)}</text>`;
+    }
+    $('svg-pr').innerHTML = svg;
+    $('legend-pr').innerHTML =
+      `<span><i style="background:#3b5bfd;opacity:.3"></i>节点半径 ∝ 重要性</span>` +
+      `<span style="font-family:monospace">d=0.85 · ${iterations} 轮收敛 · Σr=${sum.toFixed(4)}（守恒）</span>`;
+  }
+
+  /* ================= v1.6 · 吉布斯采样 Gibbs（二元高斯） ================= */
+  let gibbsSeed = 42;
+  function drawGibbs() {
+    const { gibbsBivariateGaussian, gibbsMarginal, gibbsCovariance, jacobiEig } = A;
+    const mu = [1, -0.5], Sigma = [[2, 1.2], [1.2, 3]];
+    const rhoTrue = 1.2 / Math.sqrt(6);
+    const res = gibbsBivariateGaussian(mu, Sigma, { iters: 20000, burnIn: 2000, thin: 1, seed: gibbsSeed });
+    const samples = res.samples;
+    const m1 = gibbsMarginal(samples, 0), m2 = gibbsMarginal(samples, 1);
+    const cov = gibbsCovariance(samples);
+    const rhoHat = cov[0][1] / Math.sqrt(cov[0][0] * cov[1][1]);
+    const xs = samples.map(r => r[0]), ys = samples.map(r => r[1]);
+    const xmin = Math.min(...xs), xmax = Math.max(...xs), ymin = Math.min(...ys), ymax = Math.max(...ys);
+    const padX = (xmax - xmin) * 0.08, padY = (ymax - ymin) * 0.08;
+    const px = (v) => 30 + (v - (xmin - padX)) / ((xmax - xmin) + 2 * padX) * 400;
+    const py = (v) => 270 - (v - (ymin - padY)) / ((ymax - ymin) + 2 * padY) * 240;
+    let svg = '<line x1="30" y1="270" x2="430" y2="270" stroke="#d5dbe5"/><line x1="30" y1="20" x2="30" y2="270" stroke="#d5dbe5"/>';
+    const { values, vectors } = jacobiEig(Sigma);
+    const e1 = vectors[0], e2 = vectors[1], k = 2;
+    const ellipse = [];
+    for (let t = 0; t <= 64; t++) {
+      const th = t / 64 * 2 * Math.PI;
+      const w = Math.sqrt(values[0]) * k * Math.cos(th), h = Math.sqrt(values[1]) * k * Math.sin(th);
+      const vx = w * e1[0] + h * e2[0], vy = w * e1[1] + h * e2[1];
+      ellipse.push(`${px(mu[0] + vx).toFixed(1)},${py(mu[1] + vy).toFixed(1)}`);
+    }
+    svg += `<polygon points="${ellipse.join(' ')}" fill="rgba(231,76,60,0.10)" stroke="#c0392b" stroke-width="1.4" stroke-dasharray="4,3"/>`;
+    for (let i = 0; i < samples.length; i += 9) {
+      svg += `<circle cx="${px(samples[i][0]).toFixed(1)}" cy="${py(samples[i][1]).toFixed(1)}" r="1.6" fill="#3b5bfd" fill-opacity="0.32"/>`;
+    }
+    $('svg-gibbs').innerHTML = svg;
+    $('legend-gibbs').innerHTML =
+      `<span><i style="background:#3b5bfd;opacity:.4"></i>Gibbs 样本</span><span><i style="background:none;border:1px dashed #c0392b"></i>理论 2σ 等值线</span>` +
+      `<span style="font-family:monospace">μ̂=(${m1.mean.toFixed(2)},${m2.mean.toFixed(2)}) Σ̂=[[${cov[0][0].toFixed(2)},${cov[0][1].toFixed(2)}],[${cov[1][0].toFixed(2)},${cov[1][1].toFixed(2)}]] ρ̂=${rhoHat.toFixed(3)} vs ${rhoTrue.toFixed(3)}</span>`;
+  }
+
+  $('btn-norm').addEventListener('click', () => { normSeed = (normSeed * 31 + 17) % 100000; drawNorm(); });
+  $('btn-resnet').addEventListener('click', () => { resnetSeed = (resnetSeed * 37 + 11) % 100000; drawResNet(); });
+  $('btn-pr').addEventListener('click', () => { prSeed = (prSeed * 29 + 13) % 100000; drawPR(); });
+  $('btn-gibbs').addEventListener('click', () => { gibbsSeed = (gibbsSeed * 41 + 9) % 100000; drawGibbs(); });
+
   renderSuites();
   drawKmeans();
   drawAttn();
@@ -857,6 +1062,10 @@
   drawKF();
   drawMCMC();
   drawW2V();
+  drawNorm();
+  drawResNet();
+  drawPR();
+  drawGibbs();
   drawOpt();
 })();
 </script>

@@ -1,7 +1,7 @@
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 30 组套件全绿 = 引擎数学正确性的机器证明。
+ * 34 组套件全绿 = 引擎数学正确性的机器证明。
  */
 
 import {
@@ -87,6 +87,22 @@ import {
 import {
   nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData,
 } from '../ml/nmf.js';
+import {
+  batchNormForward, batchNormBackward, batchNormInfer, batchNormGradCheck,
+  layerNorm2d, layerNormBackward, layerNormGradCheck,
+} from '../nn/normalization.js';
+import {
+  ResidualBlock, ResNet, residualIdentityCheck, residualJacobianIdentity,
+  residualGradientCheck, trainResNet, resnetAccuracy, residualGradientHighway,
+  residualVsPlain,
+} from '../nn/resnet.js';
+import {
+  pageRank, pagerankExact, pagerankStationary, pagerankSum,
+} from '../ml/pagerank.js';
+import {
+  gibbsBivariateGaussian, gibbsMarginal, gibbsCovariance, gibbsConditionalCheck,
+  gibbsDiscrete, gibbsConvergence,
+} from '../ml/gibbs.js';
 
 /** 向量最大绝对值 */
 function vinf(v) {
@@ -161,6 +177,10 @@ export function runAllInvariants() {
     ['马尔可夫链蒙特卡洛 · MCMC', suiteMCMC],
     ['词向量 · Word2Vec SGNS', suiteWord2Vec],
     ['非负矩阵分解 · NMF', suiteNMF],
+    ['归一化层 · Normalization', suiteNormalization],
+    ['残差网络 · ResNet', suiteResNet],
+    ['网页排名 · PageRank', suitePageRank],
+    ['吉布斯采样 · Gibbs', suiteGibbs],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -1781,4 +1801,226 @@ function suiteNMF(check) {
   const allNonNegBase = res.W.every((row) => row.every((v) => v >= 0));
   check('NMF：分解基 W 全部非负（零件式表示，区别于 SVD 的符号任意性）', allNonNegBase,
     `W 维度 ${res.W.length}×${res.W[0].length}，k=${res.k}`);
+}
+
+/* ============================================================
+ * 套件 31 · 归一化层（BatchNorm + LayerNorm）
+ * ============================================================ */
+function suiteNormalization(check) {
+  const rng = mulberry32(7);
+  const d = 4, n = 64;
+  const X = [];
+  for (let i = 0; i < n; i++) X.push(new Array(d).fill(0).map(() => gaussianSample(rng, 0, 1)));
+  const ones = new Array(d).fill(1), zeros = new Array(d).fill(0);
+
+  // ① BatchNorm γ=1,β=0 ⇒ 通道均值≈0、方差≈1
+  const { Y: Yb } = batchNormForward(X, ones, zeros, { training: true });
+  let maxMean = 0, minVar = Infinity, maxVar = -Infinity;
+  for (let j = 0; j < d; j++) {
+    let mu = 0; for (let i = 0; i < n; i++) mu += Yb[i][j]; mu /= n;
+    let varr = 0; for (let i = 0; i < n; i++) varr += (Yb[i][j] - mu) ** 2; varr /= n;
+    maxMean = Math.max(maxMean, Math.abs(mu));
+    minVar = Math.min(minVar, varr); maxVar = Math.max(maxVar, varr);
+  }
+  check('Norm：BatchNorm γ=1,β=0 ⇒ 通道均值≈0、方差≈1', maxMean < 1e-12 && minVar > 0.999 && maxVar < 1.001,
+    `max|mean|=${maxMean.toExponential(2)}，var∈[${minVar.toFixed(4)}, ${maxVar.toFixed(4)}]`);
+
+  // ② 仿射恢复：输出通道均值 ≡ β、标准差 ≡ |γ|
+  const gamma = [0.7, 1.3, 2.1, 0.5], beta = [-0.4, 0.2, 0.9, -1.1];
+  const { Y: Ya } = batchNormForward(X, gamma, beta, { training: true });
+  let meanErr = 0, stdErr = 0;
+  for (let j = 0; j < d; j++) {
+    let mu = 0; for (let i = 0; i < n; i++) mu += Ya[i][j]; mu /= n;
+    let varr = 0; for (let i = 0; i < n; i++) varr += (Ya[i][j] - mu) ** 2; varr /= n;
+    meanErr = Math.max(meanErr, Math.abs(mu - beta[j]));
+    stdErr = Math.max(stdErr, Math.abs(Math.sqrt(varr) - Math.abs(gamma[j])));
+  }
+  check('Norm：BatchNorm 仿射恢复（均值≡β、标准差≡|γ|）', meanErr < 1e-12 && stdErr < 1e-3,
+    `max|Δmean|=${meanErr.toExponential(2)}，max|Δstd|=${stdErr.toExponential(2)}`);
+
+  // ③ BatchNorm 梯度检验
+  const gcB = batchNormGradCheck(X.map(r => r.slice()), ones.slice(), zeros.slice(), { seed: 42 });
+  check('Norm：BatchNorm 解析梯度 ≡ 中心差分（X/γ/β 三路）', gcB.maxRel < 1e-6 && gcB.maxAbs < 1e-7,
+    `maxRel=${gcB.maxRel.toExponential(2)}，maxAbs=${gcB.maxAbs.toExponential(2)}`);
+
+  // ④ LayerNorm 梯度检验
+  const gcL = layerNormGradCheck(X.map(r => r.slice()), { seed: 42 });
+  check('Norm：LayerNorm 解析梯度 ≡ 中心差分', gcL.maxRel < 1e-6 && gcL.maxAbs < 1e-7,
+    `maxRel=${gcL.maxRel.toExponential(2)}，maxAbs=${gcL.maxAbs.toExponential(2)}`);
+
+  // ⑤ LayerNorm γ=1,β=0 ⇒ 逐样本均值≈0、方差≈1
+  const { Y: Yl } = layerNorm2d(X, {});
+  let lnMean = 0, lnVarOk = true;
+  for (let i = 0; i < n; i++) {
+    const ymu = Yl[i].reduce((a, b) => a + b, 0) / d;
+    lnMean = Math.max(lnMean, Math.abs(ymu));
+    let xv = 0; for (const v of X[i]) xv += (v - X[i].reduce((a, b) => a + b, 0) / d) ** 2; xv /= d;
+    if (xv > 1e-9) {
+      let yv = 0; for (const v of Yl[i]) yv += (v - ymu) ** 2; yv /= d;
+      if (Math.abs(yv - 1) > 1e-3) lnVarOk = false;
+    }
+  }
+  check('Norm：LayerNorm γ=1,β=0 ⇒ 逐样本均值≈0、方差≈1', lnMean < 1e-12 && lnVarOk,
+    `max|mean|=${lnMean.toExponential(2)}`);
+
+  // ⑥ BatchNorm 推理期 running stats 更新为精确 EMA：rm_new − rm_old = m·(batchMean − rm_old)
+  const rng2 = mulberry32(123);
+  const m = 0.1;
+  const rmOld = new Array(d).fill(0.3), rvOld = new Array(d).fill(1.7);
+  const rm = rmOld.slice(), rv = rvOld.slice();
+  const g2 = new Array(d).fill(1), b2 = new Array(d).fill(0);
+  const Xb = []; for (let i = 0; i < 64; i++) Xb.push(new Array(d).fill(0).map(() => gaussianSample(rng2, 0, 1)));
+  const bm = new Array(d).fill(0), bv = new Array(d).fill(0);
+  for (const row of Xb) for (let j = 0; j < d; j++) bm[j] += row[j];
+  for (let j = 0; j < d; j++) bm[j] /= 64;
+  for (const row of Xb) for (let j = 0; j < d; j++) bv[j] += (row[j] - bm[j]) ** 2;
+  for (let j = 0; j < d; j++) bv[j] /= 64;
+  batchNormForward(Xb, g2, b2, { training: true, runningMean: rm, runningVar: rv, momentum: m });
+  let emaErr = 0;
+  for (let j = 0; j < d; j++) {
+    emaErr = Math.max(emaErr, Math.abs((rm[j] - rmOld[j]) - m * (bm[j] - rmOld[j])));
+    emaErr = Math.max(emaErr, Math.abs((rv[j] - rvOld[j]) - m * (bv[j] - rvOld[j])));
+  }
+  check('Norm：BatchNorm running stats 更新为精确 EMA（rm_new−rm_old = m·(batch−rm_old)）', emaErr < 1e-9,
+    `maxEMAdev=${emaErr.toExponential(2)}`);
+}
+
+/* ============================================================
+ * 套件 32 · 残差网络（ResNet）
+ * ============================================================ */
+function suiteResNet(check) {
+  // ① 恒等映射：零化分支 ⇒ forward(x) ≡ x
+  const idErr = residualIdentityCheck(4, 6, 42);
+  check('ResNet：零化分支 ⇒ forward(x) ≡ x（恒等映射，跳过连接保底）', idErr < 1e-12,
+    `maxDiff=${idErr.toExponential(2)}`);
+
+  // ② 零化分支 ⇒ 单样本雅可比 ∂out/∂x = I
+  const jErr = residualJacobianIdentity(4, 6, 42);
+  check('ResNet：零化分支 ⇒ 单样本雅可比 ∂out/∂x = I（跳过连接是精确恒等）', jErr < 1e-9,
+    `max|J−I|=${jErr.toExponential(2)}`);
+
+  // ③ 全参数梯度检验
+  const moons = twoMoons({ n: 60, sigma: 0.18, seed: 42 });
+  const net = new ResNet({ inputDim: 2, hiddenDim: 6, numBlocks: 2, numClasses: 2, seed: 3 });
+  const gc = residualGradientCheck(net, moons.X, moons.y, { eps: 1e-5 });
+  check('ResNet：全参数解析梯度 ≡ 中心差分（残差块+分类头）', gc.maxRel < 1e-6 && gc.maxAbs < 1e-7,
+    `maxRel=${gc.maxRel.toExponential(2)}，maxAbs=${gc.maxAbs.toExponential(2)}`);
+
+  // ④ 训练收敛：two-moons 上最终 CE 显著下降且准确率 > 0.9
+  const trainData = twoMoons({ n: 120, sigma: 0.2, seed: 5 });
+  const net2 = new ResNet({ inputDim: 2, hiddenDim: 12, numBlocks: 3, numClasses: 2, seed: 5 });
+  const losses = trainResNet(net2, trainData.X, trainData.y, { lr: 0.2, iters: 800 });
+  const initLoss = losses[0], finalLoss = losses[losses.length - 1];
+  const acc = resnetAccuracy(net2, trainData.X, trainData.y);
+  check('ResNet：two-moons 上训练收敛（最终 CE ↓ 且准确率 > 0.9）', finalLoss < initLoss * 0.5 && acc > 0.9,
+    `CE ${initLoss.toFixed(3)} → ${finalLoss.toFixed(4)}，acc=${acc.toFixed(3)}`);
+
+  // ⑤ 梯度高速公路（精确）：深度零化分支网络上，残差回传输入梯度范数 = √d，普通堆叠 = 0
+  const hw = residualGradientHighway({ inputDim: 4, hiddenDim: 16, numBlocks: 8, seed: 42, dout: null });
+  check('ResNet：梯度高速公路——深度零化分支上残差回传梯度范数=√d、普通堆叠=0（消除梯度消失）',
+    Math.abs(hw.residualGradNorm - Math.sqrt(4)) < 1e-9 && hw.plainGradNorm < 1e-12,
+    `残差=${hw.residualGradNorm.toFixed(4)}（=√4=2.0000），普通=${hw.plainGradNorm.toExponential(2)}`);
+}
+
+/* ============================================================
+ * 套件 33 · 网页排名（PageRank）
+ * ============================================================ */
+function suitePageRank(check) {
+  const A = [
+    [0, 1, 1, 0],
+    [0, 0, 1, 0],
+    [1, 0, 0, 1],
+    [0, 0, 1, 0],
+  ];
+  const { ranks, residuals } = pageRank(A, { damping: 0.85, iters: 200 });
+  const sum = pagerankSum(ranks);
+  check('PageRank：秩和 ≡ 1（概率分布）', Math.abs(sum - 1) < 1e-9, `Σr=${sum.toFixed(10)}（${ranks.length} 节点）`);
+
+  const stat = pagerankStationary(ranks, A, { damping: 0.85 });
+  check('PageRank：平稳方程 ‖G·r − r‖∞ → 0（r 是 G 的特征向量，λ=1）', stat < 1e-9,
+    `maxResidual=${stat.toExponential(2)}`);
+
+  const exact = pagerankExact(A, { damping: 0.85 });
+  let diff = 0; for (let i = 0; i < ranks.length; i++) diff = Math.max(diff, Math.abs(ranks[i] - exact[i]));
+  check('PageRank：幂迭代 ≡ 精确线性解 (I−dS)r=(1−d)/n·1（差异 < 1e-9）', diff < 1e-9,
+    `max|Δr|=${diff.toExponential(2)}`);
+
+  let mono = true;
+  for (let k = 1; k < residuals.length; k++) {
+    if (residuals[k] > 0.85 * residuals[k - 1] + 1e-12) { mono = false; break; }
+  }
+  check('PageRank：幂迭代残差单调收敛（收缩因子 d=0.85，‖r_{k+1}−r_k‖₁ ≤ d·‖·‖₁）', mono && residuals[residuals.length - 1] < 1e-10,
+    `末步残差=${residuals[residuals.length - 1].toExponential(2)}，迭代=${residuals.length} 轮`);
+
+  // 5-环正则图 → 均匀秩
+  const n5 = 5;
+  const A5 = Array.from({ length: n5 }, () => new Array(n5).fill(0));
+  for (let i = 0; i < n5; i++) A5[i][(i + 1) % n5] = 1;
+  const r5 = pageRank(A5, { damping: 0.85, iters: 100 }).ranks;
+  let maxDev = 0; for (const v of r5) maxDev = Math.max(maxDev, Math.abs(v - 1 / n5));
+  check('PageRank：5-环正则图 ⇒ 均匀秩（max 偏差 < 1e-9）', maxDev < 1e-9,
+    `max|r−1/5|=${maxDev.toExponential(2)}`);
+
+  // 含悬挂节点：质量守恒 + 平稳方程成立
+  const A6 = [
+    [0, 1, 0],
+    [0, 0, 1],
+    [0, 0, 0], // 节点 2 悬挂（无出边）
+  ];
+  const r6 = pageRank(A6, { damping: 0.85, iters: 200 });
+  const stat6 = pagerankStationary(r6.ranks, A6, { damping: 0.85 });
+  check('PageRank：含悬挂节点图仍质量守恒（Σr=1）且收敛到合法平稳分布',
+    Math.abs(pagerankSum(r6.ranks) - 1) < 1e-9 && stat6 < 1e-9,
+    `Σr=${pagerankSum(r6.ranks).toFixed(10)}，stationary=${stat6.toExponential(2)}`);
+}
+
+/* ============================================================
+ * 套件 34 · 吉布斯采样（Gibbs Sampling）
+ * ============================================================ */
+function suiteGibbs(check) {
+  const mu = [1, -0.5];
+  const Sigma = [[2, 1.2], [1.2, 3]];
+  const { samples } = gibbsBivariateGaussian(mu, Sigma, { iters: 20000, burnIn: 2000, thin: 1, seed: 42 });
+  const m0 = gibbsMarginal(samples, 0), m1 = gibbsMarginal(samples, 1);
+  check('Gibbs：二元高斯经验均值 ≡ μ（偏差 < 0.05）',
+    Math.abs(m0.mean - mu[0]) < 0.05 && Math.abs(m1.mean - mu[1]) < 0.05,
+    `μ̂=(${m0.mean.toFixed(4)}, ${m1.mean.toFixed(4)}) vs μ=(${mu[0]}, ${mu[1]})`);
+
+  const cov = gibbsCovariance(samples);
+  const rel = (a, b) => Math.abs(a - b) / b;
+  check('Gibbs：二元高斯经验协方差 ≡ Σ（相对误差 < 0.08）',
+    rel(cov[0][0], 2) < 0.08 && rel(cov[1][1], 3) < 0.08 && rel(cov[0][1], 1.2) < 0.08,
+    `Σ̂=[[${cov[0][0].toFixed(3)}, ${cov[0][1].toFixed(3)}],[${cov[0][1].toFixed(3)}, ${cov[1][1].toFixed(3)}]] vs Σ=[[2,1.2],[1.2,3]]`);
+
+  check('Gibbs：单坐标边际 ≡ 一元高斯（方差 rel < 0.08）',
+    rel(m0.variance, 2) < 0.08 && rel(m1.variance, 3) < 0.08,
+    `σ̂²=(${m0.variance.toFixed(3)}, ${m1.variance.toFixed(3)}) vs (2, 3)`);
+
+  const cc = gibbsConditionalCheck(mu, Sigma, 0.3, { n: 50000, seed: 42 });
+  check('Gibbs：实现的条件分布 ≡ 理论条件（均值偏差 < 0.02、方差 rel < 0.05）',
+    cc.meanErr < 0.02 && cc.varRelErr < 0.05,
+    `|Δμ|=${cc.meanErr.toFixed(4)}，Δσ²rel=${cc.varRelErr.toFixed(4)}`);
+
+  // 离散二维：经验联合 ≡ 真实联合
+  const joint = [[0.1, 0.2, 0.1], [0.15, 0.25, 0.2]]; // Σ=1
+  const { samples: emp } = gibbsDiscrete(joint, [0, 0], { iters: 40000, burnIn: 4000, thin: 1, seed: 42 });
+  let maxCell = 0, sumEmp = 0;
+  for (let i = 0; i < 2; i++) for (let j = 0; j < 3; j++) {
+    maxCell = Math.max(maxCell, Math.abs(emp[i][j] - joint[i][j]));
+    sumEmp += emp[i][j];
+  }
+  check('Gibbs：离散经验联合 ≡ 真实联合（max 格点误差 < 0.02，Σ=1）——链的不变分布即目标',
+    maxCell < 0.02 && Math.abs(sumEmp - 1) < 1e-9,
+    `max|Δjoint|=${maxCell.toFixed(4)}，Σ=${sumEmp.toFixed(6)}`);
+
+  // 收敛（平稳性）：前后半程坐标均值应一致（链已平稳）；经验相关系数 ≈ ρ
+  const half = Math.floor(samples.length / 2);
+  const meanOf = (arr) => { let s = 0; for (const r of arr) s += r[0]; return s / arr.length; };
+  const mFirst = meanOf(samples.slice(0, half));
+  const mSecond = meanOf(samples.slice(half));
+  const rho = cov[0][1] / Math.sqrt(cov[0][0] * cov[1][1]);
+  const rhoTrue = 1.2 / Math.sqrt(2 * 3);
+  check('Gibbs：平稳收敛（前后半程均值一致）且经验相关系数 ≈ ρ（rel < 0.08）',
+    Math.abs(mFirst - mSecond) < 0.05 && rel(rho, rhoTrue) < 0.08,
+    `前半程μ=${mFirst.toFixed(4)} vs 后半程μ=${mSecond.toFixed(4)}，ρ̂=${rho.toFixed(4)} vs ρ=${rhoTrue.toFixed(4)}`);
 }

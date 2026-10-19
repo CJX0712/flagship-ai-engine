@@ -37,7 +37,9 @@ flagship-ai-engine/
 │   │   ├── gbdt.js              # GBDT 梯度提升树（回归树基学习器 + 负梯度）
 │   │   ├── kalman.js            # 卡尔曼滤波（Joseph 更新 + DARE 稳态）
 │   │   ├── mcmc.js              # Metropolis-Hastings + 重要性采样
-│   │   └── nmf.js               # NMF 非负矩阵分解（Lee-Seung 乘性更新）
+│   │   ├── nmf.js               # NMF 非负矩阵分解（Lee-Seung 乘性更新）
+│   │   ├── pagerank.js          # 网页排名(Page&Brin'98) 幂迭代/精确解/悬挂节点质量守恒
+│   │   ├── gibbs.js             # 吉布斯采样(Geman&Geman'84) 二元高斯闭式条件/离散
 │   │   ├── svm.js               # RBF 核 SVM（SMO 对偶求解，KKT 自检）
 │   │   ├── boosting.js          # AdaBoost（决策树桩加权集成）
 │   │   ├── hmm.js               # HMM 前向/后向 + Baum-Welch(EM)
@@ -51,13 +53,15 @@ flagship-ai-engine/
 │   │   ├── cnn.js               # 卷积/池化（im2col+GEMM，反向传播梯度检验）
 │   │   ├── optimizers.js        # SGD-Momentum / RMSProp / Adam + minimize
 │   │   ├── activations.js       # GELU/SiLU/Mish/HardSwish/Softplus + erf(A&S 7.1.26)
-│   │   └── schedulers.js        # Noam/SGDR余弦/阶梯/指数/线性 warmup
+│   │   ├── schedulers.js        # Noam/SGDR余弦/阶梯/指数/线性 warmup
+│   │   ├── normalization.js     # BatchNorm(Ioffe&Szegedy'15)/LayerNorm(Ba'16) + 梯度检验
+│   │   └── resnet.js            # 残差网络(He'15) 残差块+分类头+useSkip 对照 + 梯度检验
 │   ├── rl/
 │   │   ├── valueIteration.js    # 值迭代/策略评估/网格世界/链式 MDP 暴力枚举
 │   │   └── qLearning.js         # Q-learning(免模型TD) + Bellman 残差 + qFromV
 │   └── verify/
-│       └── invariants.js        # 30 组不变量自检套件（Node 与浏览器共用同一份）
-├── test/run.mjs                 # 无头自检入口 → PASS 30/30
+│       └── invariants.js        # 34 组不变量自检套件（Node 与浏览器共用同一份）
+├── test/run.mjs                 # 无头自检入口 → PASS 34/34
 ├── showcase/
 │   ├── template.html            # 旗舰展示页模板（9 个实时演示）
 │   └── index.html               # 生成物：单文件、内联引擎、双击即用
@@ -126,8 +130,8 @@ graph LR
 | T4 | ml/classification + clustering + dimreduction + tree | T1,T2 |
 | T5 | nn/dense（反向传播 + 梯度检验） | T1,T2 |
 | T6 | nn/attention + transformer | T1,T2,T5 |
-| T7 | verify/invariants（30 组套件） | T1–T6 |
-| T8 | test/run.mjs 跑通 30/30 | T7 |
+| T7 | verify/invariants（34 组套件） | T1–T6 |
+| T8 | test/run.mjs 跑通 34/34 | T7 |
 | T9 | bundle + showcase 单文件页 | T7 |
 | T10 | 文档 + GitHub 推送 + CI 绿 | T8,T9 |
 

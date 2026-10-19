@@ -33,6 +33,8 @@ const FILES = [
   'src/ml/kalman.js',
   'src/ml/mcmc.js',
   'src/ml/nmf.js',
+  'src/ml/pagerank.js',
+  'src/ml/gibbs.js',
   'src/nn/dense.js',
   'src/nn/attention.js',
   'src/nn/transformer.js',
@@ -40,10 +42,12 @@ const FILES = [
   'src/nn/lstm.js',
   'src/nn/optimizers.js',
   'src/nn/activations.js',
+  'src/nn/normalization.js',
   'src/nn/schedulers.js',
   'src/nn/cnn.js',
   'src/nn/vae.js',
   'src/nn/word2vec.js',
+  'src/nn/resnet.js',
   'src/rl/valueIteration.js',
   'src/rl/qLearning.js',
   'src/verify/invariants.js',
@@ -56,9 +60,22 @@ for (const f of FILES) {
   for (const m of src.matchAll(/^export\s+(?:function|class|const)\s+([A-Za-z0-9_$]+)/gm)) {
     names.push(m[1]);
   }
-  src = src.replace(/^import\s[^;]*;.*$/gm, ''); // 本库 import 均为单行
+  // 本库 import 均为单行；剥离的同时重建「别名导入」（如 `import { mean as colMean }` → `const colMean = mean;`），
+  // 否则被剥离后别名在单一 IIFE 作用域内成为未定义引用（导致展示页自检误报 FAIL）。
+  const rebinds = [];
+  src = src.replace(/^import\s[^;]*;.*$/gm, (line) => {
+    const m = line.match(/import\s*\{([^}]*)\}/);
+    if (m) {
+      for (const part of m[1].split(',')) {
+        const am = part.trim().match(/^([A-Za-z0-9_$]+)\s+as\s+([A-Za-z0-9_$]+)$/);
+        if (am) rebinds.push(`const ${am[2]} = ${am[1]};`);
+      }
+    }
+    return '';
+  });
   src = src.replace(/^export\s+/gm, '');
   body += `\n/* ═══════════ ${f} ═══════════ */\n${src}`;
+  if (rebinds.length) body += `\n${rebinds.join('\n')}`;
 }
 
 const bundle = `(function () {

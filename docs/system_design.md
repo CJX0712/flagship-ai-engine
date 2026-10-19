@@ -1,7 +1,7 @@
 # 旗舰AI引擎 (Flagship AI Engine) — 系统架构设计说明书
 
 > 作者署名：晨星 (Morning Star / CJX0712) ｜ 架构师：高见远 (Bob)
-> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、30/30 全绿**。
+> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、34/34 全绿**。
 
 ---
 
@@ -11,13 +11,13 @@
 
 | 设计稿 | 最终实现 | 说明 |
 |---|---|---|
-| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 30 组套件，Node 与浏览器共用同一份 |
+| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 34 组套件，Node 与浏览器共用同一份 |
 | `src/verify/suites.js` | 并入 `src/verify/invariants.js` | 套件与检查器同文件，杜绝跨文件漂移 |
 | `src/core/rng.js` / `src/core/utils.js` | 并入 `src/core/stats.js`（mulberry32/gaussianSample）与 `src/core/linalg.js`/`numerical.js` | 随机源归概率层，工具归各自的消费者 |
 | 浏览器 `<script type="module">` 直引 src | `scripts/bundle.mjs` 按依赖序内联进 `showcase/index.html`（`globalThis.FlagshipAI`） | 兼容 `file://` 双击即用；`node --check` 兜底语法校验 |
-| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 30/30`（CI grep 校验） | 语义一致，命名对齐实现 |
+| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 34/34`（CI grep 校验） | 语义一致，命名对齐实现 |
 
-落地验证结论：`node test/run.mjs` → **PASS 30/30（1.0s）**，与本设计书的全部不变量承诺一致。
+落地验证结论：`node test/run.mjs` → **PASS 34/34（1.8s，206 条不变量）**，与本设计书的全部不变量承诺一致。
 
 ### v1.1 增补（2026-10-19）
 
@@ -65,6 +65,15 @@
 | `src/ml/mcmc.js`（Metropolis-Hastings + 重要性采样） | 未归一化密度即可采样；经验矩 ≡ 解析矩（σ²=1.0013、E[x⁴]=2.990）；细致平衡；接受率随提议尺度单调；IS 估计 E[x²]=0.9988 |
 | `src/nn/word2vec.js`（SGNS，Mikolov 2013） | 解析梯度 ≡ 中心差分（2.51e-10）；σ(−x)=1−σ(x) bit 级；训练后共现相似度 0.927 vs 非共现 0.086 |
 | `src/ml/nmf.js`（NMF，Lee & Seung 1999/2001） | 重构误差单调不增（最大回升 0）；非负性保持；秩匹配数据精确恢复（6.8e-19）；≥ 同秩 SVD 最优误差 |
+
+### v1.6 增补（2026-10-19）
+
+| 增补模块 | 不变量（定理背书） |
+|---|---|
+| `src/nn/normalization.js`（BatchNorm / LayerNorm） | γ=1,β=0 ⇒ 逐通道均值≈0、方差=1（<1e-9）；running stats 精确 EMA 恒等式；解析梯度 ≡ 中心差分（1.1e-7）；LayerNorm 单样本 σ²=1.0 |
+| `src/nn/resnet.js`（残差网络，He 2015） | 零化分支 ⇒ forward≡x（maxDiff=0）、Jacobian=I（2.9e-11）；全参数梯度 ≡ 中心差分（1.8e-8）；two-moons 收敛 acc=1.000；梯度高速公路（残差回传范数=√d、普通=0） |
+| `src/ml/pagerank.js`（网页排名，Page & Brin 1998） | 秩和≡1；平稳方程 ‖G·r−r‖∞→0；幂迭代 ≡ 精确线性解（4.4e-14）；残差单调收敛；含悬挂节点仍守恒 |
+| `src/ml/gibbs.js`（吉布斯采样，Geman & Geman 1984 / Casella & George 1992） | 经验均值 ≡ μ（偏差<0.05）；协方差 ≡ Σ（rel<0.08）；条件分布 ≡ 理论；离散经验联合 ≡ 真实（Σ=1）；平稳收敛 ρ̂=0.498 vs ρ=0.490 |
 
 ---
 
