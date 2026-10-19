@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">22 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">26 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -199,6 +199,24 @@
       <svg id="svg-act" viewBox="0 0 460 300"></svg>
       <div class="legend" id="legend-act"></div>
     </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>高斯过程回归（后验均值 + 95% 置信带）</strong>
+        <button id="btn-gpr">换一批观测</button>
+      </div>
+      <div class="desc">RBF 核 · Cholesky 求解 · 训练点处插值、远点方差饱和至先验 σ_f²</div>
+      <svg id="svg-gpr" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-gpr"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>卡尔曼滤波（真值 vs 观测 vs 滤波估计）</strong>
+        <button id="btn-kf">换一条轨迹</button>
+      </div>
+      <div class="desc">Joseph 协方差更新 · 增益 K = P⁻H/(HP⁻H+R) · 收敛到 DARE 稳态</div>
+      <svg id="svg-kf" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-kf"></div>
+    </div>
   </div>
 
   <div class="refs">
@@ -212,6 +230,8 @@
     <code>van der Maaten &amp; Hinton 2008 · t-SNE</code><code>Kingma &amp; Ba 2015 · Adam</code>
     <code>Schölkopf et al. 1998 · Kernel PCA</code><code>Ng, Jordan &amp; Weiss 2002 · Spectral Clustering</code>
     <code>Hendrycks &amp; Gimpel 2016 · GELU</code><code>Loshchilov &amp; Hutter 2016 · SGDR</code>
+    <code>LeCun et al. 1998 · CNN</code><code>Rasmussen &amp; Williams 2006 · GPML</code>
+    <code>Friedman 2001 · Gradient Boosting</code><code>Kalman 1960 · 最优滤波</code>
   </div>
 
   <footer>
@@ -2130,6 +2150,478 @@ function spectralCluster(X, k, { neighbors = 7, gamma = 1, seed = 42, iters = 10
   return { labels: km.labels, W, L, degrees, U, T, sse: km.sse };
 }
 
+/* ═══════════ src/ml/gpr.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 高斯过程回归（Gaussian Process Regression）
+ * 站在：Rasmussen & Williams 2006《Gaussian Processes for Machine Learning》
+ *       （算法 2.1 预测；公式 5.8 边际似然；公式 5.9 超参数梯度）
+ * 核：RBF / 平方指数 κ(x,z) = σ_f²·exp(−‖x−z‖²/(2ℓ²))，含噪声项 σ_n²·I。
+ * 不变量：
+ *   ① Cholesky 分解精确：LLᵀ ≡ K（核矩阵对称正定）
+ *   ② 无噪声极限插值：σ_n → 0 时训练点后验均值 ≡ 观测 y（GP 的插值性质）
+ *   ③ 后验方差 ≤ 先验方差，且远离训练点时 → σ_f²（不确定性随距离单调饱和）
+ *   ④ 边际似然解析梯度 ≡ 中心差分（R&W 5.9：½tr[(ααᵀ − K⁻¹)∂K/∂θ]）
+ *   ⑤ 单点闭式：n=1 时 μ(x*) = k(x*,x)·y/(k(x,x)+σ_n²)，σ² = σ_f² − k²/(k+σ_n²)
+ */
+
+
+
+
+/**
+ * GP 核矩阵：K_ij = σ_f²·exp(−‖x_i−x_j‖²/(2ℓ²)) + σ_n²·δ_ij
+ * @param {number[][]} X
+ * @param {number[][]} [Z] 缺省为 X
+ */
+function gprKernelMatrix(X, Z, { lengthScale = 1, sigmaF = 1, noise = 1e-6 } = {}) {
+  const Zz = Z || X;
+  const n = X.length, m = Zz.length;
+  const gamma = 1 / (2 * lengthScale * lengthScale);
+  const K = zeros(n, m);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < m; j++) {
+      K[i][j] = sigmaF * sigmaF * rbfKernel(X[i], Zz[j], gamma);
+    }
+  }
+  if (!Z || Z === X) {
+    for (let i = 0; i < n; i++) K[i][i] += noise * noise;
+  }
+  return K;
+}
+
+/**
+ * GP 拟合：Cholesky 分解 K = LLᵀ，α = K⁻¹y，并给出边际似然。
+ * @returns {{X:number[][], y:number[], K:number[][], L:number[][], alpha:number[],
+ *            logML:number, params:object}}
+ */
+function gprFit(X, y, { lengthScale = 1, sigmaF = 1, noise = 1e-6 } = {}) {
+  const K = gprKernelMatrix(X, null, { lengthScale, sigmaF, noise });
+  const L = cholesky(K);
+  // α = K⁻¹y：先解 L z = y，再解 Lᵀ α = z
+  const z = solve(L, y);
+  const alpha = solve(transpose(L), z);
+  let quad = 0;
+  for (let i = 0; i < y.length; i++) quad += y[i] * alpha[i];
+  let logDet = 0;
+  for (let i = 0; i < L.length; i++) logDet += Math.log(L[i][i]);
+  const logML = -0.5 * quad - logDet - 0.5 * y.length * Math.log(2 * Math.PI);
+  return { X, y, K, L, alpha, logML, params: { lengthScale, sigmaF, noise } };
+}
+
+/**
+ * GP 预测：μ* = K_*ᵀα，σ²* = κ(x*,x*) − vᵀv（v = L⁻¹K_*，R&W 算法 2.1）
+ * @returns {{mean:number[], variance:number[]}}
+ */
+function gprPredict(model, Xs) {
+  const { X, alpha, L, params } = model;
+  const { lengthScale, sigmaF } = params;
+  const Ks = gprKernelMatrix(X, Xs, { lengthScale, sigmaF }); // n × m（不含噪声）
+  const m = Xs.length;
+  const mean = new Array(m).fill(0);
+  const variance = new Array(m).fill(0);
+  for (let j = 0; j < m; j++) {
+    // v = L⁻¹ k_*（下三角前代）
+    const kstar = new Array(X.length);
+    for (let i = 0; i < X.length; i++) kstar[i] = Ks[i][j];
+    const v = solve(L, kstar);
+    let mu = 0, vv = 0;
+    for (let i = 0; i < kstar.length; i++) {
+      mu += kstar[i] * alpha[i];
+      vv += v[i] * v[i];
+    }
+    const prior = sigmaF * sigmaF; // κ(x*,x*) = σ_f²
+    mean[j] = mu;
+    variance[j] = Math.max(prior - vv, 0);
+  }
+  return { mean, variance };
+}
+
+/** 先验方差（κ(x*,x*) = σ_f²），供不确定性对照 */
+function gprPriorVariance(model) {
+  return model.params.sigmaF * model.params.sigmaF;
+}
+
+/**
+ * K⁻¹（经 Cholesky 逐列求解；n 小时开销可接受，仅供不变量对照）
+ */
+function gprInverseK(model) {
+  const n = model.K.length;
+  const I = zeros(n, n);
+  for (let i = 0; i < n; i++) I[i][i] = 1;
+  const cols = [];
+  for (let j = 0; j < n; j++) {
+    const e = new Array(n).fill(0);
+    e[j] = 1;
+    cols.push(solve(model.K, e));
+  }
+  const inv = zeros(n, n);
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) inv[i][j] = cols[j][i];
+  return inv;
+}
+
+/**
+ * 边际似然对超参数的解析梯度（R&W 公式 5.9）：
+ *   ∂/∂θ log p(y|X,θ) = ½·tr[(ααᵀ − K⁻¹)·∂K/∂θ]
+ * @returns {{dLengthScale:number, dSigmaF:number, dNoise:number}}
+ */
+function gprHyperGradAnalytic(model) {
+  const { X, alpha, params, K } = model;
+  const { lengthScale: ell, sigmaF, noise } = params;
+  const n = X.length;
+  const Kinv = gprInverseK(model);
+  // W = ααᵀ − K⁻¹
+  const W = zeros(n, n);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) W[i][j] = alpha[i] * alpha[j] - Kinv[i][j];
+  }
+  const dist2 = zeros(n, n);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      let s = 0;
+      for (let d = 0; d < X[i].length; d++) { const dd = X[i][d] - X[j][d]; s += dd * dd; }
+      dist2[i][j] = s;
+    }
+  }
+  const gamma = 1 / (2 * ell * ell);
+  let gL = 0, gF = 0, gN = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const base = rbfKernel(X[i], X[j], gamma); // exp(−‖Δ‖²/2ℓ²)
+      // ∂K/∂ℓ = σ_f²·base·‖Δ‖²/ℓ³
+      const dKdl = sigmaF * sigmaF * base * dist2[i][j] / (ell * ell * ell);
+      // ∂K/∂σ_f = 2σ_f·base
+      const dKdf = 2 * sigmaF * base;
+      gL += W[i][j] * dKdl;
+      gF += W[i][j] * dKdf;
+    }
+    // ∂K/∂σ_n = 2σ_n·δ_ij
+    gN += W[i][i] * 2 * noise;
+  }
+  return { dLengthScale: 0.5 * gL, dSigmaF: 0.5 * gF, dNoise: 0.5 * gN };
+}
+
+/** 边际似然对超参数的中心差分梯度（解析梯度的交叉验证标尺） */
+function gprHyperGradNumeric(model, { eps = 1e-6 } = {}) {
+  const p = model.params;
+  const f = (over) => gprFit(model.X, model.y, { ...p, ...over }).logML;
+  const d = (key) => (f({ [key]: p[key] + eps }) - f({ [key]: p[key] - eps })) / (2 * eps);
+  return {
+    dLengthScale: d('lengthScale'),
+    dSigmaF: d('sigmaF'),
+    dNoise: d('noise'),
+  };
+}
+
+/* ═══════════ src/ml/gbdt.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 梯度提升回归树（GBDT / Gradient Boosting）
+ * 站在：Friedman 2001《Greedy Function Approximation: A Gradient Boosting Machine》
+ *       Friedman 1999（CART 回归树作为基学习器）· Chen & Guestrin 2016（XGBoost 的同源思想）
+ * 核心：用「负梯度」替代 AdaBoost 的「样本权重重标定」——
+ *       每轮 F_m = F_{m−1} + lr·h_m，其中 h_m 拟合残差 r_i = −∂L/∂F = y_i − F_{m−1}(x_i)。
+ * 不变量：
+ *   ① 训练 MSE 单调不增（贪心函数逼近的直接推论，学习率足够小时必然成立）
+ *   ② 每棵树的拟合目标 ≡ 当前残差（负梯度），与残差相关系数 > 0（方向正确）
+ *   ③ 学习率收缩极限：lr → 0 时预测 ≡ 初始常数 ȳ（收缩退化为均值模型）
+ *   ④ 树桩闭式：maxDepth = 1 时每个叶子的值 ≡ 该叶残差均值（最小二乘解析解）
+ *   ⑤ 迭代增益：末轮训练 MSE 显著低于单棵树与常数基线
+ */
+
+/**
+ * CART 回归树：递归二分最小化平方误差 Σ(y−ȳ)²。
+ * @returns {object} 节点 {leaf, value, feature, threshold, left, right, n}
+ */
+function regressionTreeFit(X, y, {
+  maxDepth = 3, minSamplesSplit = 2, minSamplesLeaf = 1,
+} = {}) {
+  const d = X[0].length;
+
+  const sse = (ys) => {
+    if (ys.length === 0) return 0;
+    const mu = ys.reduce((a, b) => a + b, 0) / ys.length;
+    let s = 0;
+    for (const v of ys) s += (v - mu) ** 2;
+    return s;
+  };
+
+  const build = (idx, depth) => {
+    const ys = idx.map((i) => y[i]);
+    const mu = ys.reduce((a, b) => a + b, 0) / ys.length;
+    const base = sse(ys);
+    if (depth >= maxDepth || idx.length < minSamplesSplit || base < 1e-15) {
+      return { leaf: true, value: mu, n: idx.length };
+    }
+    let best = { gain: 0, feature: -1, threshold: 0 };
+    for (let f = 0; f < d; f++) {
+      // 候选阈值：该特征上相邻取值的中点
+      const vals = [...new Set(idx.map((i) => X[i][f]))].sort((a, b) => a - b);
+      for (let t = 0; t < vals.length - 1; t++) {
+        const thr = (vals[t] + vals[t + 1]) / 2;
+        const li = [], ri = [];
+        for (const i of idx) (X[i][f] <= thr ? li : ri).push(i);
+        if (li.length < minSamplesLeaf || ri.length < minSamplesLeaf) continue;
+        const gain = base - sse(li.map((i) => y[i])) - sse(ri.map((i) => y[i]));
+        if (gain > best.gain) best = { gain, feature: f, threshold: thr, li, ri };
+      }
+    }
+    if (best.feature < 0 || best.gain <= 1e-15) {
+      return { leaf: true, value: mu, n: idx.length };
+    }
+    return {
+      leaf: false, feature: best.feature, threshold: best.threshold, n: idx.length,
+      left: build(best.li, depth + 1),
+      right: build(best.ri, depth + 1),
+    };
+  };
+
+  return build(X.map((_, i) => i), 0);
+}
+
+/** 回归树单点预测 */
+function regressionTreePredict(node, x) {
+  let cur = node;
+  while (!cur.leaf) {
+    cur = x[cur.feature] <= cur.threshold ? cur.left : cur.right;
+  }
+  return cur.value;
+}
+
+/** 回归树批量预测 */
+function regressionTreePredictAll(node, X) {
+  return X.map((x) => regressionTreePredict(node, x));
+}
+
+/**
+ * GBDT 拟合。
+ * @returns {{trees:object[], lr:number, init:number, trainLoss:number[], residuals:number[][]}}
+ */
+function gbdtFit(X, y, {
+  nEstimators = 50, lr = 0.1, maxDepth = 3, minSamplesSplit = 2, minSamplesLeaf = 1,
+} = {}) {
+  const n = X.length;
+  const init = y.reduce((a, b) => a + b, 0) / n;
+  let F = new Array(n).fill(init);
+  const trees = [];
+  const trainLoss = [];
+  const residuals = [];
+  const mse = (pred) => {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += (y[i] - pred[i]) ** 2;
+    return s / n;
+  };
+  trainLoss.push(mse(F));
+  for (let m = 0; m < nEstimators; m++) {
+    // 负梯度（MSE 损失下即残差）
+    const r = new Array(n);
+    for (let i = 0; i < n; i++) r[i] = y[i] - F[i];
+    residuals.push(r);
+    const tree = regressionTreeFit(X, r, { maxDepth, minSamplesSplit, minSamplesLeaf });
+    trees.push(tree);
+    for (let i = 0; i < n; i++) F[i] += lr * regressionTreePredict(tree, X[i]);
+    trainLoss.push(mse(F));
+  }
+  return { trees, lr, init, trainLoss, residuals, finalPred: F };
+}
+
+/** GBDT 预测（累加全部树的收缩输出） */
+function gbdtPredict(model, X) {
+  const n = X.length;
+  const out = new Array(n).fill(model.init);
+  for (const tree of model.trees) {
+    for (let i = 0; i < n; i++) out[i] += model.lr * regressionTreePredict(tree, X[i]);
+  }
+  return out;
+}
+
+/**
+ * 分阶段预测序列（每轮一个快照），用于验证损失的单调下降轨迹。
+ * @returns {number[][]} staged[m][i] = 第 m 轮后对 X[i] 的预测
+ */
+function gbdtStagedPredict(model, X) {
+  const n = X.length;
+  const F = new Array(n).fill(model.init);
+  const staged = [F.slice()];
+  for (const tree of model.trees) {
+    for (let i = 0; i < n; i++) F[i] += model.lr * regressionTreePredict(tree, X[i]);
+    staged.push(F.slice());
+  }
+  return staged;
+}
+
+/** 皮尔逊相关系数（用于「树 ≡ 残差方向」的不变量） */
+function pearsonCorr(a, b) {
+  const n = a.length;
+  const ma = a.reduce((s, v) => s + v, 0) / n;
+  const mb = b.reduce((s, v) => s + v, 0) / n;
+  let num = 0, da = 0, db = 0;
+  for (let i = 0; i < n; i++) {
+    num += (a[i] - ma) * (b[i] - mb);
+    da += (a[i] - ma) ** 2;
+    db += (b[i] - mb) ** 2;
+  }
+  return num / Math.sqrt(da * db);
+}
+
+/* ═══════════ src/ml/kalman.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 卡尔曼滤波（Kalman Filter）
+ * 站在：Kalman 1960《A New Approach to Linear Filtering and Prediction Problems》
+ *       Grewal & Andrews《Kalman Filtering: Theory and Practice》（Joseph 协方差更新式）
+ *       Anderson & Moore《Optimal Filtering》（离散代数 Riccati 方程 DARE）
+ * 模型（线性高斯状态空间）：x_t = F·x_{t−1} + w_t (w~N(0,Q))；z_t = H·x_t + v_t (v~N(0,R))
+ * 协方差更新采用 **Joseph 形式** P = (I−KH)P⁻(I−KH)ᵀ + KRKᵀ——
+ * 相比朴素 (I−KH)P⁻ 在浮点下强制保持对称半正定（Grewal & Andrews 的工业标准做法）。
+ * 不变量：
+ *   ① 卡尔曼增益闭式 K = P⁻Hᵀ(HP⁻Hᵀ+R)⁻¹（最优性的必要条件）
+ *   ② 新息协方差一致：新息经验协方差 ≈ S = HP⁻Hᵀ+R（滤波器自洽性的统计检验）
+ *   ③ 新息白噪声：滞后−1 自相关 ≈ 0（新息序列必须是白噪声，否则滤波器非最优）
+ *   ④ 稳态收敛：P⁻ 迭代收敛到离散代数 Riccati 方程（DARE）的解析解
+ *   ⑤ 协方差恒为对称半正定（Joseph 形式的直接保障）
+ */
+
+
+
+/** 矩阵减法 A − B */
+function msub(A, B) {
+  return A.map((row, i) => row.map((v, j) => v - B[i][j]));
+}
+
+/**
+ * 卡尔曼滤波主循环。
+ * @param {{F:number[][], H:number[][], Q:number[][], R:number[][], x0:number[], P0:number[][]}} model
+ * @param {number[][]} observations 每步观测 z_t（长度 m 的列向量）
+ * @returns {{states:number[][], covariances:number[][][], predicted:number[][],
+ *            predictedCov:number[][][], gains:number[][][], innovations:number[][],
+ *            innovationCov:number[][][], logLik:number[]}}
+ */
+function kalmanFilter(model, observations) {
+  const { F, H, Q, R } = model;
+  const n = F.length;             // 状态维
+  const m = H.length;             // 观测维
+  let x = [...model.x0];
+  let P = model.P0.map((r) => [...r]);
+  const Ft = transpose(F), Ht = transpose(H);
+  const I = identity(n);
+
+  const states = [], covariances = [], predicted = [], predictedCov = [];
+  const gains = [], innovations = [], innovationCov = [], logLik = [];
+
+  for (const z of observations) {
+    // —— 预测步 ——
+    const xMinus = matvec(F, x);
+    const PMinus = matmul(matmul(F, P), Ft).map((row, i) => row.map((v, j) => v + Q[i][j]));
+    predicted.push(xMinus);
+    predictedCov.push(PMinus);
+
+    // —— 更新步 ——
+    const S = matmul(matmul(H, PMinus), Ht).map((row, i) => row.map((v, j) => v + R[i][j]));
+    // K = P⁻HᵀS⁻¹：逐列解 S·kᵀ = (P⁻Hᵀ)ᵀ
+    const PHt = matmul(PMinus, Ht);
+    const K = zeros(n, m);
+    for (let c = 0; c < m; c++) {
+      const rhs = new Array(m);
+      for (let r = 0; r < m; r++) rhs[r] = PHt[r][c]; // S 对称，列/行同
+      const sol = solve(S, rhs);
+      for (let r = 0; r < n; r++) K[r][c] = sol[r];
+    }
+    const innovation = [];
+    for (let r = 0; r < m; r++) {
+      let hv = 0;
+      for (let c = 0; c < n; c++) hv += H[r][c] * xMinus[c];
+      innovation.push(z[r] - hv);
+    }
+    // x = x⁻ + K·innovation
+    const Kinn = matvec(K, innovation);
+    const xNew = xMinus.map((v, i) => v + Kinn[i]);
+    // Joseph 形式：P = (I−KH)P⁻(I−KH)ᵀ + KRKᵀ
+    const KH = matmul(K, H);
+    const IKH = msub(I, KH);
+    const P1 = matmul(matmul(IKH, PMinus), transpose(IKH));
+    const KRKt = matmul(matmul(K, R), transpose(K));
+    const PNew = P1.map((row, i) => row.map((v, j) => v + KRKt[i][j]));
+
+    states.push(xNew);
+    covariances.push(PNew);
+    gains.push(K);
+    innovations.push(innovation);
+    innovationCov.push(S);
+    // 高斯对数似然增量（滤波器一致性的副产品）
+    const Sinv = solve(S, innovation);
+    let q = 0;
+    for (let r = 0; r < m; r++) q += innovation[r] * Sinv[r];
+    let logDetS = 0;
+    const Ls = cholDiag(S);
+    for (const d of Ls) logDetS += Math.log(d);
+    logLik.push(-0.5 * (q + m * Math.log(2 * Math.PI) + logDetS));
+
+    x = xNew;
+    P = PNew;
+  }
+  return {
+    states, covariances, predicted, predictedCov,
+    gains, innovations, innovationCov, logLik,
+  };
+}
+
+/** 对称正定阵的 Cholesky 对角元（仅取对数行列式用） */
+function cholDiag(A) {
+  const n = A.length;
+  const L = zeros(n, n);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j <= i; j++) {
+      let s = A[i][j];
+      for (let k = 0; k < j; k++) s -= L[i][k] * L[j][k];
+      L[i][j] = i === j ? Math.sqrt(Math.max(s, 1e-300)) : s / L[j][j];
+    }
+  }
+  return L.map((row, i) => row[i]);
+}
+
+/**
+ * 标量系统的离散代数 Riccati 方程（DARE）解析解。
+ * 稳态预测方差 P⁻ 满足：h²P⁻² + [r(1−f²) − qh²]P⁻ − qr = 0，取正根。
+ */
+function kalmanScalarSteadyState(f, h, q, r) {
+  const A = h * h;
+  const B = r * (1 - f * f) - q * h * h;
+  const C = -q * r;
+  const disc = Math.sqrt(Math.max(B * B - 4 * A * C, 0));
+  const Pminus = (-B + disc) / (2 * A);
+  const Kss = Pminus * h / (Pminus * h * h + r);
+  return { Pminus, Kss };
+}
+
+/**
+ * 迭代求解标量 DARE 的不动点（预测方差递推），用于与解析解互证。
+ */
+function kalmanScalarIterate(f, h, q, r, iters = 5000) {
+  let Pm = q; // 从 Q 起迭代（也可从 0 起，收敛到同一不动点）
+  for (let k = 0; k < iters; k++) {
+    const K = Pm * h / (Pm * h * h + r);
+    const P = (1 - K * h) * Pm;
+    Pm = f * f * P + q;
+  }
+  return Pm;
+}
+
+/** 新息序列的滞后−k 自相关（白噪声检验） */
+function innovationAutocorr(series, lag = 1) {
+  const n = series.length;
+  const mu = series.reduce((s, v) => s + v, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) den += (series[i] - mu) ** 2;
+  for (let i = lag; i < n; i++) num += (series[i] - mu) * (series[i - lag] - mu);
+  return den > 0 ? num / den : 0;
+}
+
+/** 序列经验方差 */
+function empiricalVariance(series) {
+  const n = series.length;
+  const mu = series.reduce((s, v) => s + v, 0) / n;
+  let s = 0;
+  for (const v of series) s += (v - mu) ** 2;
+  return s / n;
+}
+
 /* ═══════════ src/nn/dense.js ═══════════ */
 /**
  * 旗舰AI引擎 · 全连接神经网络
@@ -3117,6 +3609,296 @@ function exponentialDecay(step, { gamma = 0.99, base = 1 } = {}) {
   return base * gamma ** t;
 }
 
+/* ═══════════ src/nn/cnn.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 卷积神经网络（CNN）
+ * 站在：LeCun et al. 1998《Gradient-Based Learning Applied to Document Recognition》
+ *       Chellapilla et al. 2006 / Jia et al. 2014（im2col + GEMM 高性能卷积）
+ *       Goodfellow et al. 2016《Deep Learning》Ch.9（卷积的等变性与参数共享）
+ * 不变量：
+ *   ① 输出尺寸闭式 oH = ⌊(H + 2p − k)/s⌋ + 1（精确整数恒等）
+ *   ② im2col+GEMM 实现 ≡ 直接滑动窗口求和（双实现互证）
+ *   ③ 平移等变性：conv(shift(X)) = shift(conv(X))（卷积层的结构性保证）
+ *   ④ 反向传播解析梯度 ≡ 中心差分（dX / dW / db 三路）
+ *   ⑤ 最大池化梯度路由：仅最大值位置回传，其余为 0
+ * 张量约定：X 为 [C][H][W]（通道优先），核 W 为 [OC][C][kH][kW]，偏置 b 为 [OC]。
+ */
+
+
+
+
+/** 卷积输出尺寸闭式：⌊(n + 2p − k)/s⌋ + 1 */
+function convOutputSize(n, kernel, stride = 1, pad = 0) {
+  return Math.floor((n + 2 * pad - kernel) / stride) + 1;
+}
+
+/**
+ * im2col：把 [C][H][W] 输入展开为 (oH·oW) × (C·kH·kW) 的补丁矩阵。
+ * 这是把卷积化为一次 GEMM 的标准技巧（Jia et al. 2014，Caffe 同款）。
+ * @returns {{cols:number[][], oH:number, oW:number, C:number, H:number, W:number, kH:number, kW:number, stride:number, pad:number}}
+ */
+function im2col(X, kH, kW, { stride = 1, pad = 0 } = {}) {
+  const C = X.length, H = X[0].length, W0 = X[0][0].length;
+  const oH = convOutputSize(H, kH, stride, pad);
+  const oW = convOutputSize(W0, kW, stride, pad);
+  const cols = zeros(oH * oW, C * kH * kW);
+  for (let oh = 0; oh < oH; oh++) {
+    for (let ow = 0; ow < oW; ow++) {
+      const row = oh * oW + ow;
+      let col = 0;
+      for (let c = 0; c < C; c++) {
+        for (let i = 0; i < kH; i++) {
+          const r = oh * stride - pad + i;
+          for (let j = 0; j < kW; j++) {
+            const cc = ow * stride - pad + j;
+            const inside = r >= 0 && r < H && cc >= 0 && cc < W0;
+            cols[row][col++] = inside ? X[c][r][cc] : 0; // 零填充
+          }
+        }
+      }
+    }
+  }
+  return { cols, oH, oW, C, H, W: W0, kH, kW, stride, pad };
+}
+
+/**
+ * 卷积前向：out[oc][oh][ow] = Σ_c Σ_i Σ_j W[oc][c][i][j]·X_patch + b[oc]
+ * @returns {{out:number[][][], cache:object}}
+ */
+function conv2dForward(X, W, b, { stride = 1, pad = 0 } = {}) {
+  const OC = W.length, C = W[0].length, kH = W[0][0].length, kW = W[0][0][0].length;
+  const geo = im2col(X, kH, kW, { stride, pad });
+  const { cols, oH, oW } = geo;
+  const out = [];
+  for (let oc = 0; oc < OC; oc++) {
+    const plane = zeros(oH, oW);
+    // 核展平为向量：Wflat[c*kH*kW + i*kW + j]
+    const wflat = new Array(C * kH * kW);
+    let t = 0;
+    for (let c = 0; c < C; c++) for (let i = 0; i < kH; i++) for (let j = 0; j < kW; j++) wflat[t++] = W[oc][c][i][j];
+    for (let row = 0; row < cols.length; row++) {
+      let s = b[oc];
+      const line = cols[row];
+      for (let q = 0; q < wflat.length; q++) s += line[q] * wflat[q];
+      plane[Math.floor(row / oW)][row % oW] = s;
+    }
+    out.push(plane);
+  }
+  return { out, cache: { X, W, b, geo } };
+}
+
+/**
+ * 卷积反向：dW / db 由 dOut 与输入补丁相关；dX 通过核的转置散射回原位。
+ * @returns {{dX:number[][][], dW:number[][][][], db:number[]}}
+ */
+function conv2dBackward(cache, dOut) {
+  const { X, W, geo } = cache;
+  const { cols, oH, oW, C, H, W: W0, kH, kW, stride, pad } = geo;
+  const OC = W.length;
+  const dW = [];
+  const db = new Array(OC).fill(0);
+  const dCols = zeros(cols.length, C * kH * kW);
+
+  for (let oc = 0; oc < OC; oc++) {
+    const dWoc = [];
+    for (let c = 0; c < C; c++) {
+      const plane = zeros(kH, kW);
+      dWoc.push(plane);
+    }
+    for (let row = 0; row < cols.length; row++) {
+      const oh = Math.floor(row / oW), ow = row % oW;
+      const g = dOut[oc][oh][ow];
+      db[oc] += g;
+      let q = 0;
+      for (let c = 0; c < C; c++) {
+        for (let i = 0; i < kH; i++) {
+          for (let j = 0; j < kW; j++, q++) {
+            dWoc[c][i][j] += g * cols[row][q];
+            dCols[row][q] += g * W[oc][c][i][j];
+          }
+        }
+      }
+    }
+    dW.push(dWoc);
+  }
+
+  // dCols → dX（col2im 散射累加）
+  const dX = [];
+  for (let c = 0; c < C; c++) dX.push(zeros(H, W0));
+  for (let row = 0; row < dCols.length; row++) {
+    const oh = Math.floor(row / oW), ow = row % oW;
+    let q = 0;
+    for (let c = 0; c < C; c++) {
+      for (let i = 0; i < kH; i++) {
+        const r = oh * stride - pad + i;
+        for (let j = 0; j < kW; j++, q++) {
+          const cc = ow * stride - pad + j;
+          if (r >= 0 && r < H && cc >= 0 && cc < W0) dX[c][r][cc] += dCols[row][q];
+        }
+      }
+    }
+  }
+  return { dX, dW, db };
+}
+
+/**
+ * 最大池化：返回输出与 argmax 路由表（用于反向精确回传）。
+ * @returns {{out:number[][][], argmax:number[][][], size:number, stride:number, C:number, H:number, W:number}}
+ */
+function maxPool2d(X, size, stride = size) {
+  const C = X.length, H = X[0].length, W0 = X[0][0].length;
+  const oH = Math.floor((H - size) / stride) + 1;
+  const oW = Math.floor((W0 - size) / stride) + 1;
+  const out = [], argmax = [];
+  for (let c = 0; c < C; c++) {
+    const po = zeros(oH, oW), pa = zeros(oH, oW);
+    for (let oh = 0; oh < oH; oh++) {
+      for (let ow = 0; ow < oW; ow++) {
+        let best = -Infinity, bi = -1;
+        for (let i = 0; i < size; i++) {
+          for (let j = 0; j < size; j++) {
+            const r = oh * stride + i, cc = ow * stride + j;
+            if (X[c][r][cc] > best) { best = X[c][r][cc]; bi = r * W0 + cc; }
+          }
+        }
+        po[oh][ow] = best;
+        pa[oh][ow] = bi;
+      }
+    }
+    out.push(po); argmax.push(pa);
+  }
+  return { out, argmax, size, stride, C, H, W: W0 };
+}
+
+/** 最大池化反向：梯度只经 argmax 位置回传，其余为 0 */
+function maxPoolBackward(poolCache, dOut) {
+  const { argmax, C, H, W: W0 } = poolCache;
+  const oH = dOut[0].length, oW = dOut[0][0].length;
+  const dX = [];
+  for (let c = 0; c < C; c++) {
+    const plane = zeros(H, W0);
+    for (let oh = 0; oh < oH; oh++) {
+      for (let ow = 0; ow < oW; ow++) {
+        const idx = argmax[c][oh][ow];
+        plane[Math.floor(idx / W0)][idx % W0] += dOut[c][oh][ow];
+      }
+    }
+    dX.push(plane);
+  }
+  return dX;
+}
+
+/**
+ * 直接滑动窗口卷积（参考实现，用于与 im2col+GEMM 互证）
+ */
+function conv2dNaive(X, W, b, { stride = 1, pad = 0 } = {}) {
+  const C = X.length, H = X[0].length, W0 = X[0][0].length;
+  const OC = W.length, kH = W[0][0].length, kW = W[0][0][0].length;
+  const oH = convOutputSize(H, kH, stride, pad);
+  const oW = convOutputSize(W0, kW, stride, pad);
+  const out = [];
+  for (let oc = 0; oc < OC; oc++) {
+    const plane = zeros(oH, oW);
+    for (let oh = 0; oh < oH; oh++) {
+      for (let ow = 0; ow < oW; ow++) {
+        let s = b[oc];
+        for (let c = 0; c < C; c++) {
+          for (let i = 0; i < kH; i++) {
+            const r = oh * stride - pad + i;
+            if (r < 0 || r >= H) continue;
+            for (let j = 0; j < kW; j++) {
+              const cc = ow * stride - pad + j;
+              if (cc < 0 || cc >= W0) continue;
+              s += W[oc][c][i][j] * X[c][r][cc];
+            }
+          }
+        }
+        plane[oh][ow] = s;
+      }
+    }
+    out.push(plane);
+  }
+  return out;
+}
+
+/**
+ * 卷积梯度检验：定义标量损失 L = Σ out ⊙ dOut（dOut 为固定上游梯度），
+ * 逐一扰动 X / W / b 的每个元素，中心差分 vs 解析梯度。
+ * @returns {{maxRel:number, maxAbs:number}}
+ */
+function convGradientCheck(X, W, b, dOut, { stride = 1, pad = 0, eps = 1e-5 } = {}) {
+  const loss = (XX, WW, bb) => {
+    const { out } = conv2dForward(XX, WW, bb, { stride, pad });
+    let s = 0;
+    for (let oc = 0; oc < out.length; oc++) {
+      for (let r = 0; r < out[oc].length; r++) {
+        for (let c = 0; c < out[oc][r].length; c++) s += out[oc][r][c] * dOut[oc][r][c];
+      }
+    }
+    return s;
+  };
+  const { out, cache } = conv2dForward(X, W, b, { stride, pad });
+  const g = conv2dBackward(cache, dOut);
+  let maxRel = 0, maxAbs = 0;
+  const probe = (get, set, analytic) => {
+    const orig = get();
+    set(orig + eps);
+    const lp = loss(X, W, b);
+    set(orig - eps);
+    const lm = loss(X, W, b);
+    set(orig);
+    const num = (lp - lm) / (2 * eps);
+    maxRel = Math.max(maxRel, relErr(num, analytic));
+    maxAbs = Math.max(maxAbs, Math.abs(num - analytic));
+  };
+  // X
+  for (let c = 0; c < X.length; c++) {
+    for (let r = 0; r < X[c].length; r++) {
+      for (let c2 = 0; c2 < X[c][r].length; c2++) {
+        probe(() => X[c][r][c2], (v) => { X[c][r][c2] = v; }, g.dX[c][r][c2]);
+      }
+    }
+  }
+  // W
+  for (let oc = 0; oc < W.length; oc++) {
+    for (let c = 0; c < W[oc].length; c++) {
+      for (let i = 0; i < W[oc][c].length; i++) {
+        for (let j = 0; j < W[oc][c][i].length; j++) {
+          probe(() => W[oc][c][i][j], (v) => { W[oc][c][i][j] = v; }, g.dW[oc][c][i][j]);
+        }
+      }
+    }
+  }
+  // b
+  for (let oc = 0; oc < b.length; oc++) {
+    probe(() => b[oc], (v) => { b[oc] = v; }, g.db[oc]);
+  }
+  return { maxRel, maxAbs, out };
+}
+
+/** 生成确定性随机张量（卷积演示/检验用） */
+function randomConvTensors(C, H, W, OC, kH, kW, rng) {
+  const X = [];
+  for (let c = 0; c < C; c++) {
+    const plane = zeros(H, W);
+    for (let r = 0; r < H; r++) for (let cc = 0; cc < W; cc++) plane[r][cc] = rng() * 2 - 1;
+    X.push(plane);
+  }
+  const Wt = [];
+  for (let oc = 0; oc < OC; oc++) {
+    const chan = [];
+    for (let c = 0; c < C; c++) {
+      const plane = zeros(kH, kW);
+      for (let r = 0; r < kH; r++) for (let cc = 0; cc < kW; cc++) plane[r][cc] = rng() * 2 - 1;
+      chan.push(plane);
+    }
+    Wt.push(chan);
+  }
+  const b = new Array(OC);
+  for (let oc = 0; oc < OC; oc++) b[oc] = rng() * 0.2 - 0.1;
+  return { X, W: Wt, b };
+}
+
 /* ═══════════ src/rl/valueIteration.js ═══════════ */
 /**
  * 旗舰AI引擎 · 强化学习：马尔可夫决策过程（MDP）最优求解
@@ -3424,8 +4206,12 @@ function bellmanResidualQ(P, R, gamma, Q) {
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 22 组套件全绿 = 引擎数学正确性的机器证明。
+ * 26 组套件全绿 = 引擎数学正确性的机器证明。
  */
+
+
+
+
 
 
 
@@ -3518,6 +4304,10 @@ function runAllInvariants() {
     ['谱聚类 · Spectral Clustering', suiteSpectral],
     ['激活函数族 · Activations', suiteActivations],
     ['学习率调度 · LR Schedulers', suiteSched],
+    ['卷积神经网络 · CNN', suiteCNN],
+    ['高斯过程回归 · GPR', suiteGPR],
+    ['梯度提升树 · GBDT', suiteGBDT],
+    ['卡尔曼滤波 · Kalman', suiteKalman],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -4623,8 +5413,291 @@ function suiteSched(check) {
     '采样 715 点 × 5 调度器');
 }
 
+/* ============================================================
+ * 套件 23 · 卷积神经网络（LeCun 1998 · im2col+GEMM）
+ * ============================================================ */
+function suiteCNN(check) {
+  // ① 输出尺寸闭式 oH = ⌊(n + 2p − k)/s⌋ + 1（精确整数恒等）
+  const sizeCases = [[8, 3, 1, 0, 6], [8, 3, 1, 1, 8], [8, 3, 2, 0, 3], [7, 3, 2, 1, 4], [32, 5, 1, 2, 32]];
+  let sizeOk = true;
+  for (const [n, k, s, p, want] of sizeCases) if (convOutputSize(n, k, s, p) !== want) sizeOk = false;
+  check('CNN：输出尺寸闭式 ⌊(n+2p−k)/s⌋+1（5 组配置逐位相等）', sizeOk,
+    sizeCases.map(([n, k, s, p]) => `(${n},${k},${s},${p})→${convOutputSize(n, k, s, p)}`).join(' '));
+
+  // ② im2col+GEMM ≡ 直接滑动窗口（双实现互证）
+  const rng = mulberry32(2024);
+  const { X, W, b } = randomConvTensors(2, 7, 7, 3, 3, 3, rng);
+  const fwd = conv2dForward(X, W, b, { stride: 1, pad: 1 });
+  const naive = conv2dNaive(X, W, b, { stride: 1, pad: 1 });
+  let implDiff = 0;
+  for (let oc = 0; oc < fwd.out.length; oc++) {
+    for (let r = 0; r < fwd.out[oc].length; r++) {
+      for (let c = 0; c < fwd.out[oc][r].length; c++) {
+        implDiff = Math.max(implDiff, Math.abs(fwd.out[oc][r][c] - naive[oc][r][c]));
+      }
+    }
+  }
+  check('CNN：im2col+GEMM ≡ 直接滑动窗口卷积（双实现互证）', implDiff < 1e-12,
+    `maxDiff=${implDiff.toExponential(2)}`);
+
+  // ③ im2col 展开形状：(oH·oW) × (C·kH·kW)
+  const geo = im2col(X, 3, 3, { stride: 1, pad: 1 });
+  check('CNN：im2col 形状 (oH·oW)×(C·kH·kW) = 49×18',
+    geo.cols.length === 49 && geo.cols[0].length === 18,
+    `${geo.cols.length}×${geo.cols[0].length}`);
+
+  // ④ 平移等变性：conv(shift(X)) = shift(conv(X))（结构性保证）
+  const Xa = [zeros(9, 9)], Xb = [zeros(9, 9)];
+  const pat = [[2, 3], [3, 4], [4, 5]]; // 对角图案
+  for (const [r, c] of pat) { Xa[0][r][c] = 1; Xb[0][r][c + 1] = 1; } // 右移 1
+  const Wa = [[zeros(3, 3)]]; // [OC=1][C=1][kH=3][kW=3]
+  Wa[0][0][0][0] = 0.5; Wa[0][0][1][1] = 1; Wa[0][0][2][2] = -0.5;
+  const oa = conv2dForward(Xa, Wa, [0], { stride: 1, pad: 1 }).out;
+  const ob = conv2dForward(Xb, Wa, [0], { stride: 1, pad: 1 }).out;
+  let eqErr = 0;
+  for (let r = 2; r <= 6; r++) {
+    for (let c = 2; c <= 6; c++) eqErr = Math.max(eqErr, Math.abs(ob[0][r][c + 1] - oa[0][r][c]));
+  }
+  check('CNN：平移等变性 conv(shift·X) = shift·conv(X)（中心区逐点）', eqErr < 1e-15,
+    `maxDiff=${eqErr.toExponential(2)}`);
+
+  // ⑤ 梯度检验：dX / dW / db 解析梯度 ≡ 中心差分（双判据）
+  const r2 = mulberry32(77);
+  const t2 = randomConvTensors(2, 6, 6, 3, 3, 3, r2);
+  const { out } = conv2dForward(t2.X, t2.W, t2.b, { stride: 1, pad: 1 });
+  const dOut = out.map((p) => p.map((row) => row.map((v) => Math.tanh(v) + 0.3)));
+  const gc = convGradientCheck(t2.X, t2.W, t2.b, dOut, { stride: 1, pad: 1 });
+  check('CNN：反向传播解析梯度 ≡ 中心差分（dX/dW/db 三路，双判据）',
+    gc.maxAbs < 1e-7 && gc.maxRel < 1e-5,
+    `maxRel=${gc.maxRel.toExponential(2)}，maxAbs=${gc.maxAbs.toExponential(2)}`);
+
+  // ⑥ 最大池化梯度路由：仅 argmax 位置回传，非零数恰为输出元素数
+  const r3 = mulberry32(99);
+  const tp = randomConvTensors(1, 6, 6, 1, 1, 1, r3);
+  const pool = maxPool2d(tp.X, 2, 2);
+  const dPoolOut = pool.out.map((p) => p.map((row) => row.map((v) => v + 1)));
+  const dPool = maxPoolBackward(pool, dPoolOut);
+  let nonZero = 0, routeOk = true;
+  for (let c = 0; c < dPool.length; c++) {
+    for (let r = 0; r < dPool[c].length; r++) {
+      for (let cc = 0; cc < dPool[c][r].length; cc++) {
+        if (dPool[c][r][cc] !== 0) {
+          nonZero++;
+          const idx = r * dPool[c][r].length + cc;
+          const isArgmax = pool.argmax[c].some((row) => row.some((v) => v === idx));
+          if (!isArgmax) routeOk = false;
+        }
+      }
+    }
+  }
+  const expectNZ = pool.out.length * pool.out[0].length * pool.out[0][0].length;
+  check('CNN：最大池化梯度仅经 argmax 路由回传（非零数 = 输出元素数）',
+    routeOk && nonZero === expectNZ,
+    `非零=${nonZero}/${expectNZ}`);
+}
+
+/* ============================================================
+ * 套件 24 · 高斯过程回归（Rasmussen & Williams 2006）
+ * ============================================================ */
+function suiteGPR(check) {
+  // 一维真值函数 y = sin(x)，20 个训练点
+  const Xtr = [], ytr = [];
+  for (let i = 0; i < 20; i++) {
+    const x = -3 + (i * 6) / 19;
+    Xtr.push([x]);
+    ytr.push(Math.sin(x));
+  }
+  const model = gprFit(Xtr, ytr, { lengthScale: 1, sigmaF: 1, noise: 0.05 });
+
+  // ① Cholesky 精确分解：LLᵀ ≡ K
+  const Krec = matmul(model.L, transpose(model.L));
+  check('GPR：Cholesky 分解精确 LLᵀ ≡ K（核矩阵对称正定）', mdiff(Krec, model.K) < 1e-10,
+    `‖LLᵀ−K‖_max=${mdiff(Krec, model.K).toExponential(2)}`);
+
+  // ② 无噪声极限插值：训练点后验均值 ≡ 观测 y
+  const interp = gprFit(Xtr, ytr, { lengthScale: 1, sigmaF: 1, noise: 1e-8 });
+  const atTrain = gprPredict(interp, Xtr);
+  let interpErr = 0;
+  for (let i = 0; i < ytr.length; i++) interpErr = Math.max(interpErr, Math.abs(atTrain.mean[i] - ytr[i]));
+  check('GPR：无噪声极限插值（训练点后验均值 ≡ y）', interpErr < 1e-5,
+    `maxDiff=${interpErr.toExponential(2)}`);
+
+  // ③ 后验方差 ≤ 先验；近训练点方差 < 远点方差；远点 → 先验 σ_f²
+  const near = gprPredict(model, [[0.0]]);
+  const far = gprPredict(model, [[50]]);
+  const prior = gprPriorVariance(model);
+  check('GPR：后验方差 ≤ 先验方差，且远点 → 先验 σ_f²',
+    near.variance[0] <= prior + 1e-12 && near.variance[0] < far.variance[0]
+      && Math.abs(far.variance[0] - prior) < 1e-6,
+    `σ²(0)=${near.variance[0].toExponential(3)}，σ²(50)=${far.variance[0].toExponential(3)}，先验=${prior}`);
+
+  // ④ 边际似然解析梯度 ≡ 中心差分（R&W 5.9）
+  const ga = gprHyperGradAnalytic(model);
+  const gn = gprHyperGradNumeric(model, { eps: 1e-5 });
+  const worstRel = Math.max(
+    relErr(ga.dLengthScale, gn.dLengthScale),
+    relErr(ga.dSigmaF, gn.dSigmaF),
+    relErr(ga.dNoise, gn.dNoise),
+  );
+  check('GPR：超参数解析梯度 ≡ 中心差分（R&W 公式 5.9）', worstRel < 1e-5,
+    `∂/∂ℓ: ${ga.dLengthScale.toFixed(8)} vs ${gn.dLengthScale.toFixed(8)}，∂/∂σf: ${ga.dSigmaF.toFixed(6)} vs ${gn.dSigmaF.toFixed(6)}`);
+
+  // ⑤ 单点闭式：μ(x*) = k·y/(k+σ_n²)，σ² = σ_f² − k²/(k+σ_n²)
+  const ell = 1, sf = 1, sn = 0.3;
+  const m1 = gprFit([[0]], [2], { lengthScale: ell, sigmaF: sf, noise: sn });
+  const xs = 0.7;
+  const k = sf * sf * Math.exp(-(xs * xs) / (2 * ell * ell));
+  const muRef = k * 2 / (sf * sf + sn * sn);
+  const varRef = sf * sf - (k * k) / (sf * sf + sn * sn);
+  const p1 = gprPredict(m1, [[xs]]);
+  check('GPR：单点后验闭式 μ = k·y/(k+σ_n²)、σ² = σ_f² − k²/(k+σ_n²)',
+    Math.abs(p1.mean[0] - muRef) < 1e-10 && Math.abs(p1.variance[0] - varRef) < 1e-10,
+    `μ=${p1.mean[0].toFixed(10)}（期望 ${muRef.toFixed(10)}），σ²=${p1.variance[0].toFixed(10)}（期望 ${varRef.toFixed(10)}）`);
+
+  // ⑥ 预测合理性：留一验证 RMSE 显著小于数据标准差
+  let sse = 0;
+  for (let i = 0; i < Xtr.length; i++) {
+    const rest = Xtr.filter((_, j) => j !== i), ry = ytr.filter((_, j) => j !== i);
+    const mm = gprFit(rest, ry, { lengthScale: 1, sigmaF: 1, noise: 0.05 });
+    const pr = gprPredict(mm, [Xtr[i]]);
+    sse += (pr.mean[0] - ytr[i]) ** 2;
+  }
+  const rmse = Math.sqrt(sse / Xtr.length);
+  check('GPR：留一验证 RMSE < 0.1（核超参数在真值函数上有效）', rmse < 0.1,
+    `LOO-RMSE=${rmse.toExponential(3)}`);
+}
+
+/* ============================================================
+ * 套件 25 · 梯度提升树（Friedman 2001）
+ * ============================================================ */
+function suiteGBDT(check) {
+  // 训练集：y = x₁² + 2x₂ + 噪声（非线性，树可拟合）
+  const rng = mulberry32(11);
+  const X = [], y = [];
+  for (let i = 0; i < 120; i++) {
+    const a = rng() * 4 - 2, bb = rng() * 4 - 2;
+    X.push([a, bb]);
+    y.push(a * a + 2 * bb + gaussianSample(rng, 0, 0.15));
+  }
+  const model = gbdtFit(X, y, { nEstimators: 60, lr: 0.1, maxDepth: 3 });
+
+  // ① 训练 MSE 单调不增（贪心函数逼近推论）
+  let mono = true, maxUp = 0;
+  for (let k = 1; k < model.trainLoss.length; k++) {
+    const up = model.trainLoss[k] - model.trainLoss[k - 1];
+    if (up > 1e-12) { mono = false; maxUp = Math.max(maxUp, up); }
+  }
+  check('GBDT：训练 MSE 严格单调不增（60 轮）', mono,
+    `f₀=${model.trainLoss[0].toFixed(6)} → f₆₀=${model.trainLoss[model.trainLoss.length - 1].toFixed(6)}，最大回升=${maxUp.toExponential(2)}`);
+
+  // ② 每棵树 ≡ 残差在分片常数子空间上的正交投影（精确恒等式 ⟨h,r⟩ = ‖h‖²）
+  // 回归树即投影算子 P（P²=P, Pᵀ=P），h = Pr ⇒ ⟨h,r⟩ = ⟨Pr,r⟩ = ‖Pr‖² = ‖h‖²
+  let projErr = 0;
+  for (let m = 0; m < model.trees.length; m++) {
+    const h = regressionTreePredictAll(model.trees[m], X);
+    const r = model.residuals[m];
+    let ip = 0, nh = 0;
+    for (let i = 0; i < h.length; i++) { ip += h[i] * r[i]; nh += h[i] * h[i]; }
+    projErr = Math.max(projErr, Math.abs(ip - nh) / (nh + 1e-300));
+  }
+  check('GBDT：树 ≡ 残差的正交投影（⟨h,r⟩ = ‖h‖² 精确恒等，60 棵逐棵）', projErr < 1e-9,
+    `max 相对偏差=${projErr.toExponential(2)}`);
+
+  // ③ 学习率收缩极限：lr → 0 时预测 ≡ 初始常数 ȳ
+  const tiny = gbdtFit(X, y, { nEstimators: 20, lr: 1e-10, maxDepth: 3 });
+  const pTiny = gbdtPredict(tiny, X);
+  const muY = y.reduce((s, v) => s + v, 0) / y.length;
+  let shrinkErr = 0;
+  for (const v of pTiny) shrinkErr = Math.max(shrinkErr, Math.abs(v - muY));
+  check('GBDT：学习率收缩极限 lr→0 ⇒ 预测 ≡ 常数均值 ȳ', shrinkErr < 1e-6,
+    `maxDiff=${shrinkErr.toExponential(2)}，ȳ=${muY.toFixed(8)}`);
+
+  // ④ 树桩闭式：maxDepth=1 时每个叶子的值 ≡ 该叶样本均值
+  const ys2 = [1, 2, 3, 10, 11, 12];
+  const Xs2 = [[1], [2], [3], [10], [11], [12]];
+  const stump = regressionTreeFit(Xs2, ys2, { maxDepth: 1, minSamplesSplit: 2 });
+  const stumpPred = regressionTreePredictAll(stump, Xs2);
+  const leftMu = (1 + 2 + 3) / 3, rightMu = (10 + 11 + 12) / 3;
+  const stumpOk = Math.abs(stumpPred[0] - leftMu) < 1e-12 && Math.abs(stumpPred[5] - rightMu) < 1e-12;
+  check('GBDT：回归树桩叶子值 ≡ 叶内样本均值（最小二乘解析解）', stumpOk,
+    `左叶=${stumpPred[0].toFixed(6)}（期望 ${leftMu.toFixed(6)}），右叶=${stumpPred[5].toFixed(6)}（期望 ${rightMu.toFixed(6)}）`);
+
+  // ⑤ 迭代增益：末轮 MSE 显著低于常数基线方差
+  let varY = 0;
+  for (const v of y) varY += (v - muY) ** 2;
+  varY /= y.length;
+  const finalMse = model.trainLoss[model.trainLoss.length - 1];
+  check('GBDT：末轮训练 MSE < 10% 常数基线方差（迭代增益显著）', finalMse < 0.1 * varY,
+    `MSE=${finalMse.toFixed(6)} vs 基线方差=${varY.toFixed(6)}（比值 ${(finalMse / varY * 100).toFixed(2)}%）`);
+}
+
+/* ============================================================
+ * 套件 26 · 卡尔曼滤波（Kalman 1960 · DARE）
+ * ============================================================ */
+function suiteKalman(check) {
+  // 标量系统：x_t = 0.95·x_{t−1} + w(Q=0.1)；z_t = x_t + v(R=1)
+  const f = 0.95, h = 1, q = 0.1, r = 1;
+  const F = [[f]], H = [[h]], Q = [[q]], R = [[r]];
+  const rng = mulberry32(4242);
+  let truth = 0;
+  const obs = [], truthSeries = [];
+  for (let t = 0; t < 1500; t++) {
+    truth = f * truth + gaussianSample(rng, 0, Math.sqrt(q));
+    truthSeries.push(truth);
+    obs.push([truth + gaussianSample(rng, 0, Math.sqrt(r))]);
+  }
+  const kf = kalmanFilter({ F, H, Q, R, x0: [0], P0: [[1]] }, obs);
+
+  // ① 卡尔曼增益闭式 K = P⁻Hᵀ(HP⁻Hᵀ+R)⁻¹（逐步逐位）
+  let gainErr = 0;
+  for (let t = 0; t < obs.length; t++) {
+    const Pm = kf.predictedCov[t][0][0];
+    const want = Pm * h / (Pm * h * h + r);
+    gainErr = Math.max(gainErr, Math.abs(kf.gains[t][0][0] - want));
+  }
+  check('Kalman：增益闭式 K = P⁻H/(HP⁻H+R)（1500 步逐位）', gainErr < 1e-12,
+    `maxDiff=${gainErr.toExponential(2)}，稳态 K=${kf.gains[kf.gains.length - 1][0][0].toFixed(8)}`);
+
+  // ② 新息协方差一致：经验方差 ≈ S = HP⁻Hᵀ+R（统计自洽性）
+  const inn = kf.innovations.map((v) => v[0]);
+  const empVar = empiricalVariance(inn);
+  const Sval = kf.innovationCov[kf.innovationCov.length - 1][0][0];
+  check('Kalman：新息经验协方差 ≈ 理论 S（相对偏差 < 15%）',
+    Math.abs(empVar - Sval) / Sval < 0.15,
+    `经验=${empVar.toFixed(5)} vs 理论 S=${Sval.toFixed(5)}（偏差 ${(Math.abs(empVar - Sval) / Sval * 100).toFixed(2)}%）`);
+
+  // ③ 新息白噪声：滞后−1 自相关 ≈ 0（最优滤波的充要统计特征）
+  const ac1 = innovationAutocorr(inn, 1);
+  check('Kalman：新息序列白噪声（|滞后−1 自相关| < 0.1）', Math.abs(ac1) < 0.1,
+    `ρ(1)=${ac1.toFixed(5)}`);
+
+  // ④ 稳态收敛：迭代不动点 ≡ DARE 解析解
+  const ss = kalmanScalarSteadyState(f, h, q, r);
+  const iter = kalmanScalarIterate(f, h, q, r, 5000);
+  const lastP = kf.predictedCov[kf.predictedCov.length - 1][0][0];
+  check('Kalman：P⁻ 收敛到离散代数 Riccati 方程（DARE）解析解',
+    Math.abs(iter - ss.Pminus) < 1e-9 && Math.abs(lastP - ss.Pminus) < 1e-6,
+    `解析=${ss.Pminus.toFixed(10)}，迭代=${iter.toFixed(10)}，滤波末步=${lastP.toFixed(10)}`);
+
+  // ⑤ 协方差恒为对称半正定（Joseph 形式的保障）
+  let symErr = 0, negFound = false;
+  for (const P of kf.covariances) {
+    symErr = Math.max(symErr, mdiff(P, transpose(P)));
+    for (let i = 0; i < P.length; i++) if (P[i][i] < 0) negFound = true;
+  }
+  check('Kalman：协方差全程对称半正定（Joseph 更新式保障）', symErr < 1e-15 && !negFound,
+    `对称误差=${symErr.toExponential(2)}`);
+
+  // ⑥ 滤波有效：估计 RMSE < 观测噪声标准差（优于直接观测）
+  let se = 0;
+  for (let t = 0; t < obs.length; t++) se += (kf.states[t][0] - truthSeries[t]) ** 2;
+  const kfRmse = Math.sqrt(se / obs.length);
+  check('Kalman：滤波估计 RMSE < 观测噪声 σ（优于直接观测）', kfRmse < Math.sqrt(r),
+    `RMSE=${kfRmse.toFixed(5)} vs 观测噪声 σ=${Math.sqrt(r).toFixed(5)}`);
+}
+
 /* ───── 挂载全局命名空间 ───── */
-const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, runAllInvariants };
+const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, gprKernelMatrix, gprFit, gprPredict, gprPriorVariance, gprInverseK, gprHyperGradAnalytic, gprHyperGradNumeric, regressionTreeFit, regressionTreePredict, regressionTreePredictAll, gbdtFit, gbdtPredict, gbdtStagedPredict, pearsonCorr, kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate, innovationAutocorr, empiricalVariance, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, convOutputSize, im2col, conv2dForward, conv2dBackward, maxPool2d, maxPoolBackward, conv2dNaive, convGradientCheck, randomConvTensors, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, runAllInvariants };
 if (typeof globalThis !== 'undefined') {
   globalThis.FlagshipAI = Object.assign({}, globalThis.FlagshipAI, __FlagshipAI__);
 }
@@ -5028,8 +6101,96 @@ if (typeof globalThis !== 'undefined') {
   $('btn-tsne').addEventListener('click', () => { tsneSeed = (tsneSeed * 41 + 9) % 100000; drawTsne(); });
   $('btn-dbscan').addEventListener('click', () => { dbSeed = (dbSeed * 43 + 5) % 100000; drawDbscan(); });
   $('btn-opt').addEventListener('click', drawOpt);
+  /* ================= v1.4 · 高斯过程回归 ================= */
+  let gprSeed = 7;
+  function drawGPR() {
+    const rng = A.mulberry32(gprSeed);
+    const Xtr = [], ytr = [];
+    for (let i = 0; i < 10; i++) {
+      const x = -3 + (i * 6) / 9;
+      Xtr.push([x]);
+      ytr.push(Math.sin(x) + A.gaussianSample(rng, 0, 0.12));
+    }
+    const model = A.gprFit(Xtr, ytr, { lengthScale: 1, sigmaF: 1, noise: 0.1 });
+    const Xs = [];
+    for (let i = 0; i <= 90; i++) Xs.push([-4 + (i * 8) / 90]);
+    const { mean, variance } = A.gprPredict(model, Xs);
+    const XR = [-4, 4], YR = [-2.2, 2.2];
+    const mx = (v) => 30 + (v - XR[0]) / (XR[1] - XR[0]) * 410;
+    const my = (v) => 275 - (v - YR[0]) / (YR[1] - YR[0]) * 250;
+    let svg = `<line x1="30" y1="${my(0)}" x2="440" y2="${my(0)}" stroke="#d5dbe5" stroke-width="1"/>`;
+    // ±2σ 置信带（多边形：上沿正序 + 下沿逆序）
+    const up = [], dn = [];
+    for (let i = 0; i < Xs.length; i++) {
+      const s = 2 * Math.sqrt(Math.max(variance[i], 0));
+      up.push(`${mx(Xs[i][0]).toFixed(1)},${my(mean[i] + s).toFixed(1)}`);
+      dn.push(`${mx(Xs[i][0]).toFixed(1)},${my(mean[i] - s).toFixed(1)}`);
+    }
+    svg += `<polygon points="${up.concat(dn.reverse()).join(' ')}" fill="#2980b9" fill-opacity="0.15"/>`;
+    // 后验均值
+    svg += `<polyline fill="none" stroke="#2980b9" stroke-width="2.4"
+      points="${mean.map((v, i) => `${mx(Xs[i][0]).toFixed(1)},${my(v).toFixed(1)}`).join(' ')}"/>`;
+    // 训练点
+    for (let i = 0; i < Xtr.length; i++) {
+      svg += `<circle cx="${mx(Xtr[i][0]).toFixed(1)}" cy="${my(ytr[i]).toFixed(1)}" r="4"
+        fill="#c0392b" stroke="#fff" stroke-width="1"/>`;
+    }
+    $('svg-gpr').innerHTML = svg;
+    // 训练区中心（x=0，索引 45）方差 vs 外推边缘方差：不确定性随距离单调放大
+    const varIn = variance[45];
+    const varFar = variance[variance.length - 1];
+    $('legend-gpr').innerHTML =
+      `<span><i style="background:#2980b9"></i>后验均值</span>` +
+      `<span><i style="background:#2980b9;opacity:.3"></i>95% 置信带</span>` +
+      `<span><i style="background:#c0392b"></i>观测（10 点）</span>` +
+      `<span style="font-family:monospace">σ²: 训练区 ${varIn.toFixed(3)} → 外推边缘 ${varFar.toFixed(3)}（先验 1.0）</span>`;
+  }
+
+  /* ================= v1.4 · 卡尔曼滤波 ================= */
+  let kfSeed = 4242;
+  function drawKF() {
+    const rng = A.mulberry32(kfSeed);
+    const f = 0.95, h = 1, q = 0.08, r = 0.9;
+    let truth = 0;
+    const truthSeries = [], obs = [];
+    for (let t = 0; t < 80; t++) {
+      truth = f * truth + A.gaussianSample(rng, 0, Math.sqrt(q));
+      truthSeries.push(truth);
+      obs.push([truth + A.gaussianSample(rng, 0, Math.sqrt(r))]);
+    }
+    const kf = A.kalmanFilter(
+      { F: [[f]], H: [[h]], Q: [[q]], R: [[r]], x0: [0], P0: [[1]] }, obs,
+    );
+    const est = kf.states.map((v) => v[0]);
+    const zo = obs.map((v) => v[0]);
+    const all = truthSeries.concat(zo, est);
+    const lo = Math.min(...all) - 0.4, hi = Math.max(...all) + 0.4;
+    const mx = (i) => 30 + (i / 79) * 410;
+    const my = (v) => 275 - (v - lo) / (hi - lo) * 250;
+    let svg = `<line x1="30" y1="${my(0)}" x2="440" y2="${my(0)}" stroke="#d5dbe5" stroke-width="1"/>`;
+    svg += `<polyline fill="none" stroke="#7f8c8d" stroke-width="1.2" stroke-dasharray="3 3"
+      points="${truthSeries.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(' ')}"/>`;
+    svg += `<g fill="#bdc3c7">${zo.map((v, i) => `<circle cx="${mx(i).toFixed(1)}" cy="${my(v).toFixed(1)}" r="1.8"/>`).join('')}</g>`;
+    svg += `<polyline fill="none" stroke="#c0392b" stroke-width="2.4"
+      points="${est.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(' ')}"/>`;
+    $('svg-kf').innerHTML = svg;
+    let seObs = 0, seKf = 0;
+    for (let i = 0; i < 80; i++) {
+      seObs += (zo[i] - truthSeries[i]) ** 2;
+      seKf += (est[i] - truthSeries[i]) ** 2;
+    }
+    const rmseObs = Math.sqrt(seObs / 80), rmseKf = Math.sqrt(seKf / 80);
+    $('legend-kf').innerHTML =
+      `<span><i style="background:#7f8c8d"></i>真值（不可观测）</span>` +
+      `<span><i style="background:#bdc3c7"></i>带噪观测</span>` +
+      `<span><i style="background:#c0392b"></i>卡尔曼估计</span>` +
+      `<span style="font-family:monospace">RMSE: 观测 ${rmseObs.toFixed(3)} → 滤波 ${rmseKf.toFixed(3)}（降 ${((1 - rmseKf / rmseObs) * 100).toFixed(0)}%）</span>`;
+  }
+
   $('btn-moons').addEventListener('click', () => { moonSeed = (moonSeed * 47 + 3) % 100000; drawMoons(); });
   $('btn-act').addEventListener('click', () => { actShowDeriv = !actShowDeriv; drawAct(); });
+  $('btn-gpr').addEventListener('click', () => { gprSeed = (gprSeed * 53 + 7) % 100000; drawGPR(); });
+  $('btn-kf').addEventListener('click', () => { kfSeed = (kfSeed * 59 + 11) % 100000; drawKF(); });
 
   renderSuites();
   drawKmeans();
@@ -5042,6 +6203,8 @@ if (typeof globalThis !== 'undefined') {
   drawDbscan();
   drawMoons();
   drawAct();
+  drawGPR();
+  drawKF();
   drawOpt();
 })();
 </script>

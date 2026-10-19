@@ -1,7 +1,7 @@
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 22 组套件全绿 = 引擎数学正确性的机器证明。
+ * 26 组套件全绿 = 引擎数学正确性的机器证明。
  */
 
 import {
@@ -57,6 +57,21 @@ import {
 import {
   warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay,
 } from '../nn/schedulers.js';
+import {
+  conv2dForward, conv2dBackward, conv2dNaive, convOutputSize, im2col,
+  maxPool2d, maxPoolBackward, convGradientCheck, randomConvTensors,
+} from '../nn/cnn.js';
+import {
+  gprFit, gprPredict, gprHyperGradAnalytic, gprHyperGradNumeric, gprPriorVariance,
+} from '../ml/gpr.js';
+import {
+  gbdtFit, gbdtPredict, gbdtStagedPredict, regressionTreeFit,
+  regressionTreePredictAll, pearsonCorr,
+} from '../ml/gbdt.js';
+import {
+  kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate,
+  innovationAutocorr, empiricalVariance,
+} from '../ml/kalman.js';
 
 /** 向量最大绝对值 */
 function vinf(v) {
@@ -123,6 +138,10 @@ export function runAllInvariants() {
     ['谱聚类 · Spectral Clustering', suiteSpectral],
     ['激活函数族 · Activations', suiteActivations],
     ['学习率调度 · LR Schedulers', suiteSched],
+    ['卷积神经网络 · CNN', suiteCNN],
+    ['高斯过程回归 · GPR', suiteGPR],
+    ['梯度提升树 · GBDT', suiteGBDT],
+    ['卡尔曼滤波 · Kalman', suiteKalman],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -1226,4 +1245,287 @@ function suiteSched(check) {
   }
   check('调度：五个调度器 0..5000 步全部值有限且非负', healthy,
     '采样 715 点 × 5 调度器');
+}
+
+/* ============================================================
+ * 套件 23 · 卷积神经网络（LeCun 1998 · im2col+GEMM）
+ * ============================================================ */
+function suiteCNN(check) {
+  // ① 输出尺寸闭式 oH = ⌊(n + 2p − k)/s⌋ + 1（精确整数恒等）
+  const sizeCases = [[8, 3, 1, 0, 6], [8, 3, 1, 1, 8], [8, 3, 2, 0, 3], [7, 3, 2, 1, 4], [32, 5, 1, 2, 32]];
+  let sizeOk = true;
+  for (const [n, k, s, p, want] of sizeCases) if (convOutputSize(n, k, s, p) !== want) sizeOk = false;
+  check('CNN：输出尺寸闭式 ⌊(n+2p−k)/s⌋+1（5 组配置逐位相等）', sizeOk,
+    sizeCases.map(([n, k, s, p]) => `(${n},${k},${s},${p})→${convOutputSize(n, k, s, p)}`).join(' '));
+
+  // ② im2col+GEMM ≡ 直接滑动窗口（双实现互证）
+  const rng = mulberry32(2024);
+  const { X, W, b } = randomConvTensors(2, 7, 7, 3, 3, 3, rng);
+  const fwd = conv2dForward(X, W, b, { stride: 1, pad: 1 });
+  const naive = conv2dNaive(X, W, b, { stride: 1, pad: 1 });
+  let implDiff = 0;
+  for (let oc = 0; oc < fwd.out.length; oc++) {
+    for (let r = 0; r < fwd.out[oc].length; r++) {
+      for (let c = 0; c < fwd.out[oc][r].length; c++) {
+        implDiff = Math.max(implDiff, Math.abs(fwd.out[oc][r][c] - naive[oc][r][c]));
+      }
+    }
+  }
+  check('CNN：im2col+GEMM ≡ 直接滑动窗口卷积（双实现互证）', implDiff < 1e-12,
+    `maxDiff=${implDiff.toExponential(2)}`);
+
+  // ③ im2col 展开形状：(oH·oW) × (C·kH·kW)
+  const geo = im2col(X, 3, 3, { stride: 1, pad: 1 });
+  check('CNN：im2col 形状 (oH·oW)×(C·kH·kW) = 49×18',
+    geo.cols.length === 49 && geo.cols[0].length === 18,
+    `${geo.cols.length}×${geo.cols[0].length}`);
+
+  // ④ 平移等变性：conv(shift(X)) = shift(conv(X))（结构性保证）
+  const Xa = [zeros(9, 9)], Xb = [zeros(9, 9)];
+  const pat = [[2, 3], [3, 4], [4, 5]]; // 对角图案
+  for (const [r, c] of pat) { Xa[0][r][c] = 1; Xb[0][r][c + 1] = 1; } // 右移 1
+  const Wa = [[zeros(3, 3)]]; // [OC=1][C=1][kH=3][kW=3]
+  Wa[0][0][0][0] = 0.5; Wa[0][0][1][1] = 1; Wa[0][0][2][2] = -0.5;
+  const oa = conv2dForward(Xa, Wa, [0], { stride: 1, pad: 1 }).out;
+  const ob = conv2dForward(Xb, Wa, [0], { stride: 1, pad: 1 }).out;
+  let eqErr = 0;
+  for (let r = 2; r <= 6; r++) {
+    for (let c = 2; c <= 6; c++) eqErr = Math.max(eqErr, Math.abs(ob[0][r][c + 1] - oa[0][r][c]));
+  }
+  check('CNN：平移等变性 conv(shift·X) = shift·conv(X)（中心区逐点）', eqErr < 1e-15,
+    `maxDiff=${eqErr.toExponential(2)}`);
+
+  // ⑤ 梯度检验：dX / dW / db 解析梯度 ≡ 中心差分（双判据）
+  const r2 = mulberry32(77);
+  const t2 = randomConvTensors(2, 6, 6, 3, 3, 3, r2);
+  const { out } = conv2dForward(t2.X, t2.W, t2.b, { stride: 1, pad: 1 });
+  const dOut = out.map((p) => p.map((row) => row.map((v) => Math.tanh(v) + 0.3)));
+  const gc = convGradientCheck(t2.X, t2.W, t2.b, dOut, { stride: 1, pad: 1 });
+  check('CNN：反向传播解析梯度 ≡ 中心差分（dX/dW/db 三路，双判据）',
+    gc.maxAbs < 1e-7 && gc.maxRel < 1e-5,
+    `maxRel=${gc.maxRel.toExponential(2)}，maxAbs=${gc.maxAbs.toExponential(2)}`);
+
+  // ⑥ 最大池化梯度路由：仅 argmax 位置回传，非零数恰为输出元素数
+  const r3 = mulberry32(99);
+  const tp = randomConvTensors(1, 6, 6, 1, 1, 1, r3);
+  const pool = maxPool2d(tp.X, 2, 2);
+  const dPoolOut = pool.out.map((p) => p.map((row) => row.map((v) => v + 1)));
+  const dPool = maxPoolBackward(pool, dPoolOut);
+  let nonZero = 0, routeOk = true;
+  for (let c = 0; c < dPool.length; c++) {
+    for (let r = 0; r < dPool[c].length; r++) {
+      for (let cc = 0; cc < dPool[c][r].length; cc++) {
+        if (dPool[c][r][cc] !== 0) {
+          nonZero++;
+          const idx = r * dPool[c][r].length + cc;
+          const isArgmax = pool.argmax[c].some((row) => row.some((v) => v === idx));
+          if (!isArgmax) routeOk = false;
+        }
+      }
+    }
+  }
+  const expectNZ = pool.out.length * pool.out[0].length * pool.out[0][0].length;
+  check('CNN：最大池化梯度仅经 argmax 路由回传（非零数 = 输出元素数）',
+    routeOk && nonZero === expectNZ,
+    `非零=${nonZero}/${expectNZ}`);
+}
+
+/* ============================================================
+ * 套件 24 · 高斯过程回归（Rasmussen & Williams 2006）
+ * ============================================================ */
+function suiteGPR(check) {
+  // 一维真值函数 y = sin(x)，20 个训练点
+  const Xtr = [], ytr = [];
+  for (let i = 0; i < 20; i++) {
+    const x = -3 + (i * 6) / 19;
+    Xtr.push([x]);
+    ytr.push(Math.sin(x));
+  }
+  const model = gprFit(Xtr, ytr, { lengthScale: 1, sigmaF: 1, noise: 0.05 });
+
+  // ① Cholesky 精确分解：LLᵀ ≡ K
+  const Krec = matmul(model.L, transpose(model.L));
+  check('GPR：Cholesky 分解精确 LLᵀ ≡ K（核矩阵对称正定）', mdiff(Krec, model.K) < 1e-10,
+    `‖LLᵀ−K‖_max=${mdiff(Krec, model.K).toExponential(2)}`);
+
+  // ② 无噪声极限插值：训练点后验均值 ≡ 观测 y
+  const interp = gprFit(Xtr, ytr, { lengthScale: 1, sigmaF: 1, noise: 1e-8 });
+  const atTrain = gprPredict(interp, Xtr);
+  let interpErr = 0;
+  for (let i = 0; i < ytr.length; i++) interpErr = Math.max(interpErr, Math.abs(atTrain.mean[i] - ytr[i]));
+  check('GPR：无噪声极限插值（训练点后验均值 ≡ y）', interpErr < 1e-5,
+    `maxDiff=${interpErr.toExponential(2)}`);
+
+  // ③ 后验方差 ≤ 先验；近训练点方差 < 远点方差；远点 → 先验 σ_f²
+  const near = gprPredict(model, [[0.0]]);
+  const far = gprPredict(model, [[50]]);
+  const prior = gprPriorVariance(model);
+  check('GPR：后验方差 ≤ 先验方差，且远点 → 先验 σ_f²',
+    near.variance[0] <= prior + 1e-12 && near.variance[0] < far.variance[0]
+      && Math.abs(far.variance[0] - prior) < 1e-6,
+    `σ²(0)=${near.variance[0].toExponential(3)}，σ²(50)=${far.variance[0].toExponential(3)}，先验=${prior}`);
+
+  // ④ 边际似然解析梯度 ≡ 中心差分（R&W 5.9）
+  const ga = gprHyperGradAnalytic(model);
+  const gn = gprHyperGradNumeric(model, { eps: 1e-5 });
+  const worstRel = Math.max(
+    relErr(ga.dLengthScale, gn.dLengthScale),
+    relErr(ga.dSigmaF, gn.dSigmaF),
+    relErr(ga.dNoise, gn.dNoise),
+  );
+  check('GPR：超参数解析梯度 ≡ 中心差分（R&W 公式 5.9）', worstRel < 1e-5,
+    `∂/∂ℓ: ${ga.dLengthScale.toFixed(8)} vs ${gn.dLengthScale.toFixed(8)}，∂/∂σf: ${ga.dSigmaF.toFixed(6)} vs ${gn.dSigmaF.toFixed(6)}`);
+
+  // ⑤ 单点闭式：μ(x*) = k·y/(k+σ_n²)，σ² = σ_f² − k²/(k+σ_n²)
+  const ell = 1, sf = 1, sn = 0.3;
+  const m1 = gprFit([[0]], [2], { lengthScale: ell, sigmaF: sf, noise: sn });
+  const xs = 0.7;
+  const k = sf * sf * Math.exp(-(xs * xs) / (2 * ell * ell));
+  const muRef = k * 2 / (sf * sf + sn * sn);
+  const varRef = sf * sf - (k * k) / (sf * sf + sn * sn);
+  const p1 = gprPredict(m1, [[xs]]);
+  check('GPR：单点后验闭式 μ = k·y/(k+σ_n²)、σ² = σ_f² − k²/(k+σ_n²)',
+    Math.abs(p1.mean[0] - muRef) < 1e-10 && Math.abs(p1.variance[0] - varRef) < 1e-10,
+    `μ=${p1.mean[0].toFixed(10)}（期望 ${muRef.toFixed(10)}），σ²=${p1.variance[0].toFixed(10)}（期望 ${varRef.toFixed(10)}）`);
+
+  // ⑥ 预测合理性：留一验证 RMSE 显著小于数据标准差
+  let sse = 0;
+  for (let i = 0; i < Xtr.length; i++) {
+    const rest = Xtr.filter((_, j) => j !== i), ry = ytr.filter((_, j) => j !== i);
+    const mm = gprFit(rest, ry, { lengthScale: 1, sigmaF: 1, noise: 0.05 });
+    const pr = gprPredict(mm, [Xtr[i]]);
+    sse += (pr.mean[0] - ytr[i]) ** 2;
+  }
+  const rmse = Math.sqrt(sse / Xtr.length);
+  check('GPR：留一验证 RMSE < 0.1（核超参数在真值函数上有效）', rmse < 0.1,
+    `LOO-RMSE=${rmse.toExponential(3)}`);
+}
+
+/* ============================================================
+ * 套件 25 · 梯度提升树（Friedman 2001）
+ * ============================================================ */
+function suiteGBDT(check) {
+  // 训练集：y = x₁² + 2x₂ + 噪声（非线性，树可拟合）
+  const rng = mulberry32(11);
+  const X = [], y = [];
+  for (let i = 0; i < 120; i++) {
+    const a = rng() * 4 - 2, bb = rng() * 4 - 2;
+    X.push([a, bb]);
+    y.push(a * a + 2 * bb + gaussianSample(rng, 0, 0.15));
+  }
+  const model = gbdtFit(X, y, { nEstimators: 60, lr: 0.1, maxDepth: 3 });
+
+  // ① 训练 MSE 单调不增（贪心函数逼近推论）
+  let mono = true, maxUp = 0;
+  for (let k = 1; k < model.trainLoss.length; k++) {
+    const up = model.trainLoss[k] - model.trainLoss[k - 1];
+    if (up > 1e-12) { mono = false; maxUp = Math.max(maxUp, up); }
+  }
+  check('GBDT：训练 MSE 严格单调不增（60 轮）', mono,
+    `f₀=${model.trainLoss[0].toFixed(6)} → f₆₀=${model.trainLoss[model.trainLoss.length - 1].toFixed(6)}，最大回升=${maxUp.toExponential(2)}`);
+
+  // ② 每棵树 ≡ 残差在分片常数子空间上的正交投影（精确恒等式 ⟨h,r⟩ = ‖h‖²）
+  // 回归树即投影算子 P（P²=P, Pᵀ=P），h = Pr ⇒ ⟨h,r⟩ = ⟨Pr,r⟩ = ‖Pr‖² = ‖h‖²
+  let projErr = 0;
+  for (let m = 0; m < model.trees.length; m++) {
+    const h = regressionTreePredictAll(model.trees[m], X);
+    const r = model.residuals[m];
+    let ip = 0, nh = 0;
+    for (let i = 0; i < h.length; i++) { ip += h[i] * r[i]; nh += h[i] * h[i]; }
+    projErr = Math.max(projErr, Math.abs(ip - nh) / (nh + 1e-300));
+  }
+  check('GBDT：树 ≡ 残差的正交投影（⟨h,r⟩ = ‖h‖² 精确恒等，60 棵逐棵）', projErr < 1e-9,
+    `max 相对偏差=${projErr.toExponential(2)}`);
+
+  // ③ 学习率收缩极限：lr → 0 时预测 ≡ 初始常数 ȳ
+  const tiny = gbdtFit(X, y, { nEstimators: 20, lr: 1e-10, maxDepth: 3 });
+  const pTiny = gbdtPredict(tiny, X);
+  const muY = y.reduce((s, v) => s + v, 0) / y.length;
+  let shrinkErr = 0;
+  for (const v of pTiny) shrinkErr = Math.max(shrinkErr, Math.abs(v - muY));
+  check('GBDT：学习率收缩极限 lr→0 ⇒ 预测 ≡ 常数均值 ȳ', shrinkErr < 1e-6,
+    `maxDiff=${shrinkErr.toExponential(2)}，ȳ=${muY.toFixed(8)}`);
+
+  // ④ 树桩闭式：maxDepth=1 时每个叶子的值 ≡ 该叶样本均值
+  const ys2 = [1, 2, 3, 10, 11, 12];
+  const Xs2 = [[1], [2], [3], [10], [11], [12]];
+  const stump = regressionTreeFit(Xs2, ys2, { maxDepth: 1, minSamplesSplit: 2 });
+  const stumpPred = regressionTreePredictAll(stump, Xs2);
+  const leftMu = (1 + 2 + 3) / 3, rightMu = (10 + 11 + 12) / 3;
+  const stumpOk = Math.abs(stumpPred[0] - leftMu) < 1e-12 && Math.abs(stumpPred[5] - rightMu) < 1e-12;
+  check('GBDT：回归树桩叶子值 ≡ 叶内样本均值（最小二乘解析解）', stumpOk,
+    `左叶=${stumpPred[0].toFixed(6)}（期望 ${leftMu.toFixed(6)}），右叶=${stumpPred[5].toFixed(6)}（期望 ${rightMu.toFixed(6)}）`);
+
+  // ⑤ 迭代增益：末轮 MSE 显著低于常数基线方差
+  let varY = 0;
+  for (const v of y) varY += (v - muY) ** 2;
+  varY /= y.length;
+  const finalMse = model.trainLoss[model.trainLoss.length - 1];
+  check('GBDT：末轮训练 MSE < 10% 常数基线方差（迭代增益显著）', finalMse < 0.1 * varY,
+    `MSE=${finalMse.toFixed(6)} vs 基线方差=${varY.toFixed(6)}（比值 ${(finalMse / varY * 100).toFixed(2)}%）`);
+}
+
+/* ============================================================
+ * 套件 26 · 卡尔曼滤波（Kalman 1960 · DARE）
+ * ============================================================ */
+function suiteKalman(check) {
+  // 标量系统：x_t = 0.95·x_{t−1} + w(Q=0.1)；z_t = x_t + v(R=1)
+  const f = 0.95, h = 1, q = 0.1, r = 1;
+  const F = [[f]], H = [[h]], Q = [[q]], R = [[r]];
+  const rng = mulberry32(4242);
+  let truth = 0;
+  const obs = [], truthSeries = [];
+  for (let t = 0; t < 1500; t++) {
+    truth = f * truth + gaussianSample(rng, 0, Math.sqrt(q));
+    truthSeries.push(truth);
+    obs.push([truth + gaussianSample(rng, 0, Math.sqrt(r))]);
+  }
+  const kf = kalmanFilter({ F, H, Q, R, x0: [0], P0: [[1]] }, obs);
+
+  // ① 卡尔曼增益闭式 K = P⁻Hᵀ(HP⁻Hᵀ+R)⁻¹（逐步逐位）
+  let gainErr = 0;
+  for (let t = 0; t < obs.length; t++) {
+    const Pm = kf.predictedCov[t][0][0];
+    const want = Pm * h / (Pm * h * h + r);
+    gainErr = Math.max(gainErr, Math.abs(kf.gains[t][0][0] - want));
+  }
+  check('Kalman：增益闭式 K = P⁻H/(HP⁻H+R)（1500 步逐位）', gainErr < 1e-12,
+    `maxDiff=${gainErr.toExponential(2)}，稳态 K=${kf.gains[kf.gains.length - 1][0][0].toFixed(8)}`);
+
+  // ② 新息协方差一致：经验方差 ≈ S = HP⁻Hᵀ+R（统计自洽性）
+  const inn = kf.innovations.map((v) => v[0]);
+  const empVar = empiricalVariance(inn);
+  const Sval = kf.innovationCov[kf.innovationCov.length - 1][0][0];
+  check('Kalman：新息经验协方差 ≈ 理论 S（相对偏差 < 15%）',
+    Math.abs(empVar - Sval) / Sval < 0.15,
+    `经验=${empVar.toFixed(5)} vs 理论 S=${Sval.toFixed(5)}（偏差 ${(Math.abs(empVar - Sval) / Sval * 100).toFixed(2)}%）`);
+
+  // ③ 新息白噪声：滞后−1 自相关 ≈ 0（最优滤波的充要统计特征）
+  const ac1 = innovationAutocorr(inn, 1);
+  check('Kalman：新息序列白噪声（|滞后−1 自相关| < 0.1）', Math.abs(ac1) < 0.1,
+    `ρ(1)=${ac1.toFixed(5)}`);
+
+  // ④ 稳态收敛：迭代不动点 ≡ DARE 解析解
+  const ss = kalmanScalarSteadyState(f, h, q, r);
+  const iter = kalmanScalarIterate(f, h, q, r, 5000);
+  const lastP = kf.predictedCov[kf.predictedCov.length - 1][0][0];
+  check('Kalman：P⁻ 收敛到离散代数 Riccati 方程（DARE）解析解',
+    Math.abs(iter - ss.Pminus) < 1e-9 && Math.abs(lastP - ss.Pminus) < 1e-6,
+    `解析=${ss.Pminus.toFixed(10)}，迭代=${iter.toFixed(10)}，滤波末步=${lastP.toFixed(10)}`);
+
+  // ⑤ 协方差恒为对称半正定（Joseph 形式的保障）
+  let symErr = 0, negFound = false;
+  for (const P of kf.covariances) {
+    symErr = Math.max(symErr, mdiff(P, transpose(P)));
+    for (let i = 0; i < P.length; i++) if (P[i][i] < 0) negFound = true;
+  }
+  check('Kalman：协方差全程对称半正定（Joseph 更新式保障）', symErr < 1e-15 && !negFound,
+    `对称误差=${symErr.toExponential(2)}`);
+
+  // ⑥ 滤波有效：估计 RMSE < 观测噪声标准差（优于直接观测）
+  let se = 0;
+  for (let t = 0; t < obs.length; t++) se += (kf.states[t][0] - truthSeries[t]) ** 2;
+  const kfRmse = Math.sqrt(se / obs.length);
+  check('Kalman：滤波估计 RMSE < 观测噪声 σ（优于直接观测）', kfRmse < Math.sqrt(r),
+    `RMSE=${kfRmse.toFixed(5)} vs 观测噪声 σ=${Math.sqrt(r).toFixed(5)}`);
 }

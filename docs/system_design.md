@@ -1,7 +1,7 @@
 # 旗舰AI引擎 (Flagship AI Engine) — 系统架构设计说明书
 
 > 作者署名：晨星 (Morning Star / CJX0712) ｜ 架构师：高见远 (Bob)
-> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、22/22 全绿**。
+> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、26/26 全绿**。
 
 ---
 
@@ -11,13 +11,13 @@
 
 | 设计稿 | 最终实现 | 说明 |
 |---|---|---|
-| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 22 组套件，Node 与浏览器共用同一份 |
+| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 26 组套件，Node 与浏览器共用同一份 |
 | `src/verify/suites.js` | 并入 `src/verify/invariants.js` | 套件与检查器同文件，杜绝跨文件漂移 |
 | `src/core/rng.js` / `src/core/utils.js` | 并入 `src/core/stats.js`（mulberry32/gaussianSample）与 `src/core/linalg.js`/`numerical.js` | 随机源归概率层，工具归各自的消费者 |
 | 浏览器 `<script type="module">` 直引 src | `scripts/bundle.mjs` 按依赖序内联进 `showcase/index.html`（`globalThis.FlagshipAI`） | 兼容 `file://` 双击即用；`node --check` 兜底语法校验 |
-| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 22/22`（CI grep 校验） | 语义一致，命名对齐实现 |
+| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 26/26`（CI grep 校验） | 语义一致，命名对齐实现 |
 
-落地验证结论：`node test/run.mjs` → **PASS 22/22（630ms）**，与本设计书的全部不变量承诺一致。
+落地验证结论：`node test/run.mjs` → **PASS 26/26（845ms）**，与本设计书的全部不变量承诺一致。
 
 ### v1.1 增补（2026-10-19）
 
@@ -47,6 +47,15 @@
 | `src/ml/spectral.js`（谱聚类 NJW） | λ_min=0 且特征向量 ∝ √d/‖√d‖；谱界 [0,2]；两月亮 ARI=1.000000（k-means 对照 0.2424） |
 | `src/nn/activations.js`（GELU/SiLU/Mish/HardSwish/Softplus） | erf 奇对称 + A&S 参考值；softplus(x)−softplus(−x)=x；解析导数 ≡ 中心差分；渐近行为 |
 | `src/nn/schedulers.js`（Noam/SGDR/阶梯/指数） | Noam 两支在 s=W 精确连续且峰值闭式；SGDR 端点闭式 + 对称性；指数逐步等比 |
+
+### v1.4 增补（2026-10-19）
+
+| 增补模块 | 不变量（定理背书） |
+|---|---|
+| `src/nn/cnn.js`（卷积网络，LeCun 1998） | 输出尺寸闭式；im2col+GEMM ≡ 滑动窗口；平移等变性（maxDiff=0）；dX/dW/db 梯度 ≡ 中心差分（1.58e-8）；池化 argmax 路由 |
+| `src/ml/gpr.js`（高斯过程，R&W 2006） | LLᵀ≡K；无噪声插值；后验方差≤先验且远点→σ_f²；解析梯度 ≡ 差分（R&W 5.9）；单点闭式逐位一致 |
+| `src/ml/gbdt.js`（梯度提升，Friedman 2001） | 训练 MSE 单调不增；树 ≡ 残差正交投影 ⟨h,r⟩=‖h‖²（1.86e-15）；lr→0 ⇒ 预测 ≡ ȳ；树桩叶子值 ≡ 叶内均值 |
+| `src/ml/kalman.js`（卡尔曼滤波，Kalman 1960） | K=P⁻H/(HP⁻H+R)；新息白噪声 ρ(1)=0.0076；P⁻ 收敛到 DARE 解析解 0.3174802365（三方互证）；协方差恒半正定 |
 
 ---
 
@@ -378,7 +387,7 @@ node:path        # scripts/serve.mjs 路径解析
 
 ## 8. 待明确事项
 
-- **「18/18」分组口径（v1.0→v1.2）**：本设计将验证聚为 **8 大组（G1–G8，见 §4.3）**，每组内含多条不变量检查，组内全过即该组绿。v1.1 扩至 14 组（新增 RNN/LSTM/SVM/AdaBoost/HMM/RL），v1.2 扩至 18 组（新增 Q-learning/DBSCAN/t-SNE/Optimizers），v1.3 扩至 22 组（新增 KPCA/谱聚类/激活函数族/学习率调度），口径不变：组内全过即该组绿。
+- **「18/18」分组口径（v1.0→v1.2）**：本设计将验证聚为 **8 大组（G1–G8，见 §4.3）**，每组内含多条不变量检查，组内全过即该组绿。v1.1 扩至 14 组（新增 RNN/LSTM/SVM/AdaBoost/HMM/RL），v1.2 扩至 18 组（新增 Q-learning/DBSCAN/t-SNE/Optimizers），v1.3 扩至 22 组（新增 KPCA/谱聚类/激活函数族/学习率调度），v1.4 扩至 26 组（新增 CNN/GPR/GBDT/Kalman），口径不变：组内全过即该组绿。
 - **showcase 演示范围**：默认含「静态 8/8 报告 + 2D PCA 散点 + kmeans 聚类动画 + 注意力热力图」；是否需更多交互（如可调超参）待定，默认先做静态 + 轻量动画。
 - **CI Node 版本矩阵**：默认 `node-version: [18, 20]`（LTS）；如需覆盖 16（package.json 已声明 `>=16`）可补。
 - **`serve.mjs` 端口**：默认 `8080`，可通过环境变量 `PORT` 覆盖；是否写入 README 待确认（默认写入）。

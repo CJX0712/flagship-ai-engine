@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">22 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">26 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -199,6 +199,24 @@
       <svg id="svg-act" viewBox="0 0 460 300"></svg>
       <div class="legend" id="legend-act"></div>
     </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>高斯过程回归（后验均值 + 95% 置信带）</strong>
+        <button id="btn-gpr">换一批观测</button>
+      </div>
+      <div class="desc">RBF 核 · Cholesky 求解 · 训练点处插值、远点方差饱和至先验 σ_f²</div>
+      <svg id="svg-gpr" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-gpr"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>卡尔曼滤波（真值 vs 观测 vs 滤波估计）</strong>
+        <button id="btn-kf">换一条轨迹</button>
+      </div>
+      <div class="desc">Joseph 协方差更新 · 增益 K = P⁻H/(HP⁻H+R) · 收敛到 DARE 稳态</div>
+      <svg id="svg-kf" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-kf"></div>
+    </div>
   </div>
 
   <div class="refs">
@@ -212,6 +230,8 @@
     <code>van der Maaten &amp; Hinton 2008 · t-SNE</code><code>Kingma &amp; Ba 2015 · Adam</code>
     <code>Schölkopf et al. 1998 · Kernel PCA</code><code>Ng, Jordan &amp; Weiss 2002 · Spectral Clustering</code>
     <code>Hendrycks &amp; Gimpel 2016 · GELU</code><code>Loshchilov &amp; Hutter 2016 · SGDR</code>
+    <code>LeCun et al. 1998 · CNN</code><code>Rasmussen &amp; Williams 2006 · GPML</code>
+    <code>Friedman 2001 · Gradient Boosting</code><code>Kalman 1960 · 最优滤波</code>
   </div>
 
   <footer>
@@ -620,8 +640,96 @@
   $('btn-tsne').addEventListener('click', () => { tsneSeed = (tsneSeed * 41 + 9) % 100000; drawTsne(); });
   $('btn-dbscan').addEventListener('click', () => { dbSeed = (dbSeed * 43 + 5) % 100000; drawDbscan(); });
   $('btn-opt').addEventListener('click', drawOpt);
+  /* ================= v1.4 · 高斯过程回归 ================= */
+  let gprSeed = 7;
+  function drawGPR() {
+    const rng = A.mulberry32(gprSeed);
+    const Xtr = [], ytr = [];
+    for (let i = 0; i < 10; i++) {
+      const x = -3 + (i * 6) / 9;
+      Xtr.push([x]);
+      ytr.push(Math.sin(x) + A.gaussianSample(rng, 0, 0.12));
+    }
+    const model = A.gprFit(Xtr, ytr, { lengthScale: 1, sigmaF: 1, noise: 0.1 });
+    const Xs = [];
+    for (let i = 0; i <= 90; i++) Xs.push([-4 + (i * 8) / 90]);
+    const { mean, variance } = A.gprPredict(model, Xs);
+    const XR = [-4, 4], YR = [-2.2, 2.2];
+    const mx = (v) => 30 + (v - XR[0]) / (XR[1] - XR[0]) * 410;
+    const my = (v) => 275 - (v - YR[0]) / (YR[1] - YR[0]) * 250;
+    let svg = `<line x1="30" y1="${my(0)}" x2="440" y2="${my(0)}" stroke="#d5dbe5" stroke-width="1"/>`;
+    // ±2σ 置信带（多边形：上沿正序 + 下沿逆序）
+    const up = [], dn = [];
+    for (let i = 0; i < Xs.length; i++) {
+      const s = 2 * Math.sqrt(Math.max(variance[i], 0));
+      up.push(`${mx(Xs[i][0]).toFixed(1)},${my(mean[i] + s).toFixed(1)}`);
+      dn.push(`${mx(Xs[i][0]).toFixed(1)},${my(mean[i] - s).toFixed(1)}`);
+    }
+    svg += `<polygon points="${up.concat(dn.reverse()).join(' ')}" fill="#2980b9" fill-opacity="0.15"/>`;
+    // 后验均值
+    svg += `<polyline fill="none" stroke="#2980b9" stroke-width="2.4"
+      points="${mean.map((v, i) => `${mx(Xs[i][0]).toFixed(1)},${my(v).toFixed(1)}`).join(' ')}"/>`;
+    // 训练点
+    for (let i = 0; i < Xtr.length; i++) {
+      svg += `<circle cx="${mx(Xtr[i][0]).toFixed(1)}" cy="${my(ytr[i]).toFixed(1)}" r="4"
+        fill="#c0392b" stroke="#fff" stroke-width="1"/>`;
+    }
+    $('svg-gpr').innerHTML = svg;
+    // 训练区中心（x=0，索引 45）方差 vs 外推边缘方差：不确定性随距离单调放大
+    const varIn = variance[45];
+    const varFar = variance[variance.length - 1];
+    $('legend-gpr').innerHTML =
+      `<span><i style="background:#2980b9"></i>后验均值</span>` +
+      `<span><i style="background:#2980b9;opacity:.3"></i>95% 置信带</span>` +
+      `<span><i style="background:#c0392b"></i>观测（10 点）</span>` +
+      `<span style="font-family:monospace">σ²: 训练区 ${varIn.toFixed(3)} → 外推边缘 ${varFar.toFixed(3)}（先验 1.0）</span>`;
+  }
+
+  /* ================= v1.4 · 卡尔曼滤波 ================= */
+  let kfSeed = 4242;
+  function drawKF() {
+    const rng = A.mulberry32(kfSeed);
+    const f = 0.95, h = 1, q = 0.08, r = 0.9;
+    let truth = 0;
+    const truthSeries = [], obs = [];
+    for (let t = 0; t < 80; t++) {
+      truth = f * truth + A.gaussianSample(rng, 0, Math.sqrt(q));
+      truthSeries.push(truth);
+      obs.push([truth + A.gaussianSample(rng, 0, Math.sqrt(r))]);
+    }
+    const kf = A.kalmanFilter(
+      { F: [[f]], H: [[h]], Q: [[q]], R: [[r]], x0: [0], P0: [[1]] }, obs,
+    );
+    const est = kf.states.map((v) => v[0]);
+    const zo = obs.map((v) => v[0]);
+    const all = truthSeries.concat(zo, est);
+    const lo = Math.min(...all) - 0.4, hi = Math.max(...all) + 0.4;
+    const mx = (i) => 30 + (i / 79) * 410;
+    const my = (v) => 275 - (v - lo) / (hi - lo) * 250;
+    let svg = `<line x1="30" y1="${my(0)}" x2="440" y2="${my(0)}" stroke="#d5dbe5" stroke-width="1"/>`;
+    svg += `<polyline fill="none" stroke="#7f8c8d" stroke-width="1.2" stroke-dasharray="3 3"
+      points="${truthSeries.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(' ')}"/>`;
+    svg += `<g fill="#bdc3c7">${zo.map((v, i) => `<circle cx="${mx(i).toFixed(1)}" cy="${my(v).toFixed(1)}" r="1.8"/>`).join('')}</g>`;
+    svg += `<polyline fill="none" stroke="#c0392b" stroke-width="2.4"
+      points="${est.map((v, i) => `${mx(i).toFixed(1)},${my(v).toFixed(1)}`).join(' ')}"/>`;
+    $('svg-kf').innerHTML = svg;
+    let seObs = 0, seKf = 0;
+    for (let i = 0; i < 80; i++) {
+      seObs += (zo[i] - truthSeries[i]) ** 2;
+      seKf += (est[i] - truthSeries[i]) ** 2;
+    }
+    const rmseObs = Math.sqrt(seObs / 80), rmseKf = Math.sqrt(seKf / 80);
+    $('legend-kf').innerHTML =
+      `<span><i style="background:#7f8c8d"></i>真值（不可观测）</span>` +
+      `<span><i style="background:#bdc3c7"></i>带噪观测</span>` +
+      `<span><i style="background:#c0392b"></i>卡尔曼估计</span>` +
+      `<span style="font-family:monospace">RMSE: 观测 ${rmseObs.toFixed(3)} → 滤波 ${rmseKf.toFixed(3)}（降 ${((1 - rmseKf / rmseObs) * 100).toFixed(0)}%）</span>`;
+  }
+
   $('btn-moons').addEventListener('click', () => { moonSeed = (moonSeed * 47 + 3) % 100000; drawMoons(); });
   $('btn-act').addEventListener('click', () => { actShowDeriv = !actShowDeriv; drawAct(); });
+  $('btn-gpr').addEventListener('click', () => { gprSeed = (gprSeed * 53 + 7) % 100000; drawGPR(); });
+  $('btn-kf').addEventListener('click', () => { kfSeed = (kfSeed * 59 + 11) % 100000; drawKF(); });
 
   renderSuites();
   drawKmeans();
@@ -634,6 +742,8 @@
   drawDbscan();
   drawMoons();
   drawAct();
+  drawGPR();
+  drawKF();
   drawOpt();
 })();
 </script>
