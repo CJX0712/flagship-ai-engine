@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">18 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">22 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -181,6 +181,24 @@
       <svg id="svg-opt" viewBox="0 0 460 300"></svg>
       <div class="legend" id="legend-opt"></div>
     </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>谱聚类 vs k-means（两月亮 · 非凸结构）</strong>
+        <button id="btn-moons">换一批月亮</button>
+      </div>
+      <div class="desc">NJW 归一化拉普拉斯 · ARI = 1 精确恢复 · 对照：k-means 凸假设失效</div>
+      <svg id="svg-moons" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-moons"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>现代激活函数族（GELU / SiLU / Mish）</strong>
+        <button id="btn-act">切换导数视图</button>
+      </div>
+      <div class="desc">x·Φ(x) 与 x·σ(x) 的光滑门控 · 解析导数 ≡ 中心差分（不变量）</div>
+      <svg id="svg-act" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-act"></div>
+    </div>
   </div>
 
   <div class="refs">
@@ -192,6 +210,8 @@
     <code>Sutton &amp; Barto · Reinforcement Learning</code>
     <code>Watkins 1989 · Q-learning</code><code>Ester et al. 1996 · DBSCAN</code>
     <code>van der Maaten &amp; Hinton 2008 · t-SNE</code><code>Kingma &amp; Ba 2015 · Adam</code>
+    <code>Schölkopf et al. 1998 · Kernel PCA</code><code>Ng, Jordan &amp; Weiss 2002 · Spectral Clustering</code>
+    <code>Hendrycks &amp; Gimpel 2016 · GELU</code><code>Loshchilov &amp; Hutter 2016 · SGDR</code>
   </div>
 
   <footer>
@@ -525,6 +545,72 @@
       `<span style="font-family:monospace">${finals.join(' · ')}</span>`;
   }
 
+  /* ================= v1.3 · 谱聚类 vs k-means（两月亮） ================= */
+  let moonSeed = 7;
+  function drawMoons() {
+    const { X, y } = A.twoMoons({ n: 100, sigma: 0.05, seed: moonSeed });
+    const sc = A.spectralCluster(X, 2, { neighbors: 7, gamma: 1, seed: 42 });
+    const km = A.kmeans(X, 2, { seed: 42 });
+    const ariSpec = A.adjustedRandIndex(sc.labels, y);
+    const ariKm = A.adjustedRandIndex(km.labels, y);
+    const W = sc.W;
+    const mx = (v) => 20 + (v + 1.5) / 4.0 * 420;
+    const my = (v) => 280 - (v + 1.0) / 2.4 * 260;
+    let svg = '';
+    // 图边（弱化显示跨簇连接）
+    for (let i = 0; i < X.length; i++) for (let j = i + 1; j < X.length; j++) {
+      if (W[i][j] > 0) {
+        const cross = sc.labels[i] !== sc.labels[j];
+        svg += `<line x1="${mx(X[i][0]).toFixed(1)}" y1="${my(X[i][1]).toFixed(1)}"
+          x2="${mx(X[j][0]).toFixed(1)}" y2="${my(X[j][1]).toFixed(1)}"
+          stroke="${cross ? '#e67e22' : '#95a5a6'}" stroke-width="${cross ? 1.4 : 0.5}"
+          stroke-opacity="${cross ? 0.55 : 0.25}"/>`;
+      }
+    }
+    for (let i = 0; i < X.length; i++) {
+      const specC = sc.labels[i] === 0 ? '#2980b9' : '#c0392b';
+      svg += `<circle cx="${mx(X[i][0]).toFixed(1)}" cy="${my(X[i][1]).toFixed(1)}" r="4"
+        fill="${specC}" stroke="#fff" stroke-width="0.8"/>`;
+    }
+    $('svg-moons').innerHTML = svg;
+    $('legend-moons').innerHTML =
+      `<span><i style="background:#2980b9"></i>谱簇 A</span><span><i style="background:#c0392b"></i>谱簇 B</span>` +
+      `<span><i style="background:#e67e22"></i>跨簇边</span>` +
+      `<span style="font-family:monospace">谱 ARI=${ariSpec.toFixed(4)} · k-means ARI=${ariKm.toFixed(4)}</span>`;
+  }
+
+  /* ================= v1.3 · 现代激活函数族 ================= */
+  let actShowDeriv = false;
+  function drawAct() {
+    const curves = actShowDeriv
+      ? [['GELU′', '#2980b9', A.geluD], ['SiLU′', '#c0392b', A.siluD], ['Mish′', '#8e44ad', A.mishD]]
+      : [['GELU', '#2980b9', A.gelu], ['SiLU', '#c0392b', A.silu], ['Mish', '#8e44ad', A.mish]];
+    const XR = [-4, 4];
+    const fmax = actShowDeriv ? 1.2 : 4.2;
+    const fmin = actShowDeriv ? -0.2 : -0.5;
+    const mx = (v) => 20 + (v - XR[0]) / (XR[1] - XR[0]) * 420;
+    const my = (v) => 270 - (v - fmin) / (fmax - fmin) * 240;
+    let svg = `<line x1="20" y1="${my(0)}" x2="440" y2="${my(0)}" stroke="#d5dbe5" stroke-width="1"/>
+      <line x1="${mx(0)}" y1="20" x2="${mx(0)}" y2="290" stroke="#d5dbe5" stroke-width="1"/>`;
+    // GELU tanh 逼近虚线对照
+    if (!actShowDeriv) {
+      const pts = [];
+      for (let x = XR[0]; x <= XR[1] + 1e-9; x += 0.08) pts.push(`${mx(x).toFixed(1)},${my(A.geluTanh(x)).toFixed(1)}`);
+      svg += `<polyline fill="none" stroke="#7f8c8d" stroke-width="1.2" stroke-dasharray="3 3"
+        points="${pts.join(' ')}"/>`;
+    }
+    for (const [name, color, fn] of curves) {
+      const pts = [];
+      for (let x = XR[0]; x <= XR[1] + 1e-9; x += 0.08) pts.push(`${mx(x).toFixed(1)},${my(fn(x)).toFixed(1)}`);
+      svg += `<polyline fill="none" stroke="${color}" stroke-width="2.4" points="${pts.join(' ')}"/>`;
+    }
+    $('svg-act').innerHTML = svg;
+    $('legend-act').innerHTML =
+      curves.map(([n, c]) => `<span><i style="background:${c}"></i>${n}</span>`).join('') +
+      (actShowDeriv ? '' : `<span><i style="background:#7f8c8d"></i>GELU-tanh 逼近</span>`) +
+      `<span style="font-family:monospace">${actShowDeriv ? '导数视图' : '函数视图'} · gelu(0)=0</span>`;
+  }
+
   $('btn-kmeans').addEventListener('click', () => { kmSeed = (kmSeed * 31 + 17) % 100000; drawKmeans(); });
   $('btn-attn').addEventListener('click', () => { attnSeed = (attnSeed * 37 + 11) % 100000; drawAttn(); });
   $('btn-svm').addEventListener('click', () => { svmSeed = (svmSeed * 29 + 13) % 100000; drawSvm(); });
@@ -534,6 +620,8 @@
   $('btn-tsne').addEventListener('click', () => { tsneSeed = (tsneSeed * 41 + 9) % 100000; drawTsne(); });
   $('btn-dbscan').addEventListener('click', () => { dbSeed = (dbSeed * 43 + 5) % 100000; drawDbscan(); });
   $('btn-opt').addEventListener('click', drawOpt);
+  $('btn-moons').addEventListener('click', () => { moonSeed = (moonSeed * 47 + 3) % 100000; drawMoons(); });
+  $('btn-act').addEventListener('click', () => { actShowDeriv = !actShowDeriv; drawAct(); });
 
   renderSuites();
   drawKmeans();
@@ -544,6 +632,8 @@
   drawLstm();
   drawTsne();
   drawDbscan();
+  drawMoons();
+  drawAct();
   drawOpt();
 })();
 </script>

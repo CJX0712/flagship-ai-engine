@@ -31,6 +31,8 @@ flagship-ai-engine/
 │   │   ├── dimreduction.js      # PCA(经 Jacobi 特征分解)
 │   │   ├── dbscan.js            # DBSCAN 密度聚类（含 ARI 评估）
 │   │   ├── tsne.js              # t-SNE 非线性嵌入（困惑度二分 + Student-t）
+│   │   ├── kpca.js              # 核 PCA（特征空间中心化 + 核技巧，Schölkopf 1998）
+│   │   ├── spectral.js          # 谱聚类 NJW（归一化拉普拉斯 + 谱嵌入）
 │   │   ├── svm.js               # RBF 核 SVM（SMO 对偶求解，KKT 自检）
 │   │   ├── boosting.js          # AdaBoost（决策树桩加权集成）
 │   │   ├── hmm.js               # HMM 前向/后向 + Baum-Welch(EM)
@@ -41,13 +43,15 @@ flagship-ai-engine/
 │   │   ├── transformer.js       # LayerNorm/位置编码/Transformer 块
 │   │   ├── rnn.js               # Elman RNN + BPTT(梯度检验)
 │   │   ├── lstm.js              # LSTM 门控网络 + BPTT(梯度检验)
-│   │   └── optimizers.js        # SGD-Momentum / RMSProp / Adam + minimize
+│   │   ├── optimizers.js        # SGD-Momentum / RMSProp / Adam + minimize
+│   │   ├── activations.js       # GELU/SiLU/Mish/HardSwish/Softplus + erf(A&S 7.1.26)
+│   │   └── schedulers.js        # Noam/SGDR余弦/阶梯/指数/线性 warmup
 │   ├── rl/
 │   │   ├── valueIteration.js    # 值迭代/策略评估/网格世界/链式 MDP 暴力枚举
 │   │   └── qLearning.js         # Q-learning(免模型TD) + Bellman 残差 + qFromV
 │   └── verify/
-│       └── invariants.js        # 18 组不变量自检套件（Node 与浏览器共用同一份）
-├── test/run.mjs                 # 无头自检入口 → PASS 18/18
+│       └── invariants.js        # 22 组不变量自检套件（Node 与浏览器共用同一份）
+├── test/run.mjs                 # 无头自检入口 → PASS 22/22
 ├── showcase/
 │   ├── template.html            # 旗舰展示页模板（9 个实时演示）
 │   └── index.html               # 生成物：单文件、内联引擎、双击即用
@@ -116,8 +120,8 @@ graph LR
 | T4 | ml/classification + clustering + dimreduction + tree | T1,T2 |
 | T5 | nn/dense（反向传播 + 梯度检验） | T1,T2 |
 | T6 | nn/attention + transformer | T1,T2,T5 |
-| T7 | verify/invariants（18 组套件） | T1–T6 |
-| T8 | test/run.mjs 跑通 18/18 | T7 |
+| T7 | verify/invariants（22 组套件） | T1–T6 |
+| T8 | test/run.mjs 跑通 22/22 | T7 |
 | T9 | bundle + showcase 单文件页 | T7 |
 | T10 | 文档 + GitHub 推送 + CI 绿 | T8,T9 |
 

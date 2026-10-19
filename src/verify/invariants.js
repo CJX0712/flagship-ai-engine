@@ -1,7 +1,7 @@
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 18 组套件全绿 = 引擎数学正确性的机器证明。
+ * 22 组套件全绿 = 引擎数学正确性的机器证明。
  */
 
 import {
@@ -11,7 +11,7 @@ import {
 import { logsumexp, softmax, sigmoid, relErr } from '../core/numerical.js';
 import {
   gaussianPDF, entropy, crossEntropy, klDivergence,
-  mean as colMean, mulberry32, gaussianSample,
+  mean as colMean, mulberry32, gaussianSample, covarianceMatrix, twoMoons,
 } from '../core/stats.js';
 import {
   addIntercept, linearRegression, ridgeRegression,
@@ -43,6 +43,20 @@ import { tsne, knnOverlap, searchBetas } from '../ml/tsne.js';
 import {
   sgdMomentumStep, rmspropStep, adamStep, minimize,
 } from '../nn/optimizers.js';
+import {
+  kpca, kpcaTransform, knnPurity, kpcaReconstructionError, centerKernel,
+} from '../ml/kpca.js';
+import {
+  similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster,
+} from '../ml/spectral.js';
+import {
+  erf, normalCDF, normalPDF, softplus, softplusD,
+  gelu, geluD, geluTanh, geluTanhD, silu, siluD, mish, mishD,
+  hardswish, hardswishD, activationGradCheck,
+} from '../nn/activations.js';
+import {
+  warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay,
+} from '../nn/schedulers.js';
 
 /** 向量最大绝对值 */
 function vinf(v) {
@@ -105,6 +119,10 @@ export function runAllInvariants() {
     ['密度聚类 · DBSCAN', suiteDBSCAN],
     ['非线性降维 · t-SNE', suiteTSNE],
     ['一阶优化器 · Optimizers', suiteOptim],
+    ['核主成分分析 · Kernel PCA', suiteKPCA],
+    ['谱聚类 · Spectral Clustering', suiteSpectral],
+    ['激活函数族 · Activations', suiteActivations],
+    ['学习率调度 · LR Schedulers', suiteSched],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -272,6 +290,31 @@ function suiteStats(check) {
   const integral = (h / 3) * sum;
   check('gaussianPDF：Simpson 数值积分 ≈ 1（±14σ, N=4000）', Math.abs(integral - 1) < 1e-6,
     `积分=${integral.toFixed(10)}，|误差|=${Math.abs(integral - 1).toExponential(2)}`);
+
+  // 协方差矩阵三道防线（历史 bug：下三角被二次相除致不对称，套件曾漏检）
+  const rngC = mulberry32(77);
+  const XC = randomMatrix(50, 4, rngC).map(r => r.map(v => v * 3 + 0.5));
+  const C = covarianceMatrix(XC);
+  let symErr = 0;
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) symErr = Math.max(symErr, Math.abs(C[i][j] - C[j][i]));
+  }
+  check('covarianceMatrix：C = Cᵀ 对称（精确）', symErr === 0, `最大不对称=${symErr.toExponential(2)}`);
+
+  const muC = colMean(XC);
+  let bruteErr = 0;
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) {
+      let s = 0;
+      for (const row of XC) s += (row[i] - muC[i]) * (row[j] - muC[j]);
+      bruteErr = Math.max(bruteErr, Math.abs(s / (XC.length - 1) - C[i][j]));
+    }
+  }
+  check('covarianceMatrix：与暴力双循环实现逐位一致', bruteErr < 1e-12, `最大偏差=${bruteErr.toExponential(2)}`);
+
+  let cholOk = true;
+  try { cholesky(C); } catch (e) { cholOk = false; }
+  check('covarianceMatrix：半正定（Cholesky L·Lᵀ = C 成功）', cholOk, cholOk ? '分解成功' : '分解失败');
 }
 
 /* ───────────────────────── 5. 回归与梯度检验 ───────────────────────── */
@@ -934,4 +977,253 @@ function suiteOptim(check) {
       mono && history[history.length - 1] < history[0] * 1e-6,
       `f: ${history[0].toExponential(3)} → ${history[history.length - 1].toExponential(3)}`);
   }
+}
+
+/* ============================================================
+ * 套件 19 · 核主成分分析（Schölkopf, Smola & Müller 1998）
+ * ============================================================ */
+function suiteKPCA(check) {
+  // 各向异性高斯（协方差谱分离：3 / 1.5 / 0.7）
+  const rng = mulberry32(5);
+  const Xa = [];
+  for (let i = 0; i < 80; i++) {
+    Xa.push([gaussianSample(rng, 0, 3), gaussianSample(rng, 0, 1.5), gaussianSample(rng, 0, 0.7)]);
+  }
+  const kl = kpca(Xa, { kernel: 'linear', dims: 3 });
+
+  // ① 线性核 KPCA ≡ 经典 PCA：主分量方向逐分量 |cos| = 1（谱分离数据无简并）
+  const C = covarianceMatrix(Xa);
+  const pe = jacobiEig(C);
+  const mu = colMean(Xa);
+  const Xc = Xa.map((r) => r.map((v, j) => v - mu[j]));
+  let minCos = 1, maxNormDiff = 0;
+  for (let k = 0; k < 3; k++) {
+    const pcaCol = Xc.map((r) => r.reduce((s, x, j) => s + x * pe.vectors[k][j], 0));
+    const kpcaCol = kl.scores.map((r) => r[k]);
+    const na = norm(pcaCol), nb = norm(kpcaCol);
+    minCos = Math.min(minCos, Math.abs(dot(pcaCol, kpcaCol) / (na * nb)));
+    maxNormDiff = Math.max(maxNormDiff, Math.abs(na - nb) / na);
+  }
+  check('KPCA：线性核 ≡ 经典 PCA（主分量方向 |cos| = 1，谱分离数据）', minCos > 1 - 1e-12,
+    `min|cos|=${minCos.toFixed(15)}`);
+  check('KPCA：投影范数逐位一致（‖scores_k‖ ≡ ‖X̃v_k‖）', maxNormDiff < 1e-12,
+    `maxΔ/‖·‖=${maxNormDiff.toExponential(2)}`);
+
+  // ② 特征值关系 λ(K̃) = (n−1)·λ(C)（核技巧的谱恒等式）
+  let maxLamErr = 0;
+  for (let k = 0; k < 3; k++) {
+    const rel = Math.abs(kl.eig.values[k] / 79 - pe.values[k]) / pe.values[k];
+    maxLamErr = Math.max(maxLamErr, rel);
+  }
+  check('KPCA：特征值恒等式 λ(K̃) = (n−1)·λ(C)', maxLamErr < 1e-10,
+    `最大相对偏差=${maxLamErr.toExponential(2)}`);
+
+  // ③ 特征空间中心化：K̃ 行和 ≈ 0、1ᵀK̃1 ≈ 0、K̃ 对称半正定
+  const rowSums = kl.Kc.map((r) => Math.abs(r.reduce((s, v) => s + v, 0)));
+  const grand = Math.abs(kl.Kc.flat().reduce((s, v) => s + v, 0));
+  const symErr = mdiff(kl.Kc, transpose(kl.Kc));
+  const minEig = kl.eig.values[kl.eig.values.length - 1];
+  check('KPCA：特征空间均值零（K̃ 行和 ≈ 0 且 1ᵀK̃1 ≈ 0）',
+    vinf(rowSums) < 1e-9 && grand < 1e-9,
+    `max行和=${vinf(rowSums).toExponential(2)}，总量=${grand.toExponential(2)}`);
+  check('KPCA：K̃ 对称半正定（min eigenvalue ≥ −ε·λmax）',
+    symErr < 1e-12 && minEig > -1e-10 * kl.eig.values[0],
+    `对称误差=${symErr.toExponential(2)}，λmin=${minEig.toExponential(2)}`);
+
+  // ④ 谱定理完全重构
+  const recErr = kpcaReconstructionError(kl.Kc, kl.eig);
+  check('KPCA：谱定理重构 ‖K̃ − VΛVᵀ‖_F ≈ 0', recErr < 1e-9 * (1 + frobeniusNorm(kl.Kc)),
+    `误差=${recErr.toExponential(2)}`);
+
+  // ⑤ 样本外变换自洽：kpcaTransform(X_train) ≡ 训练 scores
+  const tr = kpcaTransform(kl, Xa);
+  let trDiff = 0;
+  for (let i = 0; i < Xa.length; i++) {
+    for (let k = 0; k < 3; k++) trDiff = Math.max(trDiff, Math.abs(tr[i][k] - kl.scores[i][k]));
+  }
+  check('KPCA：样本外投影自洽（transform(train) ≡ scores）', trDiff < 1e-8,
+    `maxDiff=${trDiff.toExponential(2)}`);
+
+  // ⑥ RBF 核把两月亮非线性结构线性化：嵌入空间 1-NN 纯度 → 1
+  const moons = twoMoons({ n: 60, sigma: 0.12, seed: 7 });
+  const km = kpca(moons.X, { kernel: 'rbf', gamma: 10, dims: 2 });
+  const purity = knnPurity(km.scores, moons.y);
+  check('KPCA：RBF 核两月亮嵌入 1-NN 纯度 ≥ 0.95（非线性→线性）', purity >= 0.95,
+    `纯度=${purity.toFixed(4)}`);
+}
+
+/* ============================================================
+ * 套件 20 · 谱聚类（Shi & Malik 2000 · Ng-Jordan-Weiss 2002 · von Luxburg 2007）
+ * ============================================================ */
+function suiteSpectral(check) {
+  const moons = twoMoons({ n: 100, sigma: 0.05, seed: 7 });
+  const W = similarityGraph(moons.X, { k: 7, gamma: 1 });
+  const { L, degrees } = normalizedLaplacian(W);
+  const { eigenvalues, U } = spectralEmbedding(L, 2);
+  const n = L.length;
+
+  // ① 图对称性与度矩阵一致性：W = Wᵀ、D = diag(W1)、L_sym 对称
+  const symErr = mdiff(W, transpose(W));
+  const degErr = Math.max(...degrees.map((d, i) => Math.abs(d - W[i].reduce((s, v) => s + v, 0))));
+  const lSym = mdiff(L, transpose(L));
+  check('谱聚类：W = Wᵀ、D = diag(W1)、L_sym 对称', symErr < 1e-12 && degErr < 1e-9 && lSym < 1e-12,
+    `W对称=${symErr.toExponential(2)}，度=${degErr.toExponential(2)}，L对称=${lSym.toExponential(2)}`);
+
+  // ② 归一化拉普拉斯基本定理：λ_min = 0，特征向量 ∝ D^{1/2}1 / ‖D^{1/2}1‖
+  const lam0 = eigenvalues[eigenvalues.length - 1];
+  const v0 = U.map((r) => r[0]);
+  const sqrtD = degrees.map((d) => Math.sqrt(d));
+  const s0 = Math.sign(v0[0]) * Math.sign(sqrtD[0]);
+  const ref0 = sqrtD.map((v) => v / norm(sqrtD));
+  const evErr = vinf(v0.map((v, i) => Math.abs(v - s0 * ref0[i])));
+  check('谱聚类：λ_min(L_sym) = 0，特征向量 ≡ √d/‖√d‖（基本定理）',
+    Math.abs(lam0) < 1e-10 && evErr < 1e-8,
+    `λmin=${lam0.toExponential(2)}，向量偏差=${evErr.toExponential(2)}`);
+
+  // ③ 谱界定理：λ(L_sym) ⊆ [0, 2]
+  const inBound = eigenvalues.every((v) => v > -1e-10 && v < 2 + 1e-10);
+  check('谱聚类：谱界 λ(L_sym) ⊆ [0, 2]（归一化拉普拉斯定理）', inBound,
+    `λ∈[${Math.min(...eigenvalues).toFixed(6)}, ${Math.max(...eigenvalues).toFixed(6)}]`);
+
+  // ④ 两月亮精确恢复：完整 NJW 管线 ARI = 1.000000（非凸结构）
+  const sc = spectralCluster(moons.X, 2, { neighbors: 7, gamma: 1, seed: 42 });
+  const ari = adjustedRandIndex(sc.labels, moons.y);
+  check('谱聚类：两月亮 ARI = 1.000000（NJW 全管线，非凸精确恢复）', ari === 1,
+    `ARI=${ari.toFixed(6)}`);
+
+  // ⑤ 对照：原始空间 k-means 凸假设失效（同数据 ARI 显著更低）
+  const kmRaw = kmeans(moons.X, 2, { seed: 42 });
+  const ariRaw = adjustedRandIndex(kmRaw.labels, moons.y);
+  check('谱聚类：对照原始空间 k-means（凸假设失效，ARI < 0.5 且差距 ≥ 0.5）',
+    ariRaw < 0.5 && ari - ariRaw >= 0.5,
+    `k-means ARI=${ariRaw.toFixed(4)} vs 谱=${ari.toFixed(4)}`);
+
+  // ⑥ 特征向量正交归一（Jacobi 输出 QᵀQ = I，嵌入基底的几何保证）
+  const V = jacobiEig(L).vectors;
+  const VtV = matmul(transpose(V), V);
+  check('谱聚类：特征向量正交归一 ‖VᵀV − I‖_max ≈ 0', mdiff(VtV, eye(n)) < 1e-9,
+    `偏差=${mdiff(VtV, eye(n)).toExponential(2)}`);
+}
+
+/* ============================================================
+ * 套件 21 · 激活函数族（GELU / SiLU / Mish / HardSwish / Softplus）
+ * ============================================================ */
+function suiteActivations(check) {
+  // ① erf 奇对称 + 文献参考值（A&S 7.1.26 精度 1.5e-7）
+  let oddErr = 0;
+  for (const x of [-3, -1.5, -0.7, -0.1, 0.1, 0.7, 1.5, 3]) oddErr = Math.max(oddErr, Math.abs(erf(-x) + erf(x)));
+  const refErr = Math.max(Math.abs(erf(1) - 0.8427007929497149), Math.abs(erf(2) - 0.9953222650189527));
+  check('激活：erf 奇对称 erf(−x) = −erf(x)（bit 级）且 A&S 参考值吻合',
+    oddErr < 1e-15 && refErr < 1.5e-6,
+    `对称=${oddErr.toExponential(2)}，参考值偏差=${refErr.toExponential(2)}`);
+
+  // ② 正态 CDF：Φ(0) = 1/2、Φ(1.96) ≈ 0.975、对称 Φ(−x) = 1 − Φ(x)
+  const cdfErr = Math.max(Math.abs(normalCDF(1.96) - 0.9750021048517795),
+    Math.abs(normalCDF(0) - 0.5));
+  let cdfSym = 0;
+  for (const x of [-2, -1, -0.3, 0.3, 1, 2]) cdfSym = Math.max(cdfSym, Math.abs(normalCDF(-x) - (1 - normalCDF(x))));
+  check('激活：Φ = ½erfc(−x/√2)，Φ(1.96)≈0.975 且 Φ(−x)=1−Φ(x)',
+    cdfErr < 1.5e-6 && cdfSym < 1e-15,
+    `参考值=${cdfErr.toExponential(2)}，对称=${cdfSym.toExponential(2)}`);
+
+  // ③ softplus 恒等式：sp(x) − sp(−x) = x，且 sp′(x) ≡ σ(x)（中心差分互证）
+  let idErr = 0;
+  for (const x of [-20, -5, -1, 0, 1, 5, 20]) idErr = Math.max(idErr, Math.abs(softplus(x) - softplus(-x) - x));
+  const spGrad = activationGradCheck(softplus, softplusD, [-3, -1, 0, 1, 3]);
+  check('激活：softplus(x) − softplus(−x) = x（精确恒等）且 sp′ ≡ σ', idErr < 1e-12 && spGrad < 1e-7,
+    `恒等=${idErr.toExponential(2)}，梯度=${spGrad.toExponential(2)}`);
+
+  // ④ GELU tanh 逼近 vs 精确版（文献口径 max|Δ| < 5e-4）
+  let approxErr = 0;
+  for (let x = -6; x <= 6.0001; x += 0.25) approxErr = Math.max(approxErr, Math.abs(gelu(x) - geluTanh(x)));
+  check('激活：GELU tanh 逼近 vs x·Φ(x)（max|Δ| < 5e-4）', approxErr < 5e-4,
+    `maxΔ=${approxErr.toExponential(2)}`);
+
+  // ⑤ 解析导数 ≡ 中心差分（gelu / geluTanh / silu / mish 四连检验）
+  // 注：GELU 精确版导数经 Φ、x·φ 传播 A&S erf 逼近误差（1.5e-7），故阈值取 5e-7；
+  //     其余纯初等函数逼近达 1e-10 量级。
+  const xs = [-3, -2, -1, -0.5, 0.1, 0.5, 1, 2, 3];
+  const g1 = activationGradCheck(gelu, geluD, xs);
+  const g2 = activationGradCheck(geluTanh, geluTanhD, xs);
+  const g3 = activationGradCheck(silu, siluD, xs);
+  const g4 = activationGradCheck(mish, mishD, xs);
+  check('激活：GELU/SiLU/Mish 解析导数 ≡ 中心差分（gelu ≤ 5e-7 含 erf 逼近传播，其余 < 1e-9）',
+    g1 < 5e-7 && Math.max(g2, g3, g4) < 1e-9,
+    `gelu=${g1.toExponential(2)} tanh=${g2.toExponential(2)} silu=${g3.toExponential(2)} mish=${g4.toExponential(2)}`);
+
+  // ⑥ 分段线性 HardSwish：段内中心差分精确、端点行为、导数分段闭式
+  // 注：分段线性在浮点下的差分噪声 ~ulp(f)/(2ε) ≈ 5e-12，非逻辑误差
+  const hsErr = activationGradCheck(hardswish, hardswishD, [-2.5, -1, 0, 1, 2.5]);
+  const endsOk = hardswish(-4) === 0 && hardswish(0) === 0
+    && Math.abs(hardswish(4) - 4) < 1e-12 && Math.abs(hardswish(3.5) - 3.5) < 1e-12
+    && Math.abs(hardswish(2.9) - 2.9 * (5.9 / 6)) < 1e-12;
+  check('激活：HardSwish 段内导数精确（差分 < 1e-11 浮点口径）且端点 x·relu6(x+3)/6', hsErr < 1e-11 && endsOk,
+    `差分=${hsErr.toExponential(2)}`);
+
+  // ⑦ 渐近行为：silu(x→∞) = x、silu(x→−∞) → 0⁻、mish(0) = 0
+  const asympOk = Math.abs(silu(50) - 50) < 1e-10 && silu(-50) < 0 && Math.abs(silu(-50)) < 1e-10
+    && Math.abs(mish(0)) < 1e-15;
+  check('激活：渐近行为 silu(∞)=x / silu(−∞)→0⁻ / mish(0)=0', asympOk,
+    `silu(50)=${silu(50).toFixed(12)}，silu(−50)=${silu(-50).toExponential(2)}`);
+}
+
+/* ============================================================
+ * 套件 22 · 学习率调度器（Noam / SGDR / 阶梯 / 指数）
+ * ============================================================ */
+function suiteSched(check) {
+  // ① Noam（Vaswani 2017）：两支在 s = W 精确连续，峰值恰在 warmup 顶点
+  const W = 4000, dModel = 512;
+  const peak = warmupInverseSqrt(W, { warmupSteps: W, dModel });
+  const peakRef = dModel ** -0.5 * W ** -0.5;
+  const contErr = Math.abs(peak - peakRef);
+  const isPeak = peak >= warmupInverseSqrt(W - 1, { warmupSteps: W, dModel })
+    && peak >= warmupInverseSqrt(W + 1, { warmupSteps: W, dModel });
+  const firstErr = Math.abs(warmupInverseSqrt(1, { warmupSteps: W, dModel }) - dModel ** -0.5 * W ** -1.5);
+  check('调度：Noam 两支在 s = W 精确连续且峰值 lr = d^−½·W^−½', contErr < 1e-15 && isPeak && firstErr < 1e-18,
+    `连续误差=${contErr.toExponential(2)}，lr(W)=${peak.toExponential(4)}`);
+
+  // ② 线性 warmup：lr(1) = base/W、lr(W) = base 封顶、单调非降
+  const lw = (s) => linearWarmup(s, { warmupSteps: 100, base: 1 });
+  let lwMono = true;
+  for (let s = 1; s < 200; s++) if (lw(s + 1) < lw(s) - 1e-15) lwMono = false;
+  check('调度：线性 warmup lr(s) = base·min(1, s/W)，lr(W) 封顶且单调非降',
+    Math.abs(lw(1) - 0.01) < 1e-15 && lw(100) === 1 && lw(150) === 1 && lwMono,
+    `lr(1)=${lw(1).toFixed(4)}，lr(100)=${lw(100)}`);
+
+  // ③ 余弦退火（SGDR）：端点闭式 ηmax/ηmin、中点、对称性、单调非增
+  const co = (s) => cosineAnnealing(s, { T: 1000, etaMax: 1, etaMin: 0 });
+  const coErr = Math.max(Math.abs(co(0) - 1), Math.abs(co(1000) - 0), Math.abs(co(500) - 0.5));
+  let coMono = true;
+  for (let s = 0; s < 1000; s += 5) if (co(s + 5) > co(s) + 1e-15) coMono = false;
+  let coSym = 0;
+  for (let s = 0; s <= 1000; s += 100) coSym = Math.max(coSym, Math.abs(co(s) + co(1000 - s) - 1));
+  check('调度：SGDR 余弦 lr(0)=ηmax、lr(T)=ηmin、lr(T/2)=中点，对称且单调非增',
+    coErr < 1e-12 && coMono && coSym < 1e-12,
+    `端点=${coErr.toExponential(2)}，对称=${coSym.toExponential(2)}`);
+
+  // ④ 阶梯衰减：段内严格恒定，整数倍处精确 γ 掉落，闭式 base·γ^⌊t/step⌋
+  const sd = (s) => stepDecay(s, { stepSize: 30, gamma: 0.1, base: 1 });
+  let segConst = true;
+  for (let s = 0; s < 90; s++) if (sd(s) !== sd(Math.floor(s / 30) * 30)) segConst = false;
+  const dropOk = sd(29) === 1 && Math.abs(sd(30) - 0.1) < 1e-15
+    && Math.abs(sd(59) - 0.1) < 1e-15 && Math.abs(sd(60) - 0.01) < 1e-15;
+  check('调度：阶梯衰减段内恒定、s=30/60 精确掉落（闭式 base·γ^⌊t/step⌋）', segConst && dropOk,
+    `lr(29)=${sd(29)}，lr(30)=${sd(30)}，lr(60)=${sd(60)}`);
+
+  // ⑤ 指数衰减：逐步等比 lr(t+1)/lr(t) = γ（200 个采样点全部精确）
+  const ed = (s) => exponentialDecay(s, { gamma: 0.99, base: 1 });
+  let ratioErr = 0;
+  for (let s = 0; s < 200; s++) ratioErr = Math.max(ratioErr, Math.abs(ed(s + 1) / ed(s) - 0.99));
+  check('调度：指数衰减逐步等比 lr(t+1)/lr(t) = γ（精确）', ratioErr < 1e-15,
+    `最大比值偏差=${ratioErr.toExponential(2)}`);
+
+  // ⑥ 全调度器值域健康：正、有限（训练安全线）
+  let healthy = true;
+  for (let s = 0; s <= 5000; s += 7) {
+    for (const v of [warmupInverseSqrt(s), linearWarmup(s), cosineAnnealing(s), stepDecay(s), exponentialDecay(s)]) {
+      if (!Number.isFinite(v) || v < 0) healthy = false;
+    }
+  }
+  check('调度：五个调度器 0..5000 步全部值有限且非负', healthy,
+    '采样 715 点 × 5 调度器');
 }

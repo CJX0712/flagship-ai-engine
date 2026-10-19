@@ -54,7 +54,12 @@ export function mean(X) {
   return mu.map(v => v / n);
 }
 
-/** 样本协方差矩阵（/(n−1)）：对称半正定 */
+/**
+ * 样本协方差矩阵（/(n−1)）：对称半正定。
+ * 历史 bug 警示：曾用「上三角累加 → 逐行镜像 → 逐行除 n−1」写法，
+ * 镜像发生在除法之前，导致下三角被二次相除（C[i][j] = C[j][i]/(n−1)，i>j），
+ * 矩阵不再对称。现改为全量累加 + 单次除法，对称性由不变量套件钉死。
+ */
 export function covarianceMatrix(X) {
   const n = X.length, d = X[0].length;
   const mu = mean(X);
@@ -62,11 +67,10 @@ export function covarianceMatrix(X) {
   for (const row of X) {
     for (let i = 0; i < d; i++) {
       const xi = row[i] - mu[i];
-      for (let j = i; j < d; j++) C[i][j] += xi * (row[j] - mu[j]);
+      for (let j = 0; j < d; j++) C[i][j] += xi * (row[j] - mu[j]);
     }
   }
   for (let i = 0; i < d; i++) {
-    for (let j = 0; j < i; j++) C[i][j] = C[j][i];
     for (let j = 0; j < d; j++) C[i][j] /= n - 1;
   }
   return C;
@@ -91,4 +95,27 @@ export function gaussianSample(rng, mu = 0, sigma = 1) {
   const u2 = rng();
   const r = Math.sqrt(-2 * Math.log(u1));
   return mu + sigma * r * Math.cos(2 * Math.PI * u2);
+}
+
+/**
+ * 两月亮数据集（与 sklearn make_moons 同参数化）：
+ * 外月 (cos t, sin t)、内月 (1 − cos t, 0.5 − sin t)，t ∈ [0, π]，叠加高斯噪声。
+ * 两个交叠月牙仅靠归一化割/核方法可切分——k-means 等凸假设方法失效。
+ * @returns {{X:number[][], y:number[]}} y ∈ {0,1}
+ */
+export function twoMoons({ n = 60, sigma = 0.12, seed = 42 } = {}) {
+  const rng = mulberry32(seed);
+  const X = [], y = [];
+  const half = Math.floor(n / 2);
+  for (let i = 0; i < half; i++) {
+    const t = Math.PI * (i + 0.5) / half;
+    X.push([gaussianSample(rng, Math.cos(t), sigma), gaussianSample(rng, Math.sin(t), sigma)]);
+    y.push(0);
+  }
+  for (let i = 0; i < half; i++) {
+    const t = Math.PI * (i + 0.5) / half;
+    X.push([gaussianSample(rng, 1 - Math.cos(t), sigma), gaussianSample(rng, 0.5 - Math.sin(t), sigma)]);
+    y.push(1);
+  }
+  return { X, y };
 }

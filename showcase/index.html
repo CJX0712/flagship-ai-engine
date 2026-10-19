@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">18 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">22 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -181,6 +181,24 @@
       <svg id="svg-opt" viewBox="0 0 460 300"></svg>
       <div class="legend" id="legend-opt"></div>
     </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>谱聚类 vs k-means（两月亮 · 非凸结构）</strong>
+        <button id="btn-moons">换一批月亮</button>
+      </div>
+      <div class="desc">NJW 归一化拉普拉斯 · ARI = 1 精确恢复 · 对照：k-means 凸假设失效</div>
+      <svg id="svg-moons" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-moons"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>现代激活函数族（GELU / SiLU / Mish）</strong>
+        <button id="btn-act">切换导数视图</button>
+      </div>
+      <div class="desc">x·Φ(x) 与 x·σ(x) 的光滑门控 · 解析导数 ≡ 中心差分（不变量）</div>
+      <svg id="svg-act" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-act"></div>
+    </div>
   </div>
 
   <div class="refs">
@@ -192,6 +210,8 @@
     <code>Sutton &amp; Barto · Reinforcement Learning</code>
     <code>Watkins 1989 · Q-learning</code><code>Ester et al. 1996 · DBSCAN</code>
     <code>van der Maaten &amp; Hinton 2008 · t-SNE</code><code>Kingma &amp; Ba 2015 · Adam</code>
+    <code>Schölkopf et al. 1998 · Kernel PCA</code><code>Ng, Jordan &amp; Weiss 2002 · Spectral Clustering</code>
+    <code>Hendrycks &amp; Gimpel 2016 · GELU</code><code>Loshchilov &amp; Hutter 2016 · SGDR</code>
   </div>
 
   <footer>
@@ -639,7 +659,12 @@ function mean(X) {
   return mu.map(v => v / n);
 }
 
-/** 样本协方差矩阵（/(n−1)）：对称半正定 */
+/**
+ * 样本协方差矩阵（/(n−1)）：对称半正定。
+ * 历史 bug 警示：曾用「上三角累加 → 逐行镜像 → 逐行除 n−1」写法，
+ * 镜像发生在除法之前，导致下三角被二次相除（C[i][j] = C[j][i]/(n−1)，i>j），
+ * 矩阵不再对称。现改为全量累加 + 单次除法，对称性由不变量套件钉死。
+ */
 function covarianceMatrix(X) {
   const n = X.length, d = X[0].length;
   const mu = mean(X);
@@ -647,11 +672,10 @@ function covarianceMatrix(X) {
   for (const row of X) {
     for (let i = 0; i < d; i++) {
       const xi = row[i] - mu[i];
-      for (let j = i; j < d; j++) C[i][j] += xi * (row[j] - mu[j]);
+      for (let j = 0; j < d; j++) C[i][j] += xi * (row[j] - mu[j]);
     }
   }
   for (let i = 0; i < d; i++) {
-    for (let j = 0; j < i; j++) C[i][j] = C[j][i];
     for (let j = 0; j < d; j++) C[i][j] /= n - 1;
   }
   return C;
@@ -676,6 +700,29 @@ function gaussianSample(rng, mu = 0, sigma = 1) {
   const u2 = rng();
   const r = Math.sqrt(-2 * Math.log(u1));
   return mu + sigma * r * Math.cos(2 * Math.PI * u2);
+}
+
+/**
+ * 两月亮数据集（与 sklearn make_moons 同参数化）：
+ * 外月 (cos t, sin t)、内月 (1 − cos t, 0.5 − sin t)，t ∈ [0, π]，叠加高斯噪声。
+ * 两个交叠月牙仅靠归一化割/核方法可切分——k-means 等凸假设方法失效。
+ * @returns {{X:number[][], y:number[]}} y ∈ {0,1}
+ */
+function twoMoons({ n = 60, sigma = 0.12, seed = 42 } = {}) {
+  const rng = mulberry32(seed);
+  const X = [], y = [];
+  const half = Math.floor(n / 2);
+  for (let i = 0; i < half; i++) {
+    const t = Math.PI * (i + 0.5) / half;
+    X.push([gaussianSample(rng, Math.cos(t), sigma), gaussianSample(rng, Math.sin(t), sigma)]);
+    y.push(0);
+  }
+  for (let i = 0; i < half; i++) {
+    const t = Math.PI * (i + 0.5) / half;
+    X.push([gaussianSample(rng, 1 - Math.cos(t), sigma), gaussianSample(rng, 0.5 - Math.sin(t), sigma)]);
+    y.push(1);
+  }
+  return { X, y };
 }
 
 /* ═══════════ src/ml/regression.js ═══════════ */
@@ -1824,6 +1871,265 @@ function knnOverlap(X, Y, k = 5) {
   return total / X.length;
 }
 
+/* ═══════════ src/ml/kpca.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 核主成分分析（Kernel PCA）
+ * 站在：Schölkopf, Smola & Müller 1998《Nonlinear Component Analysis as a
+ *       Kernel Eigenvalue Problem》(Neural Computation 10(5))
+ * 不变量：
+ *   ① 线性核 KPCA ≡ 经典 PCA（主成分子空间一致，符号/尺度无关）
+ *   ② 中心化核矩阵 K̃ 行和 ≈ 0 且 1ᵀK̃1 ≈ 0（特征空间均值为零）
+ *   ③ K̃ 对称半正定（特征值 ≥ −ε·λ_max）
+ *   ④ 谱定理：K̃ = VΛVᵀ 完全重构误差 ≈ 0
+ *   ⑤ 样本外变换 kpcaTransform(X_train) ≡ 训练 scores（自洽互证）
+ *   ⑥ RBF 核下两月亮在嵌入空间线性可分（留一 1-NN 纯度 → 1）
+ */
+
+
+
+
+/** 线性核 K(x,z) = x·z */
+function linearKernel(x, z) {
+  let s = 0;
+  for (let i = 0; i < x.length; i++) s += x[i] * z[i];
+  return s;
+}
+
+/** 核矩阵 K[i][j] = k(X_i, Z_j) */
+function kernelMatrix(X, Z, kernelFn) {
+  const K = zeros(X.length, Z.length);
+  for (let i = 0; i < X.length; i++) {
+    for (let j = 0; j < Z.length; j++) K[i][j] = kernelFn(X[i], Z[j]);
+  }
+  return K;
+}
+
+/**
+ * 特征空间中心化：K̃ = K − 1ₙK − K1ₙ + 1ₙK1ₙ（Schölkopf et al. 1998 §II）。
+ * 中心化后 K̃ 行和 ≈ 0、1ᵀK̃1 ≈ 0——即映射后样本在特征空间的均值为零。
+ */
+function centerKernel(K) {
+  const n = K.length;
+  const rowMean = new Array(n).fill(0);
+  const colMean = new Array(n).fill(0);
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      rowMean[i] += K[i][j];
+      colMean[j] += K[i][j];
+      total += K[i][j];
+    }
+  }
+  for (let i = 0; i < n; i++) { rowMean[i] /= n; colMean[i] /= n; }
+  total /= n * n;
+  const Kc = zeros(n, n);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) Kc[i][j] = K[i][j] - rowMean[i] - colMean[j] + total;
+  }
+  return Kc;
+}
+
+/**
+ * 核 PCA 主过程：中心化核矩阵 → Jacobi 特征分解 → 前 dims 个主分量。
+ * scores[i][k] = α_k(i)·√λ_k（训练点在特征空间主方向上的投影）。
+ * @returns {{K:number[][], Kc:number[][], eigenvalues:number[], alphas:number[][],
+ *            scores:number[][], eig:{values:number[],vectors:number[][]},
+ *            gamma:number, kernel:string, X:number[][], kfn:Function, dims:number}}
+ */
+function kpca(X, { kernel = 'rbf', gamma = 0.1, dims = 2 } = {}) {
+  const kfn = kernel === 'linear' ? linearKernel : (a, b) => rbfKernel(a, b, gamma);
+  const K = kernelMatrix(X, X, kfn);
+  const Kc = centerKernel(K);
+  const eig = jacobiEig(Kc); // values 降序；vectors[k] = 第 k 大特征值对应的单位特征向量
+  const n = X.length;
+  const d = Math.min(dims, n);
+  const alphas = [];
+  const scores = zeros(n, d);
+  for (let k = 0; k < d; k++) {
+    const lam = Math.max(eig.values[k], 0);
+    alphas.push(eig.vectors[k]);
+    for (let i = 0; i < n; i++) scores[i][k] = eig.vectors[k][i] * Math.sqrt(lam);
+  }
+  return {
+    K, Kc, eigenvalues: eig.values.slice(0, d), alphas, scores,
+    eig, gamma, kernel, X, kfn, dims: d,
+  };
+}
+
+/**
+ * 样本外投影：y(x*) = (1/√λ_k)·Σ_j α_k(j)·k̃(x*, x_j)。
+ * 其中 k̃ 为中心化交叉核：k(x*,x_j) − mean_j k(x*,·) − mean_i k(·,x_j) + mean k(·,·)。
+ */
+function kpcaTransform(model, Xnew) {
+  const { X: Xtr, kfn, K, alphas, eigenvalues, dims } = model;
+  const n = Xtr.length;
+  // 训练核的列均值与总均值（与待投影点无关，预计算一次）
+  const colMean = new Array(n).fill(0);
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) { colMean[j] += K[i][j]; total += K[i][j]; }
+  }
+  for (let j = 0; j < n; j++) colMean[j] /= n;
+  total /= n * n;
+
+  const out = zeros(Xnew.length, dims);
+  for (let i = 0; i < Xnew.length; i++) {
+    const row = new Array(n);
+    let rowSum = 0;
+    for (let j = 0; j < n; j++) { row[j] = kfn(Xnew[i], Xtr[j]); rowSum += row[j]; }
+    rowSum /= n;
+    for (let k = 0; k < dims; k++) {
+      const lam = eigenvalues[k];
+      if (lam <= 0) { out[i][k] = 0; continue; }
+      let s = 0;
+      for (let j = 0; j < n; j++) {
+        const kc = row[j] - rowSum - colMean[j] + total;
+        s += alphas[k][j] * kc;
+      }
+      out[i][k] = s / Math.sqrt(lam);
+    }
+  }
+  return out;
+}
+
+/** 谱定理重构误差：‖K̃ − VΛVᵀ‖_F（取完整特征分解，应为机器精度级） */
+function kpcaReconstructionError(Kc, eig) {
+  const n = Kc.length;
+  const { values, vectors } = eig;
+  let err = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      let v = 0;
+      for (let k = 0; k < n; k++) v += values[k] * vectors[k][i] * vectors[k][j];
+      err += (v - Kc[i][j]) ** 2;
+    }
+  }
+  return Math.sqrt(err);
+}
+
+/** 嵌入空间留一 1-NN 分类纯度（核方法把非线性结构线性化的直接度量） */
+function knnPurity(embedding, labels) {
+  const n = embedding.length;
+  let correct = 0;
+  for (let i = 0; i < n; i++) {
+    let best = -1, bd = Infinity;
+    for (let j = 0; j < n; j++) {
+      if (j === i) continue;
+      let s = 0;
+      for (let d = 0; d < embedding[j].length; d++) s += (embedding[i][d] - embedding[j][d]) ** 2;
+      if (s < bd) { bd = s; best = j; }
+    }
+    if (labels[best] === labels[i]) correct++;
+  }
+  return correct / n;
+}
+
+/* ═══════════ src/ml/spectral.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 谱聚类（Ng-Jordan-Weiss 算法）
+ * 站在：Shi & Malik 2000（归一化割 Ncut）· Ng, Jordan & Weiss 2002（NJT/NJW）
+ *       von Luxburg 2007《A Tutorial on Spectral Clustering》（谱界定理）
+ * 不变量：
+ *   ① L_sym 最小特征值 = 0，对应特征向量 ≡ √d/‖√d‖（图拉普拉斯基本定理）
+ *   ② 谱界：λ(L_sym) ⊆ [0, 2]（归一化拉普拉斯谱定理）
+ *   ③ 特征向量正交归一（Jacobobi 输出 QᵀQ = I）
+ *   ④ 两月亮 ARI = 1.000000（非凸结构，谱方法精确恢复）
+ *   ⑤ 对照：原始空间 k-means 同数据 ARI 显著更低（凸假设失效）
+ *   ⑥ 图对称性与度矩阵一致性：W = Wᵀ、D = diag(W1)、L_sym 对称
+ */
+
+
+
+
+
+/**
+ * 相似度图：k 近邻 RBF 图，对称化取并（j ∈ kNN(i) 或 i ∈ kNN(j) ⇒ W_ij = exp(−γ‖xi−xj‖²)）。
+ * gamma 传 'auto' 时启用局部尺度（Zelnik-Manor & Perona 2004）：
+ * W_ij = exp(−‖xi−xj‖²/(σ_i·σ_j))，σ_i = 点 i 到其第 k 近邻的距离——
+ * 自适应带宽对密度不均/交叠结构（如两月亮）远优于全局 γ。
+ * 自环清零；孤立点度为 0 时拉普拉斯对应行置 0（不影响其它点）。
+ */
+function similarityGraph(X, { k = 7, gamma = 1 } = {}) {
+  const n = X.length;
+  const sq = (a, b) => {
+    let s = 0;
+    for (let i = 0; i < a.length; i++) { const d = a[i] - b[i]; s += d * d; }
+    return s;
+  };
+  // 每点的 k 近邻（用于局部尺度 σ_i 与建边）
+  const nbrs = [];
+  for (let i = 0; i < n; i++) {
+    const order = [];
+    for (let j = 0; j < n; j++) if (j !== i) order.push([j, sq(X[i], X[j])]);
+    order.sort((a, b) => a[1] - b[1]);
+    nbrs.push(order.slice(0, Math.min(k, order.length)));
+  }
+  const local = gamma === 'auto';
+  const sigma = local ? nbrs.map(nb => Math.sqrt(nb[nb.length - 1][1]) || 1e-12) : null;
+  const weight = (d2, i, j) => (local ? Math.exp(-d2 / (sigma[i] * sigma[j])) : rbfKernel(X[i], X[j], gamma));
+
+  const W = zeros(n, n);
+  for (let i = 0; i < n; i++) {
+    for (const [j, d2] of nbrs[i]) {
+      const w = weight(d2, i, j);
+      if (w > W[i][j]) { W[i][j] = w; W[j][i] = w; }
+    }
+  }
+  return W;
+}
+
+/** 对称归一化拉普拉斯：L_sym = I − D^{−1/2} W D^{−1/2}，D = diag(W1) */
+function normalizedLaplacian(W) {
+  const n = W.length;
+  const degrees = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) degrees[i] += W[i][j];
+  }
+  const dis = degrees.map(v => (v > 0 ? 1 / Math.sqrt(v) : 0));
+  const L = zeros(n, n);
+  for (let i = 0; i < n; i++) {
+    L[i][i] = degrees[i] > 0 ? 1 : 0;
+    for (let j = 0; j < n; j++) L[i][j] -= dis[i] * W[i][j] * dis[j];
+  }
+  return { L, degrees };
+}
+
+/**
+ * 谱嵌入：取 L_sym 最小 k 个特征值对应的特征向量构成 U（n×k），
+ * 再按 NJW 规范做行归一化 T_ij = U_ij/‖U_i‖₂。
+ */
+function spectralEmbedding(L, k) {
+  const n = L.length;
+  const eig = jacobiEig(L); // values 降序
+  const kk = Math.min(k, n);
+  const U = zeros(n, kk);
+  for (let c = 0; c < kk; c++) {
+    const v = eig.vectors[n - 1 - c]; // 最小特征值对应的特征向量
+    for (let i = 0; i < n; i++) U[i][c] = v[i];
+  }
+  const T = zeros(n, kk);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let c = 0; c < kk; c++) s += U[i][c] * U[i][c];
+    s = Math.sqrt(s);
+    for (let c = 0; c < kk; c++) T[i][c] = s > 1e-300 ? U[i][c] / s : 0;
+  }
+  return { U, T, eigenvalues: eig.values };
+}
+
+/**
+ * 谱聚类完整流程：相似度图 → 归一化拉普拉斯 → 谱嵌入 → k-means（复用 Lloyd）。
+ * @returns {{labels:number[], W:number[][], L:number[][], degrees:number[],
+ *            U:number[][], T:number[][], sse:number[]}}
+ */
+function spectralCluster(X, k, { neighbors = 7, gamma = 1, seed = 42, iters = 100 } = {}) {
+  const W = similarityGraph(X, { k: neighbors, gamma });
+  const { L, degrees } = normalizedLaplacian(W);
+  const { U, T } = spectralEmbedding(L, k);
+  const km = kmeans(T, k, { seed, iters });
+  return { labels: km.labels, W, L, degrees, U, T, sse: km.sse };
+}
+
 /* ═══════════ src/nn/dense.js ═══════════ */
 /**
  * 旗舰AI引擎 · 全连接神经网络
@@ -2637,6 +2943,180 @@ function minimize(f, grad, x0, {
   return { x, history, state };
 }
 
+/* ═══════════ src/nn/activations.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 激活函数族（现代深度学习标准件）
+ * 站在：Hendrycks & Gimpel 2016（GELU）· Ramachandran, Zhao & Le 2017（Swish/SiLU）
+ *       Misra 2019（Mish）· Howard et al. 2019（HardSwish）· Dugas et al. 2001（Softplus）
+ *       Abramowitz & Stegun 7.1.26（erf 有理逼近，最大绝对误差 1.5e-7）
+ * 每个激活都提供解析导数，供梯度检验交叉验证（中心差分 vs 解析）。
+ */
+
+
+
+/** erfc 主支（x ≥ 0）：A&S 7.1.26，t = 1/(1+0.5x) 的九项 Padé 型逼近 */
+function erfcPos(x) {
+  const t = 1 / (1 + 0.5 * x);
+  const y = t * Math.exp(
+    -x * x - 1.26551223
+    + 1.00002368 * t + 0.37409196 * t * t + 0.09678418 * t ** 3
+    - 0.18628806 * t ** 4 + 0.27886807 * t ** 5 - 1.13520398 * t ** 6
+    + 1.48851587 * t ** 7 - 0.82215223 * t ** 8 + 0.17087277 * t ** 9,
+  );
+  return y;
+}
+
+/** 互补误差函数 erfc(x)：全定义域稳定（负支用 erfc(−x) = 2 − erfc(x) 反射） */
+function erfc(x) {
+  return x >= 0 ? erfcPos(x) : 2 - erfcPos(-x);
+}
+
+/** 误差函数 erf(x)：奇函数，erf(−x) = −erf(x)（bit 级精确） */
+function erf(x) {
+  return x >= 0 ? 1 - erfcPos(x) : erfcPos(-x) - 1;
+}
+
+/** 标准正态 CDF：Φ(x) = ½·erfc(−x/√2)，全定义域稳定 */
+function normalCDF(x) {
+  return 0.5 * erfc(-x / Math.SQRT2);
+}
+
+/** 标准正态 PDF：φ(x) = e^{−x²/2}/√(2π) */
+function normalPDF(x) {
+  return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+}
+
+/** Softplus：ln(1+e^x)，数值稳定双支式；恒等式 softplus'(x) ≡ sigmoid(x) */
+function softplus(x) {
+  return x > 0 ? x + Math.log1p(Math.exp(-x)) : Math.log1p(Math.exp(x));
+}
+
+/** Softplus 导数：σ(x)（解析恒等） */
+function softplusD(x) {
+  return sigmoid(x);
+}
+
+/** GELU 精确版：x·Φ(x)（Hendrycks & Gimpel 2016） */
+function gelu(x) {
+  return 0.5 * x * erfc(-x / Math.SQRT2);
+}
+
+/** GELU 导数：Φ(x) + x·φ(x)（乘积法则） */
+function geluD(x) {
+  return normalCDF(x) + x * normalPDF(x);
+}
+
+/** GELU tanh 逼近版：½x(1+tanh(√(2/π)(x+0.044715x³))) */
+function geluTanh(x) {
+  const c = Math.sqrt(2 / Math.PI);
+  return 0.5 * x * (1 + Math.tanh(c * (x + 0.044715 * x * x * x)));
+}
+
+/** GELU tanh 版导数（链式法则） */
+function geluTanhD(x) {
+  const c = Math.sqrt(2 / Math.PI);
+  const u = c * (x + 0.044715 * x * x * x);
+  const du = c * (1 + 3 * 0.044715 * x * x);
+  return 0.5 * (1 + Math.tanh(u)) + 0.5 * x * (1 - Math.tanh(u) ** 2) * du;
+}
+
+/** SiLU / Swish：x·σ(x)（Ramachandran et al. 2017，两名为同一函数） */
+function silu(x) {
+  return x * sigmoid(x);
+}
+
+/** SiLU 导数：σ(x)·(1 + x·(1 − σ(x))) */
+function siluD(x) {
+  const s = sigmoid(x);
+  return s * (1 + x * (1 - s));
+}
+
+/** Swish ≡ SiLU（β=1 特例，别名导出保持文献兼容） */
+function swish(x) {
+  return silu(x);
+}
+
+/** Mish：x·tanh(softplus(x))（Misra 2019） */
+function mish(x) {
+  return x * Math.tanh(softplus(x));
+}
+
+/** Mish 导数：tanh(sp) + x·sech²(sp)·σ(x) */
+function mishD(x) {
+  const sp = softplus(x);
+  const th = Math.tanh(sp);
+  return th + x * (1 - th * th) * sigmoid(x);
+}
+
+/** HardSwish：x·relu6(x+3)/6（Howard et al. 2019，分段线性） */
+function hardswish(x) {
+  return x * Math.min(Math.max(x + 3, 0), 6) / 6;
+}
+
+/** HardSwish 导数（分段：x<−3 → 0；−3<x<3 → (2x+3)/6；x>3 → 1；±3 为折点不可导） */
+function hardswishD(x) {
+  if (x <= -3) return 0;
+  if (x >= 3) return 1;
+  return (2 * x + 3) / 6;
+}
+
+/** 中心差分相对误差检验：max |解析 − 数值| / (|a|+|b|)（双判据标尺 relErr） */
+function activationGradCheck(f, df, xs, { eps = 1e-5 } = {}) {
+  let worst = 0;
+  for (const x of xs) {
+    const num = (f(x + eps) - f(x - eps)) / (2 * eps);
+    worst = Math.max(worst, relErr(num, df(x)));
+  }
+  return worst;
+}
+
+/* ═══════════ src/nn/schedulers.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 学习率调度器
+ * 站在：Vaswani et al. 2017（warmup + 逆平方根，"Noam" 调度）
+ *       Loshchilov & Hutter 2016（SGDR 余弦退火）· 经典阶梯/指数衰减
+ * 全部提供闭式公式，调度曲线本身即被不变量钉死（端点/峰值/连续性/单调性）。
+ */
+
+/**
+ * Warmup + 逆平方根（Vaswani et al. 2017）：
+ * lr(s) = d_model^{-0.5} · min(s^{-0.5}, s·W^{-1.5})，s 从 1 起（1-based 避免除零）。
+ * 结构：s < W 时线性上升（s·W^{-1.5} 支），s ≥ W 时按 s^{-0.5} 衰减。
+ * 不变量：两支在 s = W 处精确连续，且峰值恰在 s = W，lr_peak = d_model^{-0.5}·W^{-0.5}。
+ */
+function warmupInverseSqrt(step, { warmupSteps = 4000, dModel = 512 } = {}) {
+  const s = Math.max(1, step | 0);
+  return Math.min(s ** -0.5, s * warmupSteps ** -1.5) * dModel ** -0.5;
+}
+
+/** 线性 warmup：lr(s) = base·min(1, s/W)（到 W 封顶） */
+function linearWarmup(step, { warmupSteps = 4000, base = 1 } = {}) {
+  const s = Math.max(1, step | 0);
+  return base * Math.min(1, s / warmupSteps);
+}
+
+/**
+ * 余弦退火（SGDR，Loshchilov & Hutter 2016）：
+ * lr(t) = η_min + ½(η_max − η_min)(1 + cos(πt/T))，t ∈ [0, T]。
+ * 端点闭式：lr(0) = η_max（cos 0 = 1 精确）、lr(T) = η_min（cos π = −1 精确）、lr(T/2) = 中点。
+ */
+function cosineAnnealing(step, { T = 1000, etaMax = 1, etaMin = 0 } = {}) {
+  const t = Math.max(0, Math.min(T, step));
+  return etaMin + 0.5 * (etaMax - etaMin) * (1 + Math.cos(Math.PI * t / T));
+}
+
+/** 阶梯衰减：lr(t) = base·γ^{⌊t/stepSize⌋}（段内恒定，整数倍处精确掉落） */
+function stepDecay(step, { stepSize = 30, gamma = 0.1, base = 1 } = {}) {
+  const t = Math.max(0, step | 0);
+  return base * gamma ** Math.floor(t / stepSize);
+}
+
+/** 指数衰减：lr(t) = base·γ^t（每步严格等比，lr(t+1)/lr(t) = γ） */
+function exponentialDecay(step, { gamma = 0.99, base = 1 } = {}) {
+  const t = Math.max(0, step | 0);
+  return base * gamma ** t;
+}
+
 /* ═══════════ src/rl/valueIteration.js ═══════════ */
 /**
  * 旗舰AI引擎 · 强化学习：马尔可夫决策过程（MDP）最优求解
@@ -2944,8 +3424,12 @@ function bellmanResidualQ(P, R, gamma, Q) {
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 18 组套件全绿 = 引擎数学正确性的机器证明。
+ * 22 组套件全绿 = 引擎数学正确性的机器证明。
  */
+
+
+
+
 
 
 
@@ -3030,6 +3514,10 @@ function runAllInvariants() {
     ['密度聚类 · DBSCAN', suiteDBSCAN],
     ['非线性降维 · t-SNE', suiteTSNE],
     ['一阶优化器 · Optimizers', suiteOptim],
+    ['核主成分分析 · Kernel PCA', suiteKPCA],
+    ['谱聚类 · Spectral Clustering', suiteSpectral],
+    ['激活函数族 · Activations', suiteActivations],
+    ['学习率调度 · LR Schedulers', suiteSched],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -3197,6 +3685,31 @@ function suiteStats(check) {
   const integral = (h / 3) * sum;
   check('gaussianPDF：Simpson 数值积分 ≈ 1（±14σ, N=4000）', Math.abs(integral - 1) < 1e-6,
     `积分=${integral.toFixed(10)}，|误差|=${Math.abs(integral - 1).toExponential(2)}`);
+
+  // 协方差矩阵三道防线（历史 bug：下三角被二次相除致不对称，套件曾漏检）
+  const rngC = mulberry32(77);
+  const XC = randomMatrix(50, 4, rngC).map(r => r.map(v => v * 3 + 0.5));
+  const C = covarianceMatrix(XC);
+  let symErr = 0;
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) symErr = Math.max(symErr, Math.abs(C[i][j] - C[j][i]));
+  }
+  check('covarianceMatrix：C = Cᵀ 对称（精确）', symErr === 0, `最大不对称=${symErr.toExponential(2)}`);
+
+  const muC = colMean(XC);
+  let bruteErr = 0;
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) {
+      let s = 0;
+      for (const row of XC) s += (row[i] - muC[i]) * (row[j] - muC[j]);
+      bruteErr = Math.max(bruteErr, Math.abs(s / (XC.length - 1) - C[i][j]));
+    }
+  }
+  check('covarianceMatrix：与暴力双循环实现逐位一致', bruteErr < 1e-12, `最大偏差=${bruteErr.toExponential(2)}`);
+
+  let cholOk = true;
+  try { cholesky(C); } catch (e) { cholOk = false; }
+  check('covarianceMatrix：半正定（Cholesky L·Lᵀ = C 成功）', cholOk, cholOk ? '分解成功' : '分解失败');
 }
 
 /* ───────────────────────── 5. 回归与梯度检验 ───────────────────────── */
@@ -3861,8 +4374,257 @@ function suiteOptim(check) {
   }
 }
 
+/* ============================================================
+ * 套件 19 · 核主成分分析（Schölkopf, Smola & Müller 1998）
+ * ============================================================ */
+function suiteKPCA(check) {
+  // 各向异性高斯（协方差谱分离：3 / 1.5 / 0.7）
+  const rng = mulberry32(5);
+  const Xa = [];
+  for (let i = 0; i < 80; i++) {
+    Xa.push([gaussianSample(rng, 0, 3), gaussianSample(rng, 0, 1.5), gaussianSample(rng, 0, 0.7)]);
+  }
+  const kl = kpca(Xa, { kernel: 'linear', dims: 3 });
+
+  // ① 线性核 KPCA ≡ 经典 PCA：主分量方向逐分量 |cos| = 1（谱分离数据无简并）
+  const C = covarianceMatrix(Xa);
+  const pe = jacobiEig(C);
+  const mu = colMean(Xa);
+  const Xc = Xa.map((r) => r.map((v, j) => v - mu[j]));
+  let minCos = 1, maxNormDiff = 0;
+  for (let k = 0; k < 3; k++) {
+    const pcaCol = Xc.map((r) => r.reduce((s, x, j) => s + x * pe.vectors[k][j], 0));
+    const kpcaCol = kl.scores.map((r) => r[k]);
+    const na = norm(pcaCol), nb = norm(kpcaCol);
+    minCos = Math.min(minCos, Math.abs(dot(pcaCol, kpcaCol) / (na * nb)));
+    maxNormDiff = Math.max(maxNormDiff, Math.abs(na - nb) / na);
+  }
+  check('KPCA：线性核 ≡ 经典 PCA（主分量方向 |cos| = 1，谱分离数据）', minCos > 1 - 1e-12,
+    `min|cos|=${minCos.toFixed(15)}`);
+  check('KPCA：投影范数逐位一致（‖scores_k‖ ≡ ‖X̃v_k‖）', maxNormDiff < 1e-12,
+    `maxΔ/‖·‖=${maxNormDiff.toExponential(2)}`);
+
+  // ② 特征值关系 λ(K̃) = (n−1)·λ(C)（核技巧的谱恒等式）
+  let maxLamErr = 0;
+  for (let k = 0; k < 3; k++) {
+    const rel = Math.abs(kl.eig.values[k] / 79 - pe.values[k]) / pe.values[k];
+    maxLamErr = Math.max(maxLamErr, rel);
+  }
+  check('KPCA：特征值恒等式 λ(K̃) = (n−1)·λ(C)', maxLamErr < 1e-10,
+    `最大相对偏差=${maxLamErr.toExponential(2)}`);
+
+  // ③ 特征空间中心化：K̃ 行和 ≈ 0、1ᵀK̃1 ≈ 0、K̃ 对称半正定
+  const rowSums = kl.Kc.map((r) => Math.abs(r.reduce((s, v) => s + v, 0)));
+  const grand = Math.abs(kl.Kc.flat().reduce((s, v) => s + v, 0));
+  const symErr = mdiff(kl.Kc, transpose(kl.Kc));
+  const minEig = kl.eig.values[kl.eig.values.length - 1];
+  check('KPCA：特征空间均值零（K̃ 行和 ≈ 0 且 1ᵀK̃1 ≈ 0）',
+    vinf(rowSums) < 1e-9 && grand < 1e-9,
+    `max行和=${vinf(rowSums).toExponential(2)}，总量=${grand.toExponential(2)}`);
+  check('KPCA：K̃ 对称半正定（min eigenvalue ≥ −ε·λmax）',
+    symErr < 1e-12 && minEig > -1e-10 * kl.eig.values[0],
+    `对称误差=${symErr.toExponential(2)}，λmin=${minEig.toExponential(2)}`);
+
+  // ④ 谱定理完全重构
+  const recErr = kpcaReconstructionError(kl.Kc, kl.eig);
+  check('KPCA：谱定理重构 ‖K̃ − VΛVᵀ‖_F ≈ 0', recErr < 1e-9 * (1 + frobeniusNorm(kl.Kc)),
+    `误差=${recErr.toExponential(2)}`);
+
+  // ⑤ 样本外变换自洽：kpcaTransform(X_train) ≡ 训练 scores
+  const tr = kpcaTransform(kl, Xa);
+  let trDiff = 0;
+  for (let i = 0; i < Xa.length; i++) {
+    for (let k = 0; k < 3; k++) trDiff = Math.max(trDiff, Math.abs(tr[i][k] - kl.scores[i][k]));
+  }
+  check('KPCA：样本外投影自洽（transform(train) ≡ scores）', trDiff < 1e-8,
+    `maxDiff=${trDiff.toExponential(2)}`);
+
+  // ⑥ RBF 核把两月亮非线性结构线性化：嵌入空间 1-NN 纯度 → 1
+  const moons = twoMoons({ n: 60, sigma: 0.12, seed: 7 });
+  const km = kpca(moons.X, { kernel: 'rbf', gamma: 10, dims: 2 });
+  const purity = knnPurity(km.scores, moons.y);
+  check('KPCA：RBF 核两月亮嵌入 1-NN 纯度 ≥ 0.95（非线性→线性）', purity >= 0.95,
+    `纯度=${purity.toFixed(4)}`);
+}
+
+/* ============================================================
+ * 套件 20 · 谱聚类（Shi & Malik 2000 · Ng-Jordan-Weiss 2002 · von Luxburg 2007）
+ * ============================================================ */
+function suiteSpectral(check) {
+  const moons = twoMoons({ n: 100, sigma: 0.05, seed: 7 });
+  const W = similarityGraph(moons.X, { k: 7, gamma: 1 });
+  const { L, degrees } = normalizedLaplacian(W);
+  const { eigenvalues, U } = spectralEmbedding(L, 2);
+  const n = L.length;
+
+  // ① 图对称性与度矩阵一致性：W = Wᵀ、D = diag(W1)、L_sym 对称
+  const symErr = mdiff(W, transpose(W));
+  const degErr = Math.max(...degrees.map((d, i) => Math.abs(d - W[i].reduce((s, v) => s + v, 0))));
+  const lSym = mdiff(L, transpose(L));
+  check('谱聚类：W = Wᵀ、D = diag(W1)、L_sym 对称', symErr < 1e-12 && degErr < 1e-9 && lSym < 1e-12,
+    `W对称=${symErr.toExponential(2)}，度=${degErr.toExponential(2)}，L对称=${lSym.toExponential(2)}`);
+
+  // ② 归一化拉普拉斯基本定理：λ_min = 0，特征向量 ∝ D^{1/2}1 / ‖D^{1/2}1‖
+  const lam0 = eigenvalues[eigenvalues.length - 1];
+  const v0 = U.map((r) => r[0]);
+  const sqrtD = degrees.map((d) => Math.sqrt(d));
+  const s0 = Math.sign(v0[0]) * Math.sign(sqrtD[0]);
+  const ref0 = sqrtD.map((v) => v / norm(sqrtD));
+  const evErr = vinf(v0.map((v, i) => Math.abs(v - s0 * ref0[i])));
+  check('谱聚类：λ_min(L_sym) = 0，特征向量 ≡ √d/‖√d‖（基本定理）',
+    Math.abs(lam0) < 1e-10 && evErr < 1e-8,
+    `λmin=${lam0.toExponential(2)}，向量偏差=${evErr.toExponential(2)}`);
+
+  // ③ 谱界定理：λ(L_sym) ⊆ [0, 2]
+  const inBound = eigenvalues.every((v) => v > -1e-10 && v < 2 + 1e-10);
+  check('谱聚类：谱界 λ(L_sym) ⊆ [0, 2]（归一化拉普拉斯定理）', inBound,
+    `λ∈[${Math.min(...eigenvalues).toFixed(6)}, ${Math.max(...eigenvalues).toFixed(6)}]`);
+
+  // ④ 两月亮精确恢复：完整 NJW 管线 ARI = 1.000000（非凸结构）
+  const sc = spectralCluster(moons.X, 2, { neighbors: 7, gamma: 1, seed: 42 });
+  const ari = adjustedRandIndex(sc.labels, moons.y);
+  check('谱聚类：两月亮 ARI = 1.000000（NJW 全管线，非凸精确恢复）', ari === 1,
+    `ARI=${ari.toFixed(6)}`);
+
+  // ⑤ 对照：原始空间 k-means 凸假设失效（同数据 ARI 显著更低）
+  const kmRaw = kmeans(moons.X, 2, { seed: 42 });
+  const ariRaw = adjustedRandIndex(kmRaw.labels, moons.y);
+  check('谱聚类：对照原始空间 k-means（凸假设失效，ARI < 0.5 且差距 ≥ 0.5）',
+    ariRaw < 0.5 && ari - ariRaw >= 0.5,
+    `k-means ARI=${ariRaw.toFixed(4)} vs 谱=${ari.toFixed(4)}`);
+
+  // ⑥ 特征向量正交归一（Jacobi 输出 QᵀQ = I，嵌入基底的几何保证）
+  const V = jacobiEig(L).vectors;
+  const VtV = matmul(transpose(V), V);
+  check('谱聚类：特征向量正交归一 ‖VᵀV − I‖_max ≈ 0', mdiff(VtV, eye(n)) < 1e-9,
+    `偏差=${mdiff(VtV, eye(n)).toExponential(2)}`);
+}
+
+/* ============================================================
+ * 套件 21 · 激活函数族（GELU / SiLU / Mish / HardSwish / Softplus）
+ * ============================================================ */
+function suiteActivations(check) {
+  // ① erf 奇对称 + 文献参考值（A&S 7.1.26 精度 1.5e-7）
+  let oddErr = 0;
+  for (const x of [-3, -1.5, -0.7, -0.1, 0.1, 0.7, 1.5, 3]) oddErr = Math.max(oddErr, Math.abs(erf(-x) + erf(x)));
+  const refErr = Math.max(Math.abs(erf(1) - 0.8427007929497149), Math.abs(erf(2) - 0.9953222650189527));
+  check('激活：erf 奇对称 erf(−x) = −erf(x)（bit 级）且 A&S 参考值吻合',
+    oddErr < 1e-15 && refErr < 1.5e-6,
+    `对称=${oddErr.toExponential(2)}，参考值偏差=${refErr.toExponential(2)}`);
+
+  // ② 正态 CDF：Φ(0) = 1/2、Φ(1.96) ≈ 0.975、对称 Φ(−x) = 1 − Φ(x)
+  const cdfErr = Math.max(Math.abs(normalCDF(1.96) - 0.9750021048517795),
+    Math.abs(normalCDF(0) - 0.5));
+  let cdfSym = 0;
+  for (const x of [-2, -1, -0.3, 0.3, 1, 2]) cdfSym = Math.max(cdfSym, Math.abs(normalCDF(-x) - (1 - normalCDF(x))));
+  check('激活：Φ = ½erfc(−x/√2)，Φ(1.96)≈0.975 且 Φ(−x)=1−Φ(x)',
+    cdfErr < 1.5e-6 && cdfSym < 1e-15,
+    `参考值=${cdfErr.toExponential(2)}，对称=${cdfSym.toExponential(2)}`);
+
+  // ③ softplus 恒等式：sp(x) − sp(−x) = x，且 sp′(x) ≡ σ(x)（中心差分互证）
+  let idErr = 0;
+  for (const x of [-20, -5, -1, 0, 1, 5, 20]) idErr = Math.max(idErr, Math.abs(softplus(x) - softplus(-x) - x));
+  const spGrad = activationGradCheck(softplus, softplusD, [-3, -1, 0, 1, 3]);
+  check('激活：softplus(x) − softplus(−x) = x（精确恒等）且 sp′ ≡ σ', idErr < 1e-12 && spGrad < 1e-7,
+    `恒等=${idErr.toExponential(2)}，梯度=${spGrad.toExponential(2)}`);
+
+  // ④ GELU tanh 逼近 vs 精确版（文献口径 max|Δ| < 5e-4）
+  let approxErr = 0;
+  for (let x = -6; x <= 6.0001; x += 0.25) approxErr = Math.max(approxErr, Math.abs(gelu(x) - geluTanh(x)));
+  check('激活：GELU tanh 逼近 vs x·Φ(x)（max|Δ| < 5e-4）', approxErr < 5e-4,
+    `maxΔ=${approxErr.toExponential(2)}`);
+
+  // ⑤ 解析导数 ≡ 中心差分（gelu / geluTanh / silu / mish 四连检验）
+  // 注：GELU 精确版导数经 Φ、x·φ 传播 A&S erf 逼近误差（1.5e-7），故阈值取 5e-7；
+  //     其余纯初等函数逼近达 1e-10 量级。
+  const xs = [-3, -2, -1, -0.5, 0.1, 0.5, 1, 2, 3];
+  const g1 = activationGradCheck(gelu, geluD, xs);
+  const g2 = activationGradCheck(geluTanh, geluTanhD, xs);
+  const g3 = activationGradCheck(silu, siluD, xs);
+  const g4 = activationGradCheck(mish, mishD, xs);
+  check('激活：GELU/SiLU/Mish 解析导数 ≡ 中心差分（gelu ≤ 5e-7 含 erf 逼近传播，其余 < 1e-9）',
+    g1 < 5e-7 && Math.max(g2, g3, g4) < 1e-9,
+    `gelu=${g1.toExponential(2)} tanh=${g2.toExponential(2)} silu=${g3.toExponential(2)} mish=${g4.toExponential(2)}`);
+
+  // ⑥ 分段线性 HardSwish：段内中心差分精确、端点行为、导数分段闭式
+  // 注：分段线性在浮点下的差分噪声 ~ulp(f)/(2ε) ≈ 5e-12，非逻辑误差
+  const hsErr = activationGradCheck(hardswish, hardswishD, [-2.5, -1, 0, 1, 2.5]);
+  const endsOk = hardswish(-4) === 0 && hardswish(0) === 0
+    && Math.abs(hardswish(4) - 4) < 1e-12 && Math.abs(hardswish(3.5) - 3.5) < 1e-12
+    && Math.abs(hardswish(2.9) - 2.9 * (5.9 / 6)) < 1e-12;
+  check('激活：HardSwish 段内导数精确（差分 < 1e-11 浮点口径）且端点 x·relu6(x+3)/6', hsErr < 1e-11 && endsOk,
+    `差分=${hsErr.toExponential(2)}`);
+
+  // ⑦ 渐近行为：silu(x→∞) = x、silu(x→−∞) → 0⁻、mish(0) = 0
+  const asympOk = Math.abs(silu(50) - 50) < 1e-10 && silu(-50) < 0 && Math.abs(silu(-50)) < 1e-10
+    && Math.abs(mish(0)) < 1e-15;
+  check('激活：渐近行为 silu(∞)=x / silu(−∞)→0⁻ / mish(0)=0', asympOk,
+    `silu(50)=${silu(50).toFixed(12)}，silu(−50)=${silu(-50).toExponential(2)}`);
+}
+
+/* ============================================================
+ * 套件 22 · 学习率调度器（Noam / SGDR / 阶梯 / 指数）
+ * ============================================================ */
+function suiteSched(check) {
+  // ① Noam（Vaswani 2017）：两支在 s = W 精确连续，峰值恰在 warmup 顶点
+  const W = 4000, dModel = 512;
+  const peak = warmupInverseSqrt(W, { warmupSteps: W, dModel });
+  const peakRef = dModel ** -0.5 * W ** -0.5;
+  const contErr = Math.abs(peak - peakRef);
+  const isPeak = peak >= warmupInverseSqrt(W - 1, { warmupSteps: W, dModel })
+    && peak >= warmupInverseSqrt(W + 1, { warmupSteps: W, dModel });
+  const firstErr = Math.abs(warmupInverseSqrt(1, { warmupSteps: W, dModel }) - dModel ** -0.5 * W ** -1.5);
+  check('调度：Noam 两支在 s = W 精确连续且峰值 lr = d^−½·W^−½', contErr < 1e-15 && isPeak && firstErr < 1e-18,
+    `连续误差=${contErr.toExponential(2)}，lr(W)=${peak.toExponential(4)}`);
+
+  // ② 线性 warmup：lr(1) = base/W、lr(W) = base 封顶、单调非降
+  const lw = (s) => linearWarmup(s, { warmupSteps: 100, base: 1 });
+  let lwMono = true;
+  for (let s = 1; s < 200; s++) if (lw(s + 1) < lw(s) - 1e-15) lwMono = false;
+  check('调度：线性 warmup lr(s) = base·min(1, s/W)，lr(W) 封顶且单调非降',
+    Math.abs(lw(1) - 0.01) < 1e-15 && lw(100) === 1 && lw(150) === 1 && lwMono,
+    `lr(1)=${lw(1).toFixed(4)}，lr(100)=${lw(100)}`);
+
+  // ③ 余弦退火（SGDR）：端点闭式 ηmax/ηmin、中点、对称性、单调非增
+  const co = (s) => cosineAnnealing(s, { T: 1000, etaMax: 1, etaMin: 0 });
+  const coErr = Math.max(Math.abs(co(0) - 1), Math.abs(co(1000) - 0), Math.abs(co(500) - 0.5));
+  let coMono = true;
+  for (let s = 0; s < 1000; s += 5) if (co(s + 5) > co(s) + 1e-15) coMono = false;
+  let coSym = 0;
+  for (let s = 0; s <= 1000; s += 100) coSym = Math.max(coSym, Math.abs(co(s) + co(1000 - s) - 1));
+  check('调度：SGDR 余弦 lr(0)=ηmax、lr(T)=ηmin、lr(T/2)=中点，对称且单调非增',
+    coErr < 1e-12 && coMono && coSym < 1e-12,
+    `端点=${coErr.toExponential(2)}，对称=${coSym.toExponential(2)}`);
+
+  // ④ 阶梯衰减：段内严格恒定，整数倍处精确 γ 掉落，闭式 base·γ^⌊t/step⌋
+  const sd = (s) => stepDecay(s, { stepSize: 30, gamma: 0.1, base: 1 });
+  let segConst = true;
+  for (let s = 0; s < 90; s++) if (sd(s) !== sd(Math.floor(s / 30) * 30)) segConst = false;
+  const dropOk = sd(29) === 1 && Math.abs(sd(30) - 0.1) < 1e-15
+    && Math.abs(sd(59) - 0.1) < 1e-15 && Math.abs(sd(60) - 0.01) < 1e-15;
+  check('调度：阶梯衰减段内恒定、s=30/60 精确掉落（闭式 base·γ^⌊t/step⌋）', segConst && dropOk,
+    `lr(29)=${sd(29)}，lr(30)=${sd(30)}，lr(60)=${sd(60)}`);
+
+  // ⑤ 指数衰减：逐步等比 lr(t+1)/lr(t) = γ（200 个采样点全部精确）
+  const ed = (s) => exponentialDecay(s, { gamma: 0.99, base: 1 });
+  let ratioErr = 0;
+  for (let s = 0; s < 200; s++) ratioErr = Math.max(ratioErr, Math.abs(ed(s + 1) / ed(s) - 0.99));
+  check('调度：指数衰减逐步等比 lr(t+1)/lr(t) = γ（精确）', ratioErr < 1e-15,
+    `最大比值偏差=${ratioErr.toExponential(2)}`);
+
+  // ⑥ 全调度器值域健康：正、有限（训练安全线）
+  let healthy = true;
+  for (let s = 0; s <= 5000; s += 7) {
+    for (const v of [warmupInverseSqrt(s), linearWarmup(s), cosineAnnealing(s), stepDecay(s), exponentialDecay(s)]) {
+      if (!Number.isFinite(v) || v < 0) healthy = false;
+    }
+  }
+  check('调度：五个调度器 0..5000 步全部值有限且非负', healthy,
+    '采样 715 点 × 5 调度器');
+}
+
 /* ───── 挂载全局命名空间 ───── */
-const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, sgdMomentumStep, rmspropStep, adamStep, minimize, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, runAllInvariants };
+const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, runAllInvariants };
 if (typeof globalThis !== 'undefined') {
   globalThis.FlagshipAI = Object.assign({}, globalThis.FlagshipAI, __FlagshipAI__);
 }
@@ -4191,6 +4953,72 @@ if (typeof globalThis !== 'undefined') {
       `<span style="font-family:monospace">${finals.join(' · ')}</span>`;
   }
 
+  /* ================= v1.3 · 谱聚类 vs k-means（两月亮） ================= */
+  let moonSeed = 7;
+  function drawMoons() {
+    const { X, y } = A.twoMoons({ n: 100, sigma: 0.05, seed: moonSeed });
+    const sc = A.spectralCluster(X, 2, { neighbors: 7, gamma: 1, seed: 42 });
+    const km = A.kmeans(X, 2, { seed: 42 });
+    const ariSpec = A.adjustedRandIndex(sc.labels, y);
+    const ariKm = A.adjustedRandIndex(km.labels, y);
+    const W = sc.W;
+    const mx = (v) => 20 + (v + 1.5) / 4.0 * 420;
+    const my = (v) => 280 - (v + 1.0) / 2.4 * 260;
+    let svg = '';
+    // 图边（弱化显示跨簇连接）
+    for (let i = 0; i < X.length; i++) for (let j = i + 1; j < X.length; j++) {
+      if (W[i][j] > 0) {
+        const cross = sc.labels[i] !== sc.labels[j];
+        svg += `<line x1="${mx(X[i][0]).toFixed(1)}" y1="${my(X[i][1]).toFixed(1)}"
+          x2="${mx(X[j][0]).toFixed(1)}" y2="${my(X[j][1]).toFixed(1)}"
+          stroke="${cross ? '#e67e22' : '#95a5a6'}" stroke-width="${cross ? 1.4 : 0.5}"
+          stroke-opacity="${cross ? 0.55 : 0.25}"/>`;
+      }
+    }
+    for (let i = 0; i < X.length; i++) {
+      const specC = sc.labels[i] === 0 ? '#2980b9' : '#c0392b';
+      svg += `<circle cx="${mx(X[i][0]).toFixed(1)}" cy="${my(X[i][1]).toFixed(1)}" r="4"
+        fill="${specC}" stroke="#fff" stroke-width="0.8"/>`;
+    }
+    $('svg-moons').innerHTML = svg;
+    $('legend-moons').innerHTML =
+      `<span><i style="background:#2980b9"></i>谱簇 A</span><span><i style="background:#c0392b"></i>谱簇 B</span>` +
+      `<span><i style="background:#e67e22"></i>跨簇边</span>` +
+      `<span style="font-family:monospace">谱 ARI=${ariSpec.toFixed(4)} · k-means ARI=${ariKm.toFixed(4)}</span>`;
+  }
+
+  /* ================= v1.3 · 现代激活函数族 ================= */
+  let actShowDeriv = false;
+  function drawAct() {
+    const curves = actShowDeriv
+      ? [['GELU′', '#2980b9', A.geluD], ['SiLU′', '#c0392b', A.siluD], ['Mish′', '#8e44ad', A.mishD]]
+      : [['GELU', '#2980b9', A.gelu], ['SiLU', '#c0392b', A.silu], ['Mish', '#8e44ad', A.mish]];
+    const XR = [-4, 4];
+    const fmax = actShowDeriv ? 1.2 : 4.2;
+    const fmin = actShowDeriv ? -0.2 : -0.5;
+    const mx = (v) => 20 + (v - XR[0]) / (XR[1] - XR[0]) * 420;
+    const my = (v) => 270 - (v - fmin) / (fmax - fmin) * 240;
+    let svg = `<line x1="20" y1="${my(0)}" x2="440" y2="${my(0)}" stroke="#d5dbe5" stroke-width="1"/>
+      <line x1="${mx(0)}" y1="20" x2="${mx(0)}" y2="290" stroke="#d5dbe5" stroke-width="1"/>`;
+    // GELU tanh 逼近虚线对照
+    if (!actShowDeriv) {
+      const pts = [];
+      for (let x = XR[0]; x <= XR[1] + 1e-9; x += 0.08) pts.push(`${mx(x).toFixed(1)},${my(A.geluTanh(x)).toFixed(1)}`);
+      svg += `<polyline fill="none" stroke="#7f8c8d" stroke-width="1.2" stroke-dasharray="3 3"
+        points="${pts.join(' ')}"/>`;
+    }
+    for (const [name, color, fn] of curves) {
+      const pts = [];
+      for (let x = XR[0]; x <= XR[1] + 1e-9; x += 0.08) pts.push(`${mx(x).toFixed(1)},${my(fn(x)).toFixed(1)}`);
+      svg += `<polyline fill="none" stroke="${color}" stroke-width="2.4" points="${pts.join(' ')}"/>`;
+    }
+    $('svg-act').innerHTML = svg;
+    $('legend-act').innerHTML =
+      curves.map(([n, c]) => `<span><i style="background:${c}"></i>${n}</span>`).join('') +
+      (actShowDeriv ? '' : `<span><i style="background:#7f8c8d"></i>GELU-tanh 逼近</span>`) +
+      `<span style="font-family:monospace">${actShowDeriv ? '导数视图' : '函数视图'} · gelu(0)=0</span>`;
+  }
+
   $('btn-kmeans').addEventListener('click', () => { kmSeed = (kmSeed * 31 + 17) % 100000; drawKmeans(); });
   $('btn-attn').addEventListener('click', () => { attnSeed = (attnSeed * 37 + 11) % 100000; drawAttn(); });
   $('btn-svm').addEventListener('click', () => { svmSeed = (svmSeed * 29 + 13) % 100000; drawSvm(); });
@@ -4200,6 +5028,8 @@ if (typeof globalThis !== 'undefined') {
   $('btn-tsne').addEventListener('click', () => { tsneSeed = (tsneSeed * 41 + 9) % 100000; drawTsne(); });
   $('btn-dbscan').addEventListener('click', () => { dbSeed = (dbSeed * 43 + 5) % 100000; drawDbscan(); });
   $('btn-opt').addEventListener('click', drawOpt);
+  $('btn-moons').addEventListener('click', () => { moonSeed = (moonSeed * 47 + 3) % 100000; drawMoons(); });
+  $('btn-act').addEventListener('click', () => { actShowDeriv = !actShowDeriv; drawAct(); });
 
   renderSuites();
   drawKmeans();
@@ -4210,6 +5040,8 @@ if (typeof globalThis !== 'undefined') {
   drawLstm();
   drawTsne();
   drawDbscan();
+  drawMoons();
+  drawAct();
   drawOpt();
 })();
 </script>
