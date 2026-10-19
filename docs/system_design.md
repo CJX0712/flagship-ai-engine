@@ -1,7 +1,7 @@
 # 旗舰AI引擎 (Flagship AI Engine) — 系统架构设计说明书
 
 > 作者署名：晨星 (Morning Star / CJX0712) ｜ 架构师：高见远 (Bob)
-> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、34/34 全绿**。
+> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、38/38 全绿**。
 
 ---
 
@@ -11,13 +11,13 @@
 
 | 设计稿 | 最终实现 | 说明 |
 |---|---|---|
-| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 34 组套件，Node 与浏览器共用同一份 |
+| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 38 组套件，Node 与浏览器共用同一份 |
 | `src/verify/suites.js` | 并入 `src/verify/invariants.js` | 套件与检查器同文件，杜绝跨文件漂移 |
 | `src/core/rng.js` / `src/core/utils.js` | 并入 `src/core/stats.js`（mulberry32/gaussianSample）与 `src/core/linalg.js`/`numerical.js` | 随机源归概率层，工具归各自的消费者 |
 | 浏览器 `<script type="module">` 直引 src | `scripts/bundle.mjs` 按依赖序内联进 `showcase/index.html`（`globalThis.FlagshipAI`） | 兼容 `file://` 双击即用；`node --check` 兜底语法校验 |
-| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 34/34`（CI grep 校验） | 语义一致，命名对齐实现 |
+| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 38/38`（CI grep 校验） | 语义一致，命名对齐实现 |
 
-落地验证结论：`node test/run.mjs` → **PASS 34/34（1.8s，206 条不变量）**，与本设计书的全部不变量承诺一致。
+落地验证结论：`node test/run.mjs` → **PASS 38/38（约 2.5s，227 条不变量）**，与本设计书的全部不变量承诺一致。
 
 ### v1.1 增补（2026-10-19）
 
@@ -75,6 +75,17 @@
 | `src/ml/pagerank.js`（网页排名，Page & Brin 1998） | 秩和≡1；平稳方程 ‖G·r−r‖∞→0；幂迭代 ≡ 精确线性解（4.4e-14）；残差单调收敛；含悬挂节点仍守恒 |
 | `src/ml/gibbs.js`（吉布斯采样，Geman & Geman 1984 / Casella & George 1992） | 经验均值 ≡ μ（偏差<0.05）；协方差 ≡ Σ（rel<0.08）；条件分布 ≡ 理论；离散经验联合 ≡ 真实（Σ=1）；平稳收敛 ρ̂=0.498 vs ρ=0.490 |
 
+### v1.7 增补（2026-10-20）
+
+| 增补模块 | 不变量（定理背书） |
+|---|---|
+| `src/ml/gmm.js`（高斯混合模型 EM，Dempster,Laird&Rubin 1977 / Bishop §9） | 责任度行和=1（4.4e-16）；权重和=1；协方差对称半正定（λ_min≥0）；对数似然单调不降（EM 定理，max 回升 4.6e-12）；强分离双高斯硬指派 acc=1.000 |
+| `src/ml/lda.js`（线性判别分析 / Fisher，Fisher 1936 / Rao 1948） | 类心 ≡ 暴力均值（误差 0）；Sw/Sb 对称；Fisher 方向恒等式 w∥Sw⁻¹(μ₁−μ₂)（|cos|=1）；Fisher 比 ≥ 随机方向；线性可分 acc=1.000 |
+| `src/ml/naiveBayes.js`（高斯朴素贝叶斯，Maron 1961 / Domingos&Pazzani 1997） | 先验和=1；后验行和=1（2.2e-16）；独立可分数据 acc=1.000；对数项 ≡ 手算（误差 0）；labels=argmax |
+| `src/ml/randomForest.js`（随机森林，Breiman 2001） | 特征重要性 Σ=1（1.0000000000）；trees=numTrees；twoMoons acc=1.0000；方差低于单树；OOB 误差 0.02；predictions=argmax(probabilities) |
+
+> ⚠️ 选型纪律：v1.7 曾拟新增「Metropolis-Hastings」，经核查 `src/ml/mcmc.js` 已含 `metropolisHastings` 且 `suiteMCMC` 已覆盖，遂**弃用重复实现**，改以引擎缺失的 Random Forest 补全集成学习三足鼎立（AdaBoost + GBDT + RF）。复用既有 `tree.js` 的 `DecisionTree` 与 `giniImpurity`，不重复造轮子。
+
 ---
 
 ## 0. 设计总览
@@ -84,7 +95,7 @@
 | 运行形态 | 原生 **ES Module**（源码 `.js` + `package.json` 声明 `type:module`，测试入口 `.mjs`），浏览器 `<script type="module">` 与 Node `node test/run.mjs` 双跑 |
 | 依赖 | **零第三方依赖**；测试/服务仅用 Node 内置模块（`node:assert`、`node:process`、`node:http`、`node:fs`、`node:path`） |
 | 可复现 | 全确定性：核心不使用 `Math.random()` / `Date.now()`，统一经 `mulberry32(seed)` 种子随机数 |
-| 验证 | **14 大验证组**（v1.0 的 8 组 + v1.1 新增 6 组），每组聚合若干「不变量自检」，全部通过即为 14/14 全绿；CI 中以退出码 0/1 反映 |
+| 验证 | **38 组不变量套件**（v1.0 的 8 组起步，逐版本累积至 v1.7 的 38 组、227 条），每组聚合若干「不变量自检」，全部通过即为 38/38 全绿；CI 中以退出码 0/1 反映 |
 | 展示 | 单文件 `showcase/index.html`，内联 CSS/JS，零外部依赖，实时渲染自检报告 + 算法演示 |
 | 文档 | `README.md` / `ARCHITECTURE.md` / `MATH.md`（数学证明与不变量）/ `LICENSE`(MIT) / `.github/workflows/ci.yml` |
 

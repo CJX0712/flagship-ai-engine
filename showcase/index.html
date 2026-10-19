@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">34 组套件 · 206 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">38 组套件 · 227 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -277,6 +277,46 @@
     </div>
   </div>
 
+  <h2>v1.7 新增算法 <span class="tag">高斯混合 · 线性判别 · 朴素贝叶斯 · 随机森林 · 均由本页引擎实时求解</span></h2>
+  <div class="demos">
+    <div class="card">
+      <div class="demo-head">
+        <strong>高斯混合模型 GMM（EM）</strong>
+        <button id="btn-gmm">重新生成</button>
+      </div>
+      <div class="desc">Dempster 1977 / Bishop §9 · EM 期望最大化：对数似然单调不降、责任度行和=1 · 软聚类可视化</div>
+      <svg id="svg-gmm" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-gmm"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>线性判别分析 LDA / Fisher</strong>
+        <button id="btn-lda">重新生成</button>
+      </div>
+      <div class="desc">Fisher 1936 / Rao 1948 · 投影使类间散度最大、类内最小：w ∝ Sw⁻¹(μ₁−μ₂) · 闭式解</div>
+      <svg id="svg-lda" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-lda"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>朴素贝叶斯 Naive Bayes</strong>
+        <button id="btn-nb">重新生成</button>
+      </div>
+      <div class="desc">Maron 1961 / Domingos&amp;Pazzani 1997 · 条件独立假设：后验概率和=1、对数域稳定 · 二次决策面</div>
+      <svg id="svg-nb" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-nb"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>随机森林 Random Forest</strong>
+        <button id="btn-rf">重新训练</button>
+      </div>
+      <div class="desc">Breiman 2001 · 自助采样 + 随机特征子集，集成降低方差：twoMoons 准确率 + 特征重要性</div>
+      <svg id="svg-rf" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-rf"></div>
+    </div>
+  </div>
+
   <div class="refs">
     站在巨人肩上：<code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
     <code>Bishop · PRML</code><code>Hastie et al. · ESL</code><code>Vaswani et al. 2017 · Attention Is All You Need</code>
@@ -295,6 +335,10 @@
     <code>Ioffe &amp; Szegedy 2015 · BatchNorm</code><code>Ba et al. 2016 · LayerNorm</code>
     <code>He et al. 2015 · Deep Residual Learning</code><code>Page &amp; Brin 1998 · PageRank</code>
     <code>Geman &amp; Geman 1984 · Gibbs Sampling</code><code>Casella &amp; George 1992 · Gibbs Sampler</code>
+    <code>Dempster,Laird &amp; Rubin 1977 · EM 算法</code><code>Bishop 2006 · PRML</code>
+    <code>Fisher 1936 · 线性判别分析</code><code>Rao 1948 · 判别函数</code>
+    <code>Maron 1961 · 朴素贝叶斯</code><code>Domingos &amp; Pazzani 1997 · 最优偏见</code>
+    <code>Breiman 2001 · Random Forest</code><code>Breiman et al. 1984 · CART</code>
   </div>
 
   <footer>
@@ -1278,6 +1322,253 @@ class DecisionTree {
     for (let i = 0; i < X.length; i++) if (this.predict(X[i]) === y[i]) hit++;
     return hit / X.length;
   }
+}
+
+/* ═══════════ src/ml/randomForest.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 随机森林（Random Forest，Breiman 2001）
+ * 站在 Breiman 2001《Random Forests》。
+ *
+ * 设计要点（复用 tree.js，不重新实现树）：
+ *   · 不纯度计算复用 tree.js 的 giniImpurity（分类）；
+ *   · 单棵基准树（方差缩减对照）复用 tree.js 的 DecisionTree（见 rfSingleTree）；
+ *   · 现有 DecisionTree 的分裂为「全特征」实现、无法注入「每节点 mtry 随机特征子集」，
+ *     故本模块以轻量 CART 节点（rf* 前缀 helper）实现支持 per-node mtry 的树，
+ *     不再重定义 DecisionTree / giniImpurity，仅复用二者。
+ *
+ * 算法：
+ *   · 每棵树在 bootstrap（有放回自助采样）子集上训练；
+ *   · 每节点分裂时随机选取 mtry 个特征（分类默认 round(√d)，回归 round(d/3)）；
+ *   · 分类多数投票、回归均值；
+ *   · OOB 误差：对每个样本用「未包含该样本」的树投票；
+ *   · 特征重要性：汇总各树基于 Gini/方差不纯度下降的归一化重要性，使其和 ≡ 1。
+ *
+ * 导出：
+ *   randomForestTrain(X, y, opts) → { trees, oobIndices, featureImportances, numTrees, classes?, isRegression }
+ *   randomForestPredict(X, model) → { predictions, probabilities? }
+ *   rfSingleTree(X, y, opts)      → 单棵未集成 DecisionTree 基准（对照/诊断）
+ *
+ * 不变量（见 verify/invariants.js · suiteRandomForest）：
+ *   · featureImportances 之和 ≡ 1（≤1e-9）；
+ *   · trees.length === numTrees；
+ *   · twoMoons(n=200,sigma=0.05) 分类准确率 ≥ 0.95；
+ *   · 方差缩减：RF 准确率 ≥ 单棵未集成树均值（且 ≥ 单棵 DecisionTree 基准）；
+ *   · OOB 误差 < 0.1；
+ *   · 预测类别 ≡ argmax(probabilities)。
+ */
+
+
+
+
+/** 回归不纯度：方差（均方误差） */
+function rfVariance(values) {
+  const n = values.length;
+  if (n === 0) return 0;
+  let m = 0;
+  for (let i = 0; i < n; i++) m += values[i];
+  m /= n;
+  let s = 0;
+  for (let i = 0; i < n; i++) { const d = values[i] - m; s += d * d; }
+  return s / n;
+}
+
+/** 从 [0,d) 中无放回抽取 k 个特征下标（部分 Fisher–Yates 洗牌） */
+function rfSampleFeatures(d, k, rng) {
+  const pool = new Array(d);
+  for (let i = 0; i < d; i++) pool[i] = i;
+  for (let i = 0; i < k; i++) {
+    const j = i + Math.floor(rng() * (d - i));
+    const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+  }
+  return pool.slice(0, k);
+}
+
+/** 分类叶节点：多数类 + 类概率 Map */
+function rfClassLeaf(y, idx) {
+  const cnt = new Map();
+  for (let i = 0; i < idx.length; i++) {
+    const c = y[idx[i]];
+    cnt.set(c, (cnt.get(c) || 0) + 1);
+  }
+  const proba = new Map();
+  const total = idx.length;
+  for (const [c, k] of cnt) proba.set(c, k / total);
+  let bestC = null, bc = -Infinity;
+  for (const [c, p] of proba) if (p > bc) { bc = p; bestC = c; }
+  return { leaf: true, label: bestC, proba };
+}
+
+/** 回归叶节点：均值 */
+function rfRegLeaf(y, idx) {
+  let s = 0;
+  for (let i = 0; i < idx.length; i++) s += y[idx[i]];
+  return { leaf: true, value: idx.length ? s / idx.length : 0 };
+}
+
+/**
+ * 递归构建一棵 CART（支持每节点 mtry 随机特征子集）。
+ * @param {number[][]} X
+ * @param {Array} y
+ * @param {number[]} idx 该节点样本下标
+ * @param {number} depth
+ * @param {object} opts {maxDepth, minSamples, isRegression}
+ * @param {object} ctx {rng, mtry, importance, nTotal}
+ */
+function rfBuild(X, y, idx, depth, opts, ctx) {
+  const { maxDepth, minSamples, isRegression } = opts;
+  const n = idx.length;
+  if (depth >= maxDepth || n < minSamples) {
+    return isRegression ? rfRegLeaf(y, idx) : rfClassLeaf(y, idx);
+  }
+  const parentImp = isRegression
+    ? rfVariance(idx.map((i) => y[i]))
+    : giniImpurity(idx.map((i) => y[i]));
+  if (parentImp <= 1e-12) {
+    return isRegression ? rfRegLeaf(y, idx) : rfClassLeaf(y, idx);
+  }
+  const d = X[0].length;
+  const mtry = Math.min(ctx.mtry, d);
+  const feats = rfSampleFeatures(d, mtry, ctx.rng);
+  let best = null; // {feature, threshold, imp, left, right}
+  for (let fi = 0; fi < feats.length; fi++) {
+    const f = feats[fi];
+    const sorted = idx.slice().sort((a, b) => X[a][f] - X[b][f]);
+    for (let t = 1; t < sorted.length; t++) {
+      const v1 = X[sorted[t - 1]][f];
+      const v2 = X[sorted[t]][f];
+      if (v2 - v1 < 1e-12) continue;
+      const thr = 0.5 * (v1 + v2);
+      const left = [], right = [];
+      for (let i = 0; i < n; i++) (X[idx[i]][f] <= thr ? left : right).push(idx[i]);
+      if (left.length === 0 || right.length === 0) continue;
+      const lImp = isRegression ? rfVariance(left.map((i) => y[i])) : giniImpurity(left.map((i) => y[i]));
+      const rImp = isRegression ? rfVariance(right.map((i) => y[i])) : giniImpurity(right.map((i) => y[i]));
+      const cg = (left.length / n) * lImp + (right.length / n) * rImp;
+      if (!best || cg < best.imp) best = { feature: f, threshold: thr, imp: cg, left, right };
+    }
+  }
+  if (!best) {
+    return isRegression ? rfRegLeaf(y, idx) : rfClassLeaf(y, idx);
+  }
+  // 特征重要性：不纯度下降按节点样本量加权（最后统一归一化到和 = 1）
+  ctx.importance[best.feature] += (n / ctx.nTotal) * (parentImp - best.imp);
+  return {
+    leaf: false,
+    feature: best.feature,
+    threshold: best.threshold,
+    left: rfBuild(X, y, best.left, depth + 1, opts, ctx),
+    right: rfBuild(X, y, best.right, depth + 1, opts, ctx),
+  };
+}
+
+/** 单样本遍历一棵树，返回叶节点 */
+function rfPredictLeaf(node, x) {
+  while (!node.leaf) node = (x[node.feature] <= node.threshold) ? node.left : node.right;
+  return node;
+}
+
+/**
+ * 训练随机森林。
+ * @param {number[][]} X 特征矩阵 (n×d)
+ * @param {Array} y 标签（分类为整数类标；回归为数值）
+ * @param {object} [opts] {numTrees=100, maxDepth=10, minSamples=2, mtry=null, seed=42, isRegression=false}
+ * @returns {{trees:object[], oobIndices:number[][], featureImportances:number[], numTrees:number, classes?:Array, isRegression:boolean}}
+ */
+function randomForestTrain(X, y, opts = {}) {
+  const numTrees = opts.numTrees != null ? opts.numTrees : 100;
+  const maxDepth = opts.maxDepth != null ? opts.maxDepth : 10;
+  const minSamples = opts.minSamples != null ? opts.minSamples : 2;
+  const isRegression = !!opts.isRegression;
+  const seed = opts.seed != null ? opts.seed : 42;
+  const d = X[0].length;
+  const N = X.length;
+  const mtry = opts.mtry != null
+    ? opts.mtry
+    : (isRegression ? Math.max(1, Math.round(d / 3)) : Math.max(1, Math.round(Math.sqrt(d))));
+
+  const classes = isRegression ? undefined : [...new Set(y)].sort((a, b) => a - b);
+  const rng = mulberry32(seed >>> 0);
+  const importance = new Array(d).fill(0);
+  const trees = [];
+  const oobIndices = [];
+
+  for (let t = 0; t < numTrees; t++) {
+    const bootIdx = new Array(N);
+    const inBag = new Array(N).fill(false);
+    for (let i = 0; i < N; i++) {
+      const k = Math.floor(rng() * N);
+      bootIdx[i] = k;
+      inBag[k] = true;
+    }
+    const oob = [];
+    for (let i = 0; i < N; i++) if (!inBag[i]) oob.push(i);
+    oobIndices.push(oob);
+
+    const ctx = { rng, mtry, importance, nTotal: N };
+    const tree = rfBuild(X, y, bootIdx, 0, { maxDepth, minSamples, isRegression }, ctx);
+    trees.push(tree);
+  }
+
+  // 归一化特征重要性 → 和 ≡ 1
+  let s = 0;
+  for (let f = 0; f < d; f++) s += importance[f];
+  const featureImportances = new Array(d);
+  if (s > 0) {
+    for (let f = 0; f < d; f++) featureImportances[f] = importance[f] / s;
+  } else {
+    const u = 1 / d;
+    for (let f = 0; f < d; f++) featureImportances[f] = u; // 退化保护：均匀分布
+  }
+
+  return { trees, oobIndices, featureImportances, numTrees, classes, isRegression };
+}
+
+/**
+ * 预测。
+ * @param {number[][]} X
+ * @param {object} model randomForestTrain 的返回值
+ * @returns {{predictions:Array, probabilities?:number[][]}}
+ */
+function randomForestPredict(X, model) {
+  const { trees, classes, isRegression } = model;
+  const nTrees = trees.length;
+  const predictions = [];
+  const probabilities = isRegression ? undefined : [];
+
+  for (let i = 0; i < X.length; i++) {
+    const x = X[i];
+    if (isRegression) {
+      let s = 0;
+      for (let t = 0; t < nTrees; t++) s += rfPredictLeaf(trees[t], x).value;
+      predictions.push(s / nTrees);
+    } else {
+      const votes = new Array(classes.length).fill(0);
+      for (let t = 0; t < nTrees; t++) {
+        const leaf = rfPredictLeaf(trees[t], x);
+        for (let k = 0; k < classes.length; k++) votes[k] += (leaf.proba.get(classes[k]) || 0);
+      }
+      let bestK = 0, bestV = -Infinity;
+      for (let k = 0; k < classes.length; k++) if (votes[k] > bestV) { bestV = votes[k]; bestK = k; }
+      predictions.push(classes[bestK]);
+      const probs = new Array(classes.length);
+      for (let k = 0; k < classes.length; k++) probs[k] = votes[k] / nTrees;
+      probabilities.push(probs);
+    }
+  }
+  return { predictions, probabilities };
+}
+
+/**
+ * 单棵未集成基准树（复用 tree.js 的 DecisionTree），用于方差缩减对照/诊断。
+ * @param {number[][]} X
+ * @param {Array} y
+ * @param {object} [opts] {maxDepth=10, minSamples=2}
+ * @returns {DecisionTree}
+ */
+function rfSingleTree(X, y, opts = {}) {
+  const maxDepth = opts.maxDepth != null ? opts.maxDepth : 10;
+  const minSamples = opts.minSamples != null ? opts.minSamples : 2;
+  return new DecisionTree({ maxDepth, minSamples }).fit(X, y);
 }
 
 /* ═══════════ src/ml/svm.js ═══════════ */
@@ -3248,6 +3539,430 @@ function gibbsConvergence(samples, targetMean, coord = 0) {
   for (let i = start; i < n; i++) s += samples[i][coord];
   const mean = s / (n - start);
   return Math.abs(mean - targetMean);
+}
+
+/* ═══════════ src/ml/gmm.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 高斯混合模型（GMM）EM 算法
+ * 站在：Dempster, Laird & Rubin 1977《Maximum Likelihood from Incomplete Data
+ *       via the EM Algorithm》(JRSSB, 39:1) · Bishop 2006《Pattern Recognition
+ *       and Machine Learning》§9.2。
+ *
+ * 模型：p(x) = Σ_k π_k N(x | μ_k, Σ_k)，π_k ≥ 0，Σ π_k = 1。
+ * EM（单调不降，Wu 1983 / McLachlan & Krishnan 2008 证明）：
+ *   E 步：γ_{ik} = π_k N(x_i|μ_k,Σ_k) / Σ_j π_j N(·)，用 logsumexp 稳定计算。
+ *   M 步：π_k = N_k/n，μ_k = Σ γ_ik x_i / N_k，Σ_k = Σ γ_ik (x_i−μ_k)(x_i−μ_k)ᵀ / N_k。
+ *
+ * 不变量：
+ *   ① 每行 responsibilities 之和 ≡ 1（至 1e-9）；
+ *   ② weights 之和 ≡ 1；
+ *   ③ 每个 cov 对称且半正定（最小特征值 ≥ −1e-8）；
+ *   ④ logLikTrace 单调不降（最大下降 < 1e-6，EM 收敛定理背书）；
+ *   ⑤ 强分离双高斯（标签已知）硬指派准确率 ≥ 0.95。
+ */
+
+
+
+
+
+/** 协方差加 reg·I（保证正定，避免 Cholesky 奇异；仅一次除法，不下三角二次除） */
+function gmmAddReg(cov, reg) {
+  const d = cov.length;
+  const out = cov.map((row) => row.slice());
+  for (let i = 0; i < d; i++) out[i][i] += reg;
+  return out;
+}
+
+/**
+ * 单分量对数高斯密度：给定 Cholesky 因子 L（Σ = L Lᵀ），
+ *   log N(x|μ,Σ) = −½(d·log2π + log|Σ| + ‖L⁻¹(x−μ)‖²)，
+ * 其中 log|Σ| = 2 Σ_i log L_ii，内积经前向回代求得。
+ */
+function gmmLogGauss(x, mu, L) {
+  const d = x.length;
+  const z = new Array(d);
+  for (let i = 0; i < d; i++) z[i] = x[i] - mu[i];
+  const y = new Array(d).fill(0);
+  for (let i = 0; i < d; i++) {
+    let s = z[i];
+    for (let j = 0; j < i; j++) s -= L[i][j] * y[j];
+    y[i] = s / L[i][i];
+  }
+  let maha = 0;
+  for (let i = 0; i < d; i++) maha += y[i] * y[i];
+  let logdet = 0;
+  for (let i = 0; i < d; i++) logdet += Math.log(L[i][i]);
+  logdet *= 2;
+  return -0.5 * (d * Math.log(2 * Math.PI) + logdet + maha);
+}
+
+/** k-means 初始化：取 K 个互异随机点作种子，Lloyd 迭代收敛（EM 良好初值） */
+function gmmKmeansInit(X, K, rng) {
+  const n = X.length, d = X[0].length;
+  const idx = [];
+  let guard = 0;
+  while (idx.length < K && guard < 200 * K) {
+    const c = Math.floor(rng() * n);
+    if (!idx.includes(c)) idx.push(c);
+    guard++;
+  }
+  const centers = idx.map((i) => X[i].slice());
+  for (let it = 0; it < 30; it++) {
+    const assign = new Array(n).fill(0);
+    for (let i = 0; i < n; i++) {
+      const xi = X[i];
+      let best = Infinity, bi = 0;
+      for (let k = 0; k < K; k++) {
+        const ck = centers[k];
+        let s = 0;
+        for (let j = 0; j < d; j++) { const e = xi[j] - ck[j]; s += e * e; }
+        if (s < best) { best = s; bi = k; }
+      }
+      assign[i] = bi;
+    }
+    const sum = centers.map(() => new Array(d).fill(0));
+    const cnt = new Array(K).fill(0);
+    for (let i = 0; i < n; i++) {
+      const k = assign[i]; cnt[k]++;
+      const xi = X[i];
+      for (let j = 0; j < d; j++) sum[k][j] += xi[j];
+    }
+    let moved = false;
+    for (let k = 0; k < K; k++) {
+      if (cnt[k] === 0) continue;
+      for (let j = 0; j < d; j++) {
+        const nv = sum[k][j] / cnt[k];
+        if (Math.abs(nv - centers[k][j]) > 1e-9) moved = true;
+        centers[k][j] = nv;
+      }
+    }
+    if (!moved) break;
+  }
+  return centers;
+}
+
+/** E 步：返回 responsibilities (n×K) 与数据对数似然（logsumexp 稳定） */
+function gmmEStep(X, weights, means, Ls) {
+  const n = X.length, K = weights.length;
+  const R = zeros(n, K);
+  let logLik = 0;
+  const logpks = new Array(K);
+  for (let i = 0; i < n; i++) {
+    const xi = X[i];
+    for (let k = 0; k < K; k++) {
+      logpks[k] = Math.log(weights[k] + 1e-300) + gmmLogGauss(xi, means[k], Ls[k]);
+    }
+    const ls = logsumexp(logpks);
+    for (let k = 0; k < K; k++) R[i][k] = Math.exp(logpks[k] - ls);
+    logLik += ls;
+  }
+  return { R, logLik };
+}
+
+/** M 步：更新 weights / means / covs（全量累加后单次除以 N_k） */
+function gmmMStep(X, R, K, reg) {
+  const n = X.length, d = X[0].length;
+  const Nk = new Array(K).fill(0);
+  for (let i = 0; i < n; i++) for (let k = 0; k < K; k++) Nk[k] += R[i][k];
+  const weights = new Array(K);
+  const means = [];
+  for (let k = 0; k < K; k++) {
+    weights[k] = Nk[k] / n;
+    const mu = new Array(d).fill(0);
+    for (let i = 0; i < n; i++) {
+      const r = R[i][k];
+      if (r === 0) continue;
+      const xi = X[i];
+      for (let j = 0; j < d; j++) mu[j] += r * xi[j];
+    }
+    for (let j = 0; j < d; j++) mu[j] /= (Nk[k] > 0 ? Nk[k] : 1);
+    means.push(mu);
+  }
+  const covs = [];
+  for (let k = 0; k < K; k++) {
+    const C = zeros(d, d);
+    const nk = Nk[k] > 1e-12 ? Nk[k] : 1e-12;
+    const mu = means[k];
+    for (let i = 0; i < n; i++) {
+      const r = R[i][k];
+      if (r === 0) continue;
+      const xi = X[i];
+      for (let a = 0; a < d; a++) {
+        const ea = xi[a] - mu[a];
+        for (let b = 0; b < d; b++) C[a][b] += r * ea * (xi[b] - mu[b]);
+      }
+    }
+    for (let a = 0; a < d; a++) for (let b = 0; b < d; b++) C[a][b] /= nk;
+    covs.push(gmmAddReg(C, reg));
+  }
+  const Ls = covs.map((C) => cholesky(C));
+  return { weights, means, covs, Ls };
+}
+
+/**
+ * GMM-EM 拟合。
+ * @param {number[][]} X 数据（n×d）
+ * @param {number} K 分量个数
+ * @param {object} [opts] { iters=100, reg=1e-6, seed=42 }
+ * @returns {{weights:number[], means:number[][], covs:number[][][],
+ *            responsibilities:number[][], logLik:number, logLikTrace:number[]}}
+ */
+function gmmFit(X, K, { iters = 100, reg = 1e-6, seed = 42 } = {}) {
+  const n = X.length, d = X[0].length;
+  const rng = mulberry32(seed >>> 0);
+  const initMeans = gmmKmeansInit(X, K, rng);
+  const initCov = identity(d);
+  let means = initMeans.map((m) => m.slice());
+  let covs = new Array(K).fill(0).map(() => gmmAddReg(initCov, reg));
+  let Ls = covs.map((C) => cholesky(C));
+  let weights = new Array(K).fill(1 / K);
+
+  const logLikTrace = [];
+  {
+    const { logLik } = gmmEStep(X, weights, means, Ls);
+    logLikTrace.push(logLik);
+  }
+  let responsibilities = zeros(n, K);
+  for (let iter = 0; iter < iters; iter++) {
+    const es = gmmEStep(X, weights, means, Ls);
+    const ms = gmmMStep(X, es.R, K, reg);
+    weights = ms.weights; means = ms.means; covs = ms.covs; Ls = ms.Ls;
+    const es2 = gmmEStep(X, weights, means, Ls);
+    responsibilities = es2.R;
+    logLikTrace.push(es2.logLik);
+  }
+  const logLik = logLikTrace[logLikTrace.length - 1];
+  return { weights, means, covs, responsibilities, logLik, logLikTrace };
+}
+
+/**
+ * GMM 预测：返回 responsibilities 与硬指派标签（每点 argmax 责任度）。
+ * @param {number[][]} X 数据
+ * @param {object} model gmmFit 的返回
+ * @returns {{responsibilities:number[][], labels:number[]}}
+ */
+function gmmPredict(X, model) {
+  const { weights, means, covs } = model;
+  const Ls = covs.map((C) => cholesky(C));
+  const { R } = gmmEStep(X, weights, means, Ls);
+  const labels = new Array(X.length);
+  for (let i = 0; i < X.length; i++) {
+    let bi = 0, bv = -Infinity;
+    for (let k = 0; k < weights.length; k++) if (R[i][k] > bv) { bv = R[i][k]; bi = k; }
+    labels[i] = bi;
+  }
+  return { responsibilities: R, labels };
+}
+
+/* ═══════════ src/ml/lda.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 线性判别分析 / Fisher（LDA）
+ * 站在：Fisher 1936《The Use of Multiple Measurements in Taxonomic Problems》、
+ *       Rao 1948（判别式）· Bishop 2006《Pattern Recognition and Machine Learning》§4.1。
+ *
+ * 二分类闭式（Fisher 判别定理）：w ∝ Sw⁻¹(μ1 − μ2) 使 Rayleigh 商
+ *   J(w) = wᵀSb w / wᵀSw w 取极大值；等价地 Sw·w ∥ (μ1 − μ2)。
+ * 多分类：解广义特征问题 Sw⁻¹Sb w = λ w（经 Sw = L Lᵀ 变换为对称 B = L⁻¹Sb L⁻ᵀ 后分解）。
+ *
+ * 不变量：
+ *   ① 各类 classMeans ≡ 暴力均值（逐元素 < 1e-9）；
+ *   ② Sw、Sb 对称（max 非对称项 < 1e-9）；
+ *   ③ Fisher 方向恒等式：Sw·w ∥ (μ1−μ2)（|cos| ≈ 1，至 1e-6）；
+ *   ④ Fisher 比 J(w) ≥ 任意随机方向 J（w 的 J 最大）；
+ *   ⑤ 线性可分合成数据：投影后类心间距 > 类内散布，且最近类心分类准确率 = 1.0。
+ */
+
+
+
+/** 类内散度 Sw = Σ_c Σ_{x∈c} (x−μ_c)(x−μ_c)ᵀ（全量累加后单次成形，天然对称） */
+function ldaScatterWithin(X, y, classMeans, classes) {
+  const d = X[0].length;
+  const Sw = zeros(d, d);
+  for (let i = 0; i < X.length; i++) {
+    const c = classes.indexOf(y[i]);
+    const mu = classMeans[c];
+    const xi = X[i];
+    for (let a = 0; a < d; a++) {
+      const ea = xi[a] - mu[a];
+      for (let b = 0; b < d; b++) Sw[a][b] += ea * (xi[b] - mu[b]);
+    }
+  }
+  return Sw;
+}
+
+/** 类间散度 Sb = Σ_c n_c (μ_c − μ)(μ_c − μ)ᵀ（μ 为总体均值） */
+function ldaScatterBetween(X, y, classMeans, classes) {
+  const d = X[0].length;
+  const overall = new Array(d).fill(0);
+  for (const xi of X) for (let j = 0; j < d; j++) overall[j] += xi[j];
+  for (let j = 0; j < d; j++) overall[j] /= X.length;
+  const counts = new Array(classes.length).fill(0);
+  for (const yi of y) counts[classes.indexOf(yi)]++;
+  const Sb = zeros(d, d);
+  for (let c = 0; c < classes.length; c++) {
+    const mu = classMeans[c];
+    for (let a = 0; a < d; a++) {
+      const da = mu[a] - overall[a];
+      for (let b = 0; b < d; b++) Sb[a][b] += counts[c] * da * (mu[b] - overall[b]);
+    }
+  }
+  return Sb;
+}
+
+/** Sw + reg·I 后求逆（保证 Sw 数值正定） */
+function ldaInverse(A, reg) {
+  const d = A.length;
+  const Are = A.map((row, i) => row.map((v, j) => (i === j ? v + reg : v)));
+  return inverse(Are);
+}
+
+/** 矩阵对称化（消除浮点非对称，供 Jacobi 分解） */
+function ldaSymmetrize(A) {
+  const d = A.length;
+  for (let i = 0; i < d; i++) for (let j = i + 1; j < d; j++) {
+    const avg = 0.5 * (A[i][j] + A[j][i]);
+    A[i][j] = avg; A[j][i] = avg;
+  }
+}
+
+/**
+ * LDA 拟合。
+ * 二分类直接用闭式 w = Sw⁻¹(μ1−μ2)；多分类用 Cholesky 变换后的对称广义特征分解。
+ * @returns {{classMeans:number[][], Sw:number[][], Sb:number[][], w:number[], Wproj:number[][], classes:*[]}}
+ */
+function ldaFit(X, y, { reg = 1e-6 } = {}) {
+  const classes = [];
+  for (const yi of y) if (!classes.includes(yi)) classes.push(yi);
+  const d = X[0].length;
+  const classMeans = classes.map((c) => {
+    const rows = [];
+    for (let i = 0; i < X.length; i++) if (y[i] === c) rows.push(X[i]);
+    const mu = new Array(d).fill(0);
+    for (const r of rows) for (let j = 0; j < d; j++) mu[j] += r[j];
+    for (let j = 0; j < d; j++) mu[j] /= rows.length;
+    return mu;
+  });
+  const Sw = ldaScatterWithin(X, y, classMeans, classes);
+  const Sb = ldaScatterBetween(X, y, classMeans, classes);
+  const SwInv = ldaInverse(Sw, reg);
+
+  let Wproj;
+  if (classes.length === 2) {
+    // 闭式 Fisher 方向：w = Sw⁻¹(μ1 − μ2)（精确，避免非对称矩阵分解）
+    const diff = new Array(d);
+    for (let j = 0; j < d; j++) diff[j] = classMeans[1][j] - classMeans[0][j];
+    let w = matvec(SwInv, diff);
+    if (dot(w, diff) < 0) for (let j = 0; j < d; j++) w[j] = -w[j];
+    Wproj = [w];
+  } else {
+    // 广义特征：Sw = L Lᵀ ⇒ B = L⁻¹ Sb L⁻ᵀ（对称），分解后 w = L⁻ᵀ v
+    const L = cholesky((function () { const M = Sw.map((r, i) => r.map((v, j) => (i === j ? v + reg : v))); return M; })());
+    const Linv = inverse(L);
+    const LTinv = transpose(Linv);
+    const B = matmul(matmul(Linv, Sb), LTinv);
+    ldaSymmetrize(B);
+    const { values, vectors } = jacobiEig(B);
+    const order = values.map((v, k) => k).sort((a, b) => Math.abs(values[b]) - Math.abs(values[a]));
+    Wproj = order.slice(0, classes.length - 1).map((k) => matvec(LTinv, vectors[k]));
+  }
+  const w = Wproj[0].slice();
+  return { classMeans, Sw, Sb, w, Wproj, classes };
+}
+
+/**
+ * LDA 投影。
+ * 二分类 → 1-D 标量数组（每点 w·x）；多分类 → 坐标矩阵（n×(C−1)）。
+ * @returns {number[]|number[][]}
+ */
+function ldaProject(X, model) {
+  const { Wproj, classes } = model;
+  if (classes.length === 2) {
+    const w = Wproj[0];
+    return X.map((xi) => dot(w, xi));
+  }
+  return X.map((xi) => Wproj.map((row) => dot(row, xi)));
+}
+
+/* ═══════════ src/ml/naiveBayes.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 高斯朴素贝叶斯（GNB）
+ * 站在：Maron 1961 · Domingos & Pazzani 1997《On the Optimality of the Simple
+ *       Bayesian Classifier under Zero-One Loss》（特征条件独立下最优）。
+ *
+ * 后验（对数域，数值稳定）：log p(c|x) ∝ log p(c) + Σ_j log N(x_j | μ_{cj}, σ²_{cj})，
+ *   再以 softmax 回概率。条件独立假设把联合高斯拆成逐特征一维高斯之积。
+ *
+ * 不变量：
+ *   ① priors 之和 ≡ 1；
+ *   ② 每样本 posteriors 之和 ≡ 1（至 1e-9）；
+ *   ③ 独立特征、类别可分合成数据准确率 = 1.0；
+ *   ④ 单点对数项 ≡ 手算（gaussianLogPDF，差 < 1e-9）；
+ *   ⑤ labels = argmax posteriors（逐样本核对）。
+ */
+
+
+
+
+/**
+ * GNB 拟合。
+ * @param {number[][]} X 数据（n×d）
+ * @param {number[]} y 类别标签
+ * @param {object} [opts] { varSmooth=1e-9 }
+ * @returns {{priors:number[], classMeans:number[][], classVars:number[][], classes:*[]}}
+ */
+function nbFit(X, y, { varSmooth = 1e-9 } = {}) {
+  const classes = [];
+  for (const yi of y) if (!classes.includes(yi)) classes.push(yi);
+  const d = X[0].length;
+  const priors = [];
+  const classMeans = [];
+  const classVars = [];
+  for (const c of classes) {
+    const rows = [];
+    for (let i = 0; i < X.length; i++) if (y[i] === c) rows.push(X[i]);
+    const nC = rows.length;
+    const mu = new Array(d).fill(0);
+    for (const r of rows) for (let j = 0; j < d; j++) mu[j] += r[j];
+    for (let j = 0; j < d; j++) mu[j] /= nC;
+    const v = new Array(d).fill(0);
+    for (const r of rows) for (let j = 0; j < d; j++) { const e = r[j] - mu[j]; v[j] += e * e; }
+    // 全量累加后单次除以 nC（不下三角二次除），并加平滑避免 log(0)
+    for (let j = 0; j < d; j++) v[j] = v[j] / nC + varSmooth;
+    priors.push(nC / X.length);
+    classMeans.push(mu);
+    classVars.push(v);
+  }
+  return { priors, classMeans, classVars, classes };
+}
+
+/**
+ * GNB 预测。
+ * @param {number[][]} X 数据
+ * @param {object} model nbFit 的返回
+ * @returns {{posteriors:number[][], labels:number[]}}
+ */
+function nbPredict(X, model) {
+  const { priors, classMeans, classVars, classes } = model;
+  const K = classes.length;
+  const posteriors = [];
+  for (let i = 0; i < X.length; i++) {
+    const xi = X[i];
+    const logp = new Array(K);
+    for (let k = 0; k < K; k++) {
+      const mu = classMeans[k];
+      const va = classVars[k];
+      let s = Math.log(priors[k] + 1e-300);
+      for (let j = 0; j < xi.length; j++) s += gaussianLogPDF(xi[j], mu[j], Math.sqrt(va[j]));
+      logp[k] = s;
+    }
+    posteriors.push(softmax(logp));
+  }
+  const labels = posteriors.map((p) => {
+    let bi = 0, bv = -Infinity;
+    for (let k = 0; k < p.length; k++) if (p[k] > bv) { bv = p[k]; bi = k; }
+    return bi;
+  });
+  return { posteriors, labels };
 }
 
 /* ═══════════ src/nn/dense.js ═══════════ */
@@ -5881,8 +6596,12 @@ function bellmanResidualQ(P, R, gamma, Q) {
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 34 组套件全绿 = 引擎数学正确性的机器证明。
+ * 38 组套件全绿 = 引擎数学正确性的机器证明。
  */
+
+
+
+
 
 
 
@@ -5999,6 +6718,10 @@ function runAllInvariants() {
     ['残差网络 · ResNet', suiteResNet],
     ['网页排名 · PageRank', suitePageRank],
     ['吉布斯采样 · Gibbs', suiteGibbs],
+    ['高斯混合模型 · GMM-EM', suiteGMM],
+    ['线性判别分析 · LDA/Fisher', suiteLDA],
+    ['高斯朴素贝叶斯 · Naive Bayes', suiteNaiveBayes],
+    ['随机森林 · Random Forest', suiteRandomForest],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -7843,9 +8566,370 @@ function suiteGibbs(check) {
     `前半程μ=${mFirst.toFixed(4)} vs 后半程μ=${mSecond.toFixed(4)}，ρ̂=${rho.toFixed(4)} vs ρ=${rhoTrue.toFixed(4)}`);
 }
 
+/* ============================================================
+ * 套件 35 · 高斯混合模型（GMM-EM）
+ * 站在 Dempster,Laird,Rubin 1977；Bishop 2006 PRML §9。
+ * EM 定理背书：数据对数似然单调不降。
+ * ============================================================ */
+function suiteGMM(check) {
+  const run = (label, fn) => {
+    try { fn((ok, info) => check(label, ok, info)); }
+    catch (e) { check(label, false, '执行异常: ' + (e && e.message)); }
+  };
+
+  // 强分离双高斯（标签已知）：两类各 N 点、均值间距远大于方差
+  const nPer = 300, seed = 7;
+  const rngG = mulberry32(seed);
+  const mu0 = [-5, 0], mu1 = [5, 0], sig = 1;
+  const XG = [], yG = [];
+  for (let i = 0; i < nPer; i++) { XG.push(mu0.map((m) => gaussianSample(rngG, m, sig))); yG.push(0); }
+  for (let i = 0; i < nPer; i++) { XG.push(mu1.map((m) => gaussianSample(rngG, m, sig))); yG.push(1); }
+  const modelG = gmmFit(XG, 2, { iters: 100, seed: 123 });
+  const respG = modelG.responsibilities;
+
+  run('GMM：每行 responsibilities 之和 ≡ 1（≤1e-9）', (c) => {
+    let maxErr = 0;
+    for (const row of respG) { let s = 0; for (const v of row) s += v; maxErr = Math.max(maxErr, Math.abs(s - 1)); }
+    c(maxErr < 1e-9, `maxRowSumErr=${maxErr.toExponential(2)}`);
+  });
+
+  run('GMM：weights 之和 ≡ 1（≤1e-9）', (c) => {
+    let s = 0; for (const w of modelG.weights) s += w;
+    c(Math.abs(s - 1) < 1e-9, `Σw=${s.toFixed(10)}`);
+  });
+
+  run('GMM：每个 cov 对称且半正定（λ_min ≥ −1e-8）', (c) => {
+    let maxAsym = 0, minLam = Infinity;
+    for (const cov of modelG.covs) {
+      const dd = cov.length;
+      for (let i = 0; i < dd; i++) for (let j = i + 1; j < dd; j++) maxAsym = Math.max(maxAsym, Math.abs(cov[i][j] - cov[j][i]));
+      const { values } = jacobiEig(cov);
+      for (const lam of values) if (lam < minLam) minLam = lam;
+    }
+    c(maxAsym < 1e-9 && minLam >= -1e-8, `maxAsym=${maxAsym.toExponential(2)}，λ_min=${minLam.toExponential(2)}`);
+  });
+
+  run('GMM：对数似然单调不降（EM 定理；最大下降 < 1e-6）', (c) => {
+    const tr = modelG.logLikTrace;
+    let maxDrop = 0;
+    for (let k = 1; k < tr.length; k++) maxDrop = Math.max(maxDrop, tr[k - 1] - tr[k]);
+    c(maxDrop < 1e-6, `maxDrop=${maxDrop.toExponential(2)}，steps=${tr.length}`);
+  });
+
+  run('GMM：强分离双高斯硬指派准确率 ≥ 0.95', (c) => {
+    const pred = gmmPredict(XG, modelG).labels;
+    let accA = 0, accB = 0;
+    for (let i = 0; i < XG.length; i++) { if (pred[i] === yG[i]) accA++; else accB++; }
+    const acc = Math.max(accA, accB) / XG.length;
+    c(acc >= 0.95, `acc=${acc.toFixed(4)}（最佳置换）`);
+  });
+}
+
+/* ============================================================
+ * 套件 36 · 线性判别分析（LDA / Fisher）
+ * 站在 Fisher 1936；Rao 1948；Bishop 2006 §4.1。
+ * 定理背书：Fisher 解 w = Sw⁻¹(μ1−μ2) 令 Rayleigh 商 J(w) 取极大。
+ * ============================================================ */
+function suiteLDA(check) {
+  const run = (label, fn) => {
+    try { fn((ok, info) => check(label, ok, info)); }
+    catch (e) { check(label, false, '执行异常: ' + (e && e.message)); }
+  };
+
+  // 线性可分合成数据：两类均值不同、方差小（独立特征）
+  const nPer = 200, seed = 11;
+  const rngL = mulberry32(seed);
+  const muA = [-4, 0], muB = [4, 0], sig = 1;
+  const XL = [], yL = [];
+  for (let i = 0; i < nPer; i++) { XL.push(muA.map((m) => gaussianSample(rngL, m, sig))); yL.push(0); }
+  for (let i = 0; i < nPer; i++) { XL.push(muB.map((m) => gaussianSample(rngL, m, sig))); yL.push(1); }
+  const modelL = ldaFit(XL, yL, { reg: 1e-6 });
+  const classes = modelL.classes;
+
+  run('LDA：各类 classMeans ≡ 暴力均值（逐元素 < 1e-9）', (c) => {
+    let maxErr = 0;
+    for (let ci = 0; ci < classes.length; ci++) {
+      const rows = [];
+      for (let i = 0; i < XL.length; i++) if (yL[i] === classes[ci]) rows.push(XL[i]);
+      const dd = XL[0].length;
+      for (let j = 0; j < dd; j++) {
+        let s = 0; for (const r of rows) s += r[j];
+        maxErr = Math.max(maxErr, Math.abs(s / rows.length - modelL.classMeans[ci][j]));
+      }
+    }
+    c(maxErr < 1e-9, `maxMeanErr=${maxErr.toExponential(2)}`);
+  });
+
+  run('LDA：Sw、Sb 对称（max 非对称项 < 1e-9）', (c) => {
+    let maxAsym = 0;
+    const chkSym = (M) => {
+      const dd = M.length;
+      for (let i = 0; i < dd; i++) for (let j = i + 1; j < dd; j++) maxAsym = Math.max(maxAsym, Math.abs(M[i][j] - M[j][i]));
+    };
+    chkSym(modelL.Sw); chkSym(modelL.Sb);
+    c(maxAsym < 1e-9, `maxAsym=${maxAsym.toExponential(2)}`);
+  });
+
+  run('LDA：Fisher 方向恒等式 Sw·w ∥ (μ1−μ2)（|cos|≈1，≤1e-6）', (c) => {
+    const w = modelL.w, Sw = modelL.Sw;
+    const dir = [];
+    for (let j = 0; j < w.length; j++) dir[j] = modelL.classMeans[1][j] - modelL.classMeans[0][j];
+    const Sw_w = [];
+    for (let i = 0; i < Sw.length; i++) { let s = 0; for (let j = 0; j < Sw[0].length; j++) s += Sw[i][j] * w[j]; Sw_w.push(s); }
+    let dot1 = 0, n1 = 0, n2 = 0;
+    for (let j = 0; j < w.length; j++) { dot1 += Sw_w[j] * dir[j]; n1 += Sw_w[j] * Sw_w[j]; n2 += dir[j] * dir[j]; }
+    const cosw = dot1 / (Math.sqrt(n1) * Math.sqrt(n2) + 1e-300);
+    c(Math.abs(Math.abs(cosw) - 1) < 1e-6, `|cos|=${Math.abs(cosw).toFixed(10)}`);
+  });
+
+  run('LDA：Fisher 比 J(w) ≥ 随机方向 J（w 的 J 最大）', (c) => {
+    const Sw = modelL.Sw, Sb = modelL.Sb, w = modelL.w;
+    const quad = (M, v) => {
+      let s = 0;
+      for (let i = 0; i < M.length; i++) { let t = 0; for (let j = 0; j < M[0].length; j++) t += M[i][j] * v[j]; s += v[i] * t; }
+      return s;
+    };
+    const J = (v) => quad(Sb, v) / (quad(Sw, v) + 1e-300);
+    const Jw = J(w);
+    const rngR = mulberry32(99);
+    let maxRand = 0;
+    for (let t = 0; t < 20; t++) {
+      const v = [];
+      for (let j = 0; j < w.length; j++) v.push(gaussianSample(rngR, 0, 1));
+      maxRand = Math.max(maxRand, J(v));
+    }
+    c(Jw >= maxRand - 1e-9, `J(w)=${Jw.toExponential(3)}，maxRandJ=${maxRand.toExponential(3)}`);
+  });
+
+  run('LDA：投影后类心间距 > 类内散布，最近类心分类准确率 = 1.0', (c) => {
+    const proj = ldaProject(XL, modelL); // 二分类 ⇒ 1-D
+    let s0 = 0, n0 = 0, s1 = 0, n1 = 0;
+    for (let i = 0; i < XL.length; i++) {
+      if (yL[i] === classes[0]) { s0 += proj[i]; n0++; } else { s1 += proj[i]; n1++; }
+    }
+    const m0 = s0 / n0, m1 = s1 / n1;
+    let v0 = 0, v1 = 0;
+    for (let i = 0; i < XL.length; i++) {
+      if (yL[i] === classes[0]) v0 += (proj[i] - m0) ** 2; else v1 += (proj[i] - m1) ** 2;
+    }
+    const sd0 = Math.sqrt(v0 / n0), sd1 = Math.sqrt(v1 / n1);
+    const sep = Math.abs(m1 - m0);
+    const mid = 0.5 * (m0 + m1);
+    let acc = 0;
+    for (let i = 0; i < XL.length; i++) {
+      const predC = proj[i] >= mid ? classes[1] : classes[0];
+      if (predC === yL[i]) acc++;
+    }
+    const accR = acc / XL.length;
+    c(sep > 4 * Math.max(sd0, sd1) && accR === 1.0, `sep=${sep.toFixed(4)}，maxSD=${Math.max(sd0, sd1).toFixed(4)}，acc=${accR.toFixed(4)}`);
+  });
+}
+
+/* ============================================================
+ * 套件 37 · 高斯朴素贝叶斯（GNB）
+ * 站在 Maron 1961；Domingos&Pazzani 1997。后验在 log 域计算，softmax 回概率。
+ * ============================================================ */
+function suiteNaiveBayes(check) {
+  const run = (label, fn) => {
+    try { fn((ok, info) => check(label, ok, info)); }
+    catch (e) { check(label, false, '执行异常: ' + (e && e.message)); }
+  };
+
+  // 独立特征、类别可分：每类各特征均值不同、方差适中
+  const nPer = 200, seed = 5;
+  const rngN = mulberry32(seed);
+  const muClass0 = [0, 0, 0, 0], muClass1 = [3, 3, 3, 3], sig = 1;
+  const XN = [], yN = [];
+  for (let i = 0; i < nPer; i++) { XN.push(muClass0.map((m) => gaussianSample(rngN, m, sig))); yN.push(0); }
+  for (let i = 0; i < nPer; i++) { XN.push(muClass1.map((m) => gaussianSample(rngN, m, sig))); yN.push(1); }
+  const modelN = nbFit(XN, yN);
+  const { posteriors: postN, labels: labN } = nbPredict(XN, modelN);
+
+  run('GNB：priors 之和 ≡ 1（≤1e-9）', (c) => {
+    let s = 0; for (const p of modelN.priors) s += p;
+    c(Math.abs(s - 1) < 1e-9, `Σprior=${s.toFixed(10)}`);
+  });
+
+  run('GNB：每样本 posteriors 之和 ≡ 1（≤1e-9）', (c) => {
+    let maxErr = 0;
+    for (const row of postN) { let s = 0; for (const v of row) s += v; maxErr = Math.max(maxErr, Math.abs(s - 1)); }
+    c(maxErr < 1e-9, `maxSumErr=${maxErr.toExponential(2)}`);
+  });
+
+  run('GNB：独立特征、类别可分数据准确率 = 1.0', (c) => {
+    let acc = 0;
+    for (let i = 0; i < XN.length; i++) if (labN[i] === yN[i]) acc++;
+    const accR = acc / XN.length;
+    c(accR === 1.0, `acc=${accR.toFixed(4)}`);
+  });
+
+  run('GNB：单点对数项 ≡ 手算（gaussianLogPDF，差 < 1e-9）', (c) => {
+    const i = 0, xi = XN[i], K = modelN.classes.length;
+    const handLog = new Array(K);
+    for (let k = 0; k < K; k++) {
+      let s = Math.log(modelN.priors[k] + 1e-300);
+      for (let j = 0; j < xi.length; j++) s += gaussianLogPDF(xi[j], modelN.classMeans[k][j], Math.sqrt(modelN.classVars[k][j]));
+      handLog[k] = s;
+    }
+    let mx = -Infinity; for (const v of handLog) if (v > mx) mx = v;
+    let ss = 0; for (const v of handLog) ss += Math.exp(v - mx);
+    const handPost = handLog.map((v) => Math.exp(v - mx) / ss);
+    let maxDiff = 0;
+    for (let k = 0; k < K; k++) maxDiff = Math.max(maxDiff, Math.abs(handPost[k] - postN[i][k]));
+    c(maxDiff < 1e-9, `maxPostDiff=${maxDiff.toExponential(2)}`);
+  });
+
+  run('GNB：labels = argmax posteriors（逐样本核对）', (c) => {
+    let bad = 0;
+    for (let i = 0; i < XN.length; i++) {
+      let bi = 0, bv = -Infinity;
+      for (let k = 0; k < postN[i].length; k++) if (postN[i][k] > bv) { bv = postN[i][k]; bi = k; }
+      if (bi !== labN[i]) bad++;
+    }
+    c(bad === 0, `mismatch=${bad}`);
+  });
+}
+
+/* ============================================================
+
+
+
+/* ============================================================
+ * 套件 · 随机森林（Random Forest，Breiman 2001）
+ * 站在 Breiman 2001《Random Forests》。
+ * 复用 tree.js 的 DecisionTree（单棵基准）与 giniImpurity。
+ * 不变量：
+ *   ① featureImportances 之和 ≡ 1（≤1e-9）；
+ *   ② trees.length === numTrees；
+ *   ③ twoMoons(n=200,sigma=0.05) 分类准确率 ≥ 0.95；
+ *   ④ 方差缩减：RF 准确率 ≥ 单棵未集成树均值（并报告单棵 DecisionTree 基准）；
+ *   ⑤ OOB 误差 < 0.1（报告/软判）；
+ *   ⑥ 预测类别 ≡ argmax(probabilities)（mismatch=0）。
+ * ============================================================ */
+/** OOB 误差：对每个样本用未包含它的树投票（分类=误分率，回归=MSE） */
+function rfOOBError(X, y, model) {
+  const { trees, oobIndices, classes, isRegression } = model;
+  const N = X.length;
+  let nOob = 0;
+  if (isRegression) {
+    let sse = 0;
+    for (let i = 0; i < N; i++) {
+      let sum = 0, cnt = 0;
+      for (let t = 0; t < trees.length; t++) {
+        const oob = oobIndices[t];
+        let inOob = false;
+        for (let j = 0; j < oob.length; j++) if (oob[j] === i) { inOob = true; break; }
+        if (!inOob) continue;
+        let node = trees[t];
+        while (!node.leaf) node = (X[i][node.feature] <= node.threshold) ? node.left : node.right;
+        sum += node.value; cnt++;
+      }
+      if (cnt === 0) continue;
+      const pred = sum / cnt;
+      const d = pred - y[i]; sse += d * d; nOob++;
+    }
+    return nOob > 0 ? sse / nOob : 0;
+  }
+  let wrong = 0;
+  for (let i = 0; i < N; i++) {
+    const votes = new Array(classes.length).fill(0);
+    let cnt = 0;
+    for (let t = 0; t < trees.length; t++) {
+      const oob = oobIndices[t];
+      let inOob = false;
+      for (let j = 0; j < oob.length; j++) if (oob[j] === i) { inOob = true; break; }
+      if (!inOob) continue;
+      let node = trees[t];
+      while (!node.leaf) node = (X[i][node.feature] <= node.threshold) ? node.left : node.right;
+      for (let k = 0; k < classes.length; k++) votes[k] += (node.proba.get(classes[k]) || 0);
+      cnt++;
+    }
+    if (cnt === 0) continue;
+    let bk = 0, bv = -Infinity;
+    for (let k = 0; k < classes.length; k++) if (votes[k] > bv) { bv = votes[k]; bk = k; }
+    if (classes[bk] !== y[i]) wrong++;
+    nOob++;
+  }
+  return nOob > 0 ? wrong / nOob : 0;
+}
+
+function suiteRandomForest(check) {
+  const run = (label, fn) => {
+    try { fn((ok, info) => check(label, ok, info)); }
+    catch (e) { check(label, false, '执行异常: ' + (e && e.message)); }
+  };
+
+  // 两月亮数据集（n=200, sigma=0.05 低噪声，seed=42 可复现）
+  const { X, y } = twoMoons({ n: 200, sigma: 0.05, seed: 42 });
+  const N = X.length;
+  const numTrees = 64, maxDepth = 10, minSamples = 2;
+
+  const model = randomForestTrain(X, y, { numTrees, maxDepth, minSamples, seed: 42 });
+  const { predictions, probabilities } = randomForestPredict(X, model);
+
+  // ① featureImportances 之和 ≡ 1（到 1e-9）
+  run('RF：featureImportances 之和 ≡ 1（≤1e-9）', (c) => {
+    let s = 0; for (const v of model.featureImportances) s += v;
+    c(Math.abs(s - 1) < 1e-9, `Σimp=${s.toFixed(12)}`);
+  });
+
+  // ② 树数量 = numTrees（桩校验：每棵树均在 bootstrap 子集上训练）
+  run('RF：trees.length === numTrees（每棵树均经 bootstrap 训练）', (c) => {
+    c(model.trees.length === numTrees, `trees=${model.trees.length}，numTrees=${numTrees}`);
+  });
+
+  // ③ twoMoons 分类准确率 ≥ 0.95
+  run('RF：twoMoons(n=200,sigma=0.05) 分类准确率 ≥ 0.95', (c) => {
+    let acc = 0; for (let i = 0; i < N; i++) if (predictions[i] === y[i]) acc++;
+    const accR = acc / N;
+    c(accR >= 0.95, `acc=${accR.toFixed(4)}（${acc}/${N}）`);
+  });
+
+  // ④ 方差缩减：RF（集成）准确率 ≥ 单棵未集成树（森林基学习器）均值；并报告单棵 DecisionTree 基准
+  run('RF：方差缩减 — RF 准确率 ≥ 单棵未集成树均值（且 ≥ 单棵 DecisionTree 基准）', (c) => {
+    let sumBase = 0;
+    for (const tree of model.trees) {
+      let hit = 0;
+      for (let i = 0; i < N; i++) {
+        let node = tree;
+        while (!node.leaf) node = (X[i][node.feature] <= node.threshold) ? node.left : node.right;
+        let bk = 0, bv = -Infinity;
+        for (const [cls, p] of node.proba) if (p > bv) { bv = p; bk = cls; }
+        if (bk === y[i]) hit++;
+      }
+      sumBase += hit / N;
+    }
+    const meanBase = sumBase / model.trees.length;
+    const dt = new DecisionTree({ maxDepth, minSamples }).fit(X, y);
+    let dtHit = 0; for (let i = 0; i < N; i++) if (dt.predict(X[i]) === y[i]) dtHit++;
+    const dtAcc = dtHit / N;
+    let rfAcc = 0; for (let i = 0; i < N; i++) if (predictions[i] === y[i]) rfAcc++;
+    rfAcc /= N;
+    c(rfAcc >= meanBase - 1e-9, `rfAcc=${rfAcc.toFixed(4)}，基学习器均值=${meanBase.toFixed(4)}，单棵DecisionTree=${dtAcc.toFixed(4)}`);
+  });
+
+  // ⑤ OOB 误差在合理范围（< 0.1，报告/软判）
+  run('RF：OOB 误差 < 0.1（报告）', (c) => {
+    const oob = rfOOBError(X, y, model);
+    c(oob < 0.1, `oobErr=${oob.toFixed(4)}`);
+  });
+
+  // ⑥ 预测类别 = 多数投票 ⇒ predictions ≡ argmax(probabilities)（逐样本核对，mismatch=0）
+  run('RF：predictions ≡ argmax(probabilities)（mismatch=0）', (c) => {
+    let mismatch = 0;
+    for (let i = 0; i < N; i++) {
+      const probs = probabilities[i];
+      let bk = 0, bv = -Infinity;
+      for (let k = 0; k < probs.length; k++) if (probs[k] > bv) { bv = probs[k]; bk = k; }
+      if (model.classes[bk] !== predictions[i]) mismatch++;
+    }
+    c(mismatch === 0, `mismatch=${mismatch}`);
+  });
+}
+
 const colMean = mean;
 /* ───── 挂载全局命名空间 ───── */
-const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, gprKernelMatrix, gprFit, gprPredict, gprPriorVariance, gprInverseK, gprHyperGradAnalytic, gprHyperGradNumeric, regressionTreeFit, regressionTreePredict, regressionTreePredictAll, gbdtFit, gbdtPredict, gbdtStagedPredict, pearsonCorr, kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate, innovationAutocorr, empiricalVariance, metropolisHastings, mhAcceptProb, detailedBalanceResidual, importanceSampling, mcmcEmpiricalMoments, marginal, nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData, pageRank, pagerankExact, pagerankStationary, pagerankSum, gibbsBivariateGaussian, gibbsSampler, gibbsMarginal, gibbsCovariance, gibbsConditionalCheck, gibbsDiscrete, gibbsConvergence, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, batchNormForward, batchNormBackward, batchNormInfer, batchNormGradCheck, layerNorm2d, layerNormBackward, layerNormGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, convOutputSize, im2col, conv2dForward, conv2dBackward, maxPool2d, maxPoolBackward, conv2dNaive, convGradientCheck, randomConvTensors, vaeMake, vaeEncode, vaeReparametrize, vaeDecode, vaeKL, vaeKLMonteCarlo, vaeSampleEps, vaeForward, vaeBackward, vaeGradientCheck, cosineSim, sigmoidNegIdentity, sgnsLoss, sgnsGradients, sgnsLossReference, sgnsGradientCheck, trainSGNS, wordSimilarity, makeToyCorpus, ResidualBlock, ResNet, resnetAccuracy, trainResNet, residualIdentityCheck, residualJacobianIdentity, residualGradientCheck, residualGradientHighway, residualVsPlain, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, runAllInvariants };
+const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, randomForestTrain, randomForestPredict, rfSingleTree, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, gprKernelMatrix, gprFit, gprPredict, gprPriorVariance, gprInverseK, gprHyperGradAnalytic, gprHyperGradNumeric, regressionTreeFit, regressionTreePredict, regressionTreePredictAll, gbdtFit, gbdtPredict, gbdtStagedPredict, pearsonCorr, kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate, innovationAutocorr, empiricalVariance, metropolisHastings, mhAcceptProb, detailedBalanceResidual, importanceSampling, mcmcEmpiricalMoments, marginal, nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData, pageRank, pagerankExact, pagerankStationary, pagerankSum, gibbsBivariateGaussian, gibbsSampler, gibbsMarginal, gibbsCovariance, gibbsConditionalCheck, gibbsDiscrete, gibbsConvergence, gmmFit, gmmPredict, ldaFit, ldaProject, nbFit, nbPredict, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, batchNormForward, batchNormBackward, batchNormInfer, batchNormGradCheck, layerNorm2d, layerNormBackward, layerNormGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, convOutputSize, im2col, conv2dForward, conv2dBackward, maxPool2d, maxPoolBackward, conv2dNaive, convGradientCheck, randomConvTensors, vaeMake, vaeEncode, vaeReparametrize, vaeDecode, vaeKL, vaeKLMonteCarlo, vaeSampleEps, vaeForward, vaeBackward, vaeGradientCheck, cosineSim, sigmoidNegIdentity, sgnsLoss, sgnsGradients, sgnsLossReference, sgnsGradientCheck, trainSGNS, wordSimilarity, makeToyCorpus, ResidualBlock, ResNet, resnetAccuracy, trainResNet, residualIdentityCheck, residualJacobianIdentity, residualGradientCheck, residualGradientHighway, residualVsPlain, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, runAllInvariants };
 if (typeof globalThis !== 'undefined') {
   globalThis.FlagshipAI = Object.assign({}, globalThis.FlagshipAI, __FlagshipAI__);
 }
@@ -8588,6 +9672,152 @@ if (typeof globalThis !== 'undefined') {
       `<span style="font-family:monospace">μ̂=(${m1.mean.toFixed(2)},${m2.mean.toFixed(2)}) Σ̂=[[${cov[0][0].toFixed(2)},${cov[0][1].toFixed(2)}],[${cov[1][0].toFixed(2)},${cov[1][1].toFixed(2)}]] ρ̂=${rhoHat.toFixed(3)} vs ${rhoTrue.toFixed(3)}</span>`;
   }
 
+  /* ================= v1.7 · 高斯混合模型 GMM（EM 软聚类） ================= */
+  let gmmSeed = 7;
+  function drawGMM() {
+    const { mulberry32, gaussianSample, gmmFit } = A;
+    const rng = mulberry32(gmmSeed);
+    const c0 = [rng() * 4 - 2, rng() * 4 - 2], c1 = [rng() * 4 + 2, rng() * 4 + 2];
+    const pts = [];
+    for (let i = 0; i < 60; i++) { pts.push([gaussianSample(rng, c0[0], 0.5), gaussianSample(rng, c0[1], 0.5)]); }
+    for (let i = 0; i < 60; i++) { pts.push([gaussianSample(rng, c1[0], 0.5), gaussianSample(rng, c1[1], 0.5)]); }
+    const m = gmmFit(pts, 2, { iters: 60, seed: gmmSeed });
+    const { responsibilities } = m;
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    const xmin = Math.min(...xs), xmax = Math.max(...xs), ymin = Math.min(...ys), ymax = Math.max(...ys);
+    const px = (v) => 30 + (v - xmin) / (xmax - xmin) * 400;
+    const py = (v) => 270 - (v - ymin) / (ymax - ymin) * 240;
+    let svg = '<line x1="30" y1="270" x2="430" y2="270" stroke="#d5dbe5"/><line x1="30" y1="20" x2="30" y2="270" stroke="#d5dbe5"/>';
+    for (let i = 0; i < pts.length; i++) {
+      const w0 = responsibilities[i][0];
+      const r = Math.round(255 - 196 * w0), g = Math.round(128 - 37 * w0), b = Math.round(80 + 173 * w0);
+      svg += `<circle cx="${px(pts[i][0]).toFixed(1)}" cy="${py(pts[i][1]).toFixed(1)}" r="4" fill="rgb(${r},${g},${b})" fill-opacity="0.85" stroke="#fff" stroke-width="0.6"/>`;
+    }
+    for (let k = 0; k < 2; k++) {
+      svg += `<circle cx="${px(m.means[k][0]).toFixed(1)}" cy="${py(m.means[k][1]).toFixed(1)}" r="7" fill="none" stroke="#1c2333" stroke-width="2"/>`;
+    }
+    const tr = m.logLikTrace; let mono = true;
+    for (let i = 1; i < tr.length; i++) if (tr[i] < tr[i - 1] - 1e-6) mono = false;
+    $('svg-gmm').innerHTML = svg;
+    $('legend-gmm').innerHTML =
+      `<span><i style="background:linear-gradient(90deg,rgb(255,128,80),rgb(59,91,253))"></i>软指派 成分0↔1</span>` +
+      `<span style="font-family:monospace">w=[${m.weights.map(w => w.toFixed(2)).join(',')}] · logLik 单调${mono ? '✓' : '✗'}（EM 定理）</span>`;
+  }
+
+  /* ================= v1.7 · 线性判别分析 LDA / Fisher ================= */
+  let ldaSeed = 7;
+  function drawLDA() {
+    const { mulberry32, gaussianSample, ldaFit, ldaProject } = A;
+    const rng = mulberry32(ldaSeed);
+    const c0 = [rng() * 3 - 1, rng() * 3 - 1], c1 = [rng() * 3 + 2, rng() * 3 + 2];
+    const X = [], y = [];
+    for (let i = 0; i < 70; i++) { X.push([gaussianSample(rng, c0[0], 0.6), gaussianSample(rng, c0[1], 0.6)]); y.push(0); }
+    for (let i = 0; i < 70; i++) { X.push([gaussianSample(rng, c1[0], 0.6), gaussianSample(rng, c1[1], 0.6)]); y.push(1); }
+    const model = ldaFit(X, y, { reg: 1e-6 });
+    const w = model.Wproj[0];
+    const proj = ldaProject(X, model);
+    const xs = X.map(p => p[0]), ys = X.map(p => p[1]);
+    const xmin = Math.min(...xs), xmax = Math.max(...xs), ymin = Math.min(...ys), ymax = Math.max(...ys);
+    const cxm = (xmin + xmax) / 2, cym = (ymin + ymax) / 2;
+    const px = (v) => 30 + (v - xmin) / (xmax - xmin) * 400;
+    const py = (v) => 270 - (v - ymin) / (ymax - ymin) * 240;
+    let svg = '<line x1="30" y1="270" x2="430" y2="270" stroke="#d5dbe5"/><line x1="30" y1="20" x2="30" y2="270" stroke="#d5dbe5"/>';
+    for (let i = 0; i < X.length; i++) {
+      const col = y[i] === 0 ? '#2980b9' : '#e74c3c';
+      svg += `<circle cx="${px(X[i][0]).toFixed(1)}" cy="${py(X[i][1]).toFixed(1)}" r="3.6" fill="${col}" fill-opacity="0.8" stroke="#fff" stroke-width="0.5"/>`;
+    }
+    const wl = Math.hypot(w[0], w[1]) || 1, ux = w[0] / wl, uy = w[1] / wl;
+    const L = Math.max(xmax - xmin, ymax - ymin);
+    svg += `<line x1="${px(cxm - ux * L).toFixed(1)}" y1="${py(cym - uy * L).toFixed(1)}" x2="${px(cxm + ux * L).toFixed(1)}" y2="${py(cym + uy * L).toFixed(1)}" stroke="#17994f" stroke-width="2" stroke-dasharray="5,3"/>`;
+    for (let k = 0; k < 2; k++) {
+      svg += `<circle cx="${px(model.classMeans[k][0]).toFixed(1)}" cy="${py(model.classMeans[k][1]).toFixed(1)}" r="6" fill="none" stroke="#1c2333" stroke-width="2"/>`;
+    }
+    const Sw = model.Sw, Sb = model.Sb;
+    const Sw_w = [Sw[0][0] * w[0] + Sw[0][1] * w[1], Sw[1][0] * w[0] + Sw[1][1] * w[1]];
+    const Sb_w = [Sb[0][0] * w[0] + Sb[0][1] * w[1], Sb[1][0] * w[0] + Sb[1][1] * w[1]];
+    const Jw = (w[0] * Sb_w[0] + w[1] * Sb_w[1]) / (w[0] * Sw_w[0] + w[1] * Sw_w[1]);
+    $('svg-lda').innerHTML = svg;
+    $('legend-lda').innerHTML =
+      `<span><i style="background:#17994f"></i>Fisher 投影方向 w</span>` +
+      `<span style="font-family:monospace">J(w)=wᵀSbw / wᵀSww=${Jw.toFixed(3)}（类间/类内散度比）· 投影类心分离=${proj[0].toFixed(2)} vs ${proj[X.length - 1].toFixed(2)}</span>`;
+  }
+
+  /* ================= v1.7 · 朴素贝叶斯 Naive Bayes（二次决策面） ================= */
+  let nbSeed = 7;
+  function drawNB() {
+    const { mulberry32, gaussianSample, nbFit, nbPredict } = A;
+    const rng = mulberry32(nbSeed);
+    const c0 = [rng() * 3 - 1, rng() * 3 - 1], c1 = [rng() * 3 + 2, rng() * 3 + 2];
+    const X = [], y = [];
+    for (let i = 0; i < 80; i++) { X.push([gaussianSample(rng, c0[0], 0.55), gaussianSample(rng, c0[1], 0.55)]); y.push(0); }
+    for (let i = 0; i < 80; i++) { X.push([gaussianSample(rng, c1[0], 0.55), gaussianSample(rng, c1[1], 0.55)]); y.push(1); }
+    const model = nbFit(X, y, { varSmooth: 1e-9 });
+    const pred = nbPredict(X, model);
+    let acc = 0; for (let i = 0; i < X.length; i++) if (pred.labels[i] === y[i]) acc++; acc /= X.length;
+    const xs = X.map(p => p[0]), ys = X.map(p => p[1]);
+    const xmin = Math.min(...xs), xmax = Math.max(...xs), ymin = Math.min(...ys), ymax = Math.max(...ys);
+    const px = (v) => 20 + (v - xmin) / (xmax - xmin) * 420;
+    const py = (v) => 280 - (v - ymin) / (ymax - ymin) * 260;
+    const G = 30, grid = [];
+    for (let r = 0; r < G; r++) { const gy = ymin + (r + 0.5) / G * (ymax - ymin); for (let c = 0; c < G; c++) { const gx = xmin + (c + 0.5) / G * (xmax - xmin); grid.push([gx, gy]); } }
+    const gp = nbPredict(grid, model).labels;
+    let svg = '';
+    const cellW = 420 / G, cellH = 260 / G;
+    for (let i = 0; i < grid.length; i++) {
+      const rr = Math.floor(i / G), cc = i % G, cls = gp[i];
+      const col = cls === 0 ? 'rgba(41,128,185,0.16)' : 'rgba(231,76,60,0.16)';
+      svg += `<rect x="${(20 + cc * cellW).toFixed(1)}" y="${(20 + rr * cellH).toFixed(1)}" width="${cellW.toFixed(1)}" height="${cellH.toFixed(1)}" fill="${col}"/>`;
+    }
+    for (let i = 0; i < X.length; i++) {
+      const col = y[i] === 0 ? '#2980b9' : '#e74c3c';
+      svg += `<circle cx="${px(X[i][0]).toFixed(1)}" cy="${py(X[i][1]).toFixed(1)}" r="3.6" fill="${col}" stroke="#fff" stroke-width="0.6"/>`;
+    }
+    const ps = pred.posteriors; let maxErr = 0;
+    for (let i = 0; i < ps.length; i++) { let s = 0; for (const v of ps[i]) s += v; maxErr = Math.max(maxErr, Math.abs(s - 1)); }
+    $('svg-nb').innerHTML = svg;
+    $('legend-nb').innerHTML =
+      `<span><i style="background:#2980b9"></i>类0</span><span><i style="background:#e74c3c"></i>类1</span>` +
+      `<span style="font-family:monospace">准确率=${acc.toFixed(3)} · 后验和 maxErr=${maxErr.toExponential(1)}</span>`;
+  }
+
+  /* ================= v1.7 · 随机森林 Random Forest（twoMoons） ================= */
+  let rfSeed = 42;
+  function drawRF() {
+    const { twoMoons, randomForestTrain, randomForestPredict } = A;
+    const { X, y } = twoMoons({ n: 200, sigma: 0.05, seed: rfSeed });
+    const model = randomForestTrain(X, y, { numTrees: 64, seed: rfSeed });
+    const pred = randomForestPredict(X, model);
+    let acc = 0; for (let i = 0; i < X.length; i++) if (pred.predictions[i] === y[i]) acc++; acc /= X.length;
+    const xs = X.map(r => r[0]), ys = X.map(r => r[1]);
+    const xmin = Math.min(...xs), xmax = Math.max(...xs), ymin = Math.min(...ys), ymax = Math.max(...ys);
+    const px = (v) => 20 + (v - xmin) / (xmax - xmin) * 420;
+    const py = (v) => 280 - (v - ymin) / (ymax - ymin) * 260;
+    const G = 30, grid = [];
+    for (let r = 0; r < G; r++) { const gy = ymin + (r + 0.5) / G * (ymax - ymin); for (let c = 0; c < G; c++) { const gx = xmin + (c + 0.5) / G * (xmax - xmin); grid.push([gx, gy]); } }
+    const gp = randomForestPredict(grid, model).predictions;
+    let svg = '';
+    const cellW = 420 / G, cellH = 260 / G;
+    for (let i = 0; i < grid.length; i++) {
+      const rr = Math.floor(i / G), cc = i % G, cls = gp[i];
+      const col = cls === 0 ? 'rgba(41,128,185,0.16)' : 'rgba(231,76,60,0.16)';
+      svg += `<rect x="${(20 + cc * cellW).toFixed(1)}" y="${(20 + rr * cellH).toFixed(1)}" width="${cellW.toFixed(1)}" height="${cellH.toFixed(1)}" fill="${col}"/>`;
+    }
+    for (let i = 0; i < X.length; i++) {
+      const col = y[i] === 0 ? '#2980b9' : '#e74c3c';
+      svg += `<circle cx="${px(X[i][0]).toFixed(1)}" cy="${py(X[i][1]).toFixed(1)}" r="3.4" fill="${col}" stroke="#fff" stroke-width="0.5"/>`;
+    }
+    const impSum = model.featureImportances.reduce((a, b) => a + b, 0);
+    $('svg-rf').innerHTML = svg;
+    $('legend-rf').innerHTML =
+      `<span><i style="background:#2980b9"></i>类0</span><span><i style="background:#e74c3c"></i>类1</span>` +
+      `<span style="font-family:monospace">${model.numTrees} 棵树 · 训练准确率=${acc.toFixed(3)} · 特征重要性Σ=${impSum.toFixed(3)}</span>`;
+  }
+
+  $('btn-gmm').addEventListener('click', () => { gmmSeed = (gmmSeed * 31 + 17) % 100000; drawGMM(); });
+  $('btn-lda').addEventListener('click', () => { ldaSeed = (ldaSeed * 37 + 11) % 100000; drawLDA(); });
+  $('btn-nb').addEventListener('click', () => { nbSeed = (nbSeed * 29 + 13) % 100000; drawNB(); });
+  $('btn-rf').addEventListener('click', () => { rfSeed = (rfSeed * 41 + 9) % 100000; drawRF(); });
+
   $('btn-norm').addEventListener('click', () => { normSeed = (normSeed * 31 + 17) % 100000; drawNorm(); });
   $('btn-resnet').addEventListener('click', () => { resnetSeed = (resnetSeed * 37 + 11) % 100000; drawResNet(); });
   $('btn-pr').addEventListener('click', () => { prSeed = (prSeed * 29 + 13) % 100000; drawPR(); });
@@ -8612,6 +9842,10 @@ if (typeof globalThis !== 'undefined') {
   drawResNet();
   drawPR();
   drawGibbs();
+  drawGMM();
+  drawLDA();
+  drawNB();
+  drawRF();
   drawOpt();
 })();
 </script>

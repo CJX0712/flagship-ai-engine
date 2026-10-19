@@ -43,7 +43,11 @@ flagship-ai-engine/
 │   │   ├── svm.js               # RBF 核 SVM（SMO 对偶求解，KKT 自检）
 │   │   ├── boosting.js          # AdaBoost（决策树桩加权集成）
 │   │   ├── hmm.js               # HMM 前向/后向 + Baum-Welch(EM)
-│   │   └── tree.js              # CART 决策树(Gini)
+│   │   ├── tree.js              # CART 决策树(Gini)
+│   │   ├── gmm.js               # 高斯混合模型 GMM（EM 软聚类 + 协方差 PSD 正则）
+│   │   ├── lda.js               # 线性判别分析 LDA/Fisher（闭式 Sw⁻¹(μ₁−μ₂)）
+│   │   ├── naiveBayes.js        # 高斯朴素贝叶斯（对数域 + softmax）
+│   │   └── randomForest.js      # 随机森林（bootstrap + mtry 随机特征 + 多数投票）
 │   ├── nn/
 │   │   ├── dense.js             # 全连接网络(前向/反向/梯度检验)
 │   │   ├── attention.js         # 缩放点积注意力(前向/反向/梯度检验)/多头
@@ -60,8 +64,8 @@ flagship-ai-engine/
 │   │   ├── valueIteration.js    # 值迭代/策略评估/网格世界/链式 MDP 暴力枚举
 │   │   └── qLearning.js         # Q-learning(免模型TD) + Bellman 残差 + qFromV
 │   └── verify/
-│       └── invariants.js        # 34 组不变量自检套件（Node 与浏览器共用同一份）
-├── test/run.mjs                 # 无头自检入口 → PASS 34/34
+│       └── invariants.js        # 38 组不变量自检套件（Node 与浏览器共用同一份）
+├── test/run.mjs                 # 无头自检入口 → PASS 38/38
 ├── showcase/
 │   ├── template.html            # 旗舰展示页模板（9 个实时演示）
 │   └── index.html               # 生成物：单文件、内联引擎、双击即用
@@ -130,8 +134,8 @@ graph LR
 | T4 | ml/classification + clustering + dimreduction + tree | T1,T2 |
 | T5 | nn/dense（反向传播 + 梯度检验） | T1,T2 |
 | T6 | nn/attention + transformer | T1,T2,T5 |
-| T7 | verify/invariants（34 组套件） | T1–T6 |
-| T8 | test/run.mjs 跑通 34/34 | T7 |
+| T7 | verify/invariants（38 组套件） | T1–T6 |
+| T8 | test/run.mjs 跑通 38/38 | T7 |
 | T9 | bundle + showcase 单文件页 | T7 |
 | T10 | 文档 + GitHub 推送 + CI 绿 | T8,T9 |
 
