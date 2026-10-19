@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">38 组套件 · 227 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">42 组套件 · 252 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -317,6 +317,46 @@
     </div>
   </div>
 
+  <h2>v1.8 新增算法 <span class="tag">感知机 · 独立成分分析 · 典型相关 · 层次聚类 · 均由本页引擎实时求解</span></h2>
+  <div class="demos">
+    <div class="card">
+      <div class="demo-head">
+        <strong>感知机 Perceptron</strong>
+        <button id="btn-perc">重新生成</button>
+      </div>
+      <div class="desc">Rosenblatt 1958 · 误分驱动线性判别：可分数收敛、mistakes ≤ (R/γ)² · 决策边界</div>
+      <svg id="svg-perc" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-perc"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>独立成分分析 ICA / FastICA</strong>
+        <button id="btn-ica">重新混合</button>
+      </div>
+      <div class="desc">Hyvärinen &amp; Oja 2000 · 白化 + 非高斯性最大化：从混合信号分离独立源（|corr|>0.99）</div>
+      <svg id="svg-ica" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-ica"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>典型相关分析 CCA</strong>
+        <button id="btn-cca">重新生成</button>
+      </div>
+      <div class="desc">Hotelling 1936 · 找两组变量最大相关方向：典型变量 (U₁,V₁) 散点，r₁≥r₂≥…</div>
+      <svg id="svg-cca" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-cca"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>层次聚类 Hierarchical</strong>
+        <button id="btn-hc">重新聚类</button>
+      </div>
+      <div class="desc">Sokal &amp; Michener 1958 / Lance &amp; Williams 1967 · 凝聚树状图 + 切 3 簇（叶色=真值，ARI）</div>
+      <svg id="svg-hc" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-hc"></div>
+    </div>
+  </div>
+
   <div class="refs">
     站在巨人肩上：<code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
     <code>Bishop · PRML</code><code>Hastie et al. · ESL</code><code>Vaswani et al. 2017 · Attention Is All You Need</code>
@@ -339,6 +379,10 @@
     <code>Fisher 1936 · 线性判别分析</code><code>Rao 1948 · 判别函数</code>
     <code>Maron 1961 · 朴素贝叶斯</code><code>Domingos &amp; Pazzani 1997 · 最优偏见</code>
     <code>Breiman 2001 · Random Forest</code><code>Breiman et al. 1984 · CART</code>
+    <code>Rosenblatt 1958 · Perceptron</code><code>Novikoff 1962 · 收敛定理</code>
+    <code>Hyvärinen &amp; Oja 2000 · FastICA</code><code>Comon 1994 · ICA 可识别性</code>
+    <code>Hotelling 1936 · 典型相关</code><code>Sokal &amp; Michener 1958 · 层次聚类</code>
+    <code>Lance &amp; Williams 1967 · 凝聚递推</code>
   </div>
 
   <footer>
@@ -1569,6 +1613,670 @@ function rfSingleTree(X, y, opts = {}) {
   const maxDepth = opts.maxDepth != null ? opts.maxDepth : 10;
   const minSamples = opts.minSamples != null ? opts.minSamples : 2;
   return new DecisionTree({ maxDepth, minSamples }).fit(X, y);
+}
+
+/* ═══════════ src/ml/perceptron.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 感知机（Perceptron）
+ * 站在：Rosenblatt 1958《The Perceptron: A Probabilistic Model for Information
+ *       Storage and Organization in the Brain》(Psychological Review 70(6)) ·
+ *       Novikoff 1962《On Convergence Proofs on Perceptrons》（有限步收敛定理）之上。
+ *
+ * 模型：f(x) = sign(w·x + b)，标签 y ∈ {−1, +1}。Rosenblatt 误分点更新规则：
+ *   若 y_i·(w·x_i + b) ≤ 0（误分或压边界）⇒ w ← w + lr·y_i·x_i，b ← b + lr·y_i。
+ * 一个完整遍历（pass）零误分 ⇒ 收敛。Novikoff 定理给出硬保证：线性可分数据
+ * （几何间隔 γ > 0、最大样本范数 R）上，总误分次数 ≤ (R/γ)²——感知机是少数
+ * 携带严格收敛界证明的线性模型。不可分数据（如 XOR）不收敛：达到 maxPasses 后
+ * 有界停止，仅报告 mistakes，不抛异常。
+ * 训练按固定样本顺序、无内嵌随机性（shuffle 默认关闭）⇒ 逐位确定、可复现。
+ *
+ * 不变量：
+ *   ① 线性可分数据：收敛且 min_i y_i(w·x_i + b) > 0（训练误差 0）
+ *   ② 收敛后 sign(w·x + b) ≡ y（mismatch = 0）
+ *   ③ Novikoff 1962：mistakes ≤ (R/γ)²（由已知分隔面取 γ 的下界，上界仍合法）
+ *   ④ 单步更新确定性：perceptronStep ≡ 手算 w+lr·y·x / b+lr·y（误差 0）
+ *   ⑤ perceptronTrain(maxPasses=1) ≡ 用 perceptronStep 逐点模拟一整轮（误差 0）
+ *   ⑥ 不可分数据（XOR）：maxPasses 内有界停止、mistakes > 0、不抛异常
+ */
+
+
+
+
+/**
+ * 感知机单步更新（Rosenblatt 1958 规则）。
+ * @param {number[]} w 当前权重（不被修改）
+ * @param {number} b 当前偏置
+ * @param {number[]} x 触发更新的误分样本
+ * @param {number} y 样本标签，须为 +1 或 −1
+ * @param {number} [lr=1] 学习率
+ * @returns {{w:number[], b:number}} 更新后的 (w, b)（全新数组，入参零改动）
+ */
+function perceptronStep(w, b, x, y, lr = 1) {
+  if (y !== 1 && y !== -1) {
+    throw new Error(`perceptronStep: 标签必须为 +1/−1，收到 ${y}`);
+  }
+  const wNew = w.slice();
+  for (let j = 0; j < wNew.length; j++) wNew[j] += lr * y * x[j];
+  return { w: wNew, b: b + lr * y };
+}
+
+/**
+ * 感知机训练（按样本顺序逐个判定，收敛于首个零误分完整遍历）。
+ * @param {number[][]} X 样本矩阵 n×d（行主序）
+ * @param {number[]} y 标签数组，y_i ∈ {−1, +1}
+ * @param {{lr?:number, maxPasses?:number, seed?:number, shuffle?:boolean}} [opts]
+ *   lr       学习率（默认 1，Rosenblatt 原始取值）
+ *   maxPasses 最大遍历轮数（默认 100；不可分数据靠它有界停止）
+ *   seed     仅当 shuffle=true 时用于遍历顺序（默认 0）
+ *   shuffle  是否每轮遍历前打乱样本顺序（默认 false，保证逐点确定性）
+ * @returns {{w:number[], b:number, mistakes:number, updates:number, converged:boolean}}
+ *   w, b       学到的参数
+ *   mistakes   误分遭遇总次数（每次触发一次更新，即 Novikoff 定理中的 mistake 数）
+ *   updates    实际执行的完整遍历轮数
+ *   converged  是否存在一整轮零误分（可分数据上由 Novikoff 定理保证发生）
+ */
+function perceptronTrain(X, y, { lr = 1, maxPasses = 100, seed = 0, shuffle = false } = {}) {
+  const n = X.length;
+  if (n === 0) throw new Error('perceptronTrain: 输入样本为空');
+  const d = X[0].length;
+  if (y.length !== n) throw new Error('perceptronTrain: X 与 y 长度不一致');
+  let w = new Array(d).fill(0);
+  let b = 0;
+  let mistakes = 0;
+  let updates = 0;
+  let converged = false;
+  const rng = mulberry32(seed);
+  const order = Array.from({ length: n }, (_, i) => i);
+  for (let pass = 0; pass < maxPasses; pass++) {
+    if (shuffle) {
+      // Fisher–Yates 洗牌（仅改变遍历顺序，不影响收敛性与 Novikoff 计数语义）
+      for (let i = n - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        const t = order[i]; order[i] = order[j]; order[j] = t;
+      }
+    }
+    let passMistakes = 0;
+    for (const i of order) {
+      // 误分判据：y_i·(w·x_i + b) ≤ 0
+      if (y[i] * (dot(w, X[i]) + b) <= 0) {
+        const step = perceptronStep(w, b, X[i], y[i], lr);
+        w = step.w;
+        b = step.b;
+        mistakes++;
+        passMistakes++;
+      }
+    }
+    updates++;
+    if (passMistakes === 0) { converged = true; break; }
+  }
+  return { w, b, mistakes, updates, converged };
+}
+
+/**
+ * 感知机预测：sign(w·x + b)。约定 w·x + b = 0 时判 +1（边界归正类）。
+ * @param {number[][]} X 样本矩阵 n×d
+ * @param {number[]} w 权重
+ * @param {number} b 偏置
+ * @returns {number[]} 预测标签 ∈ {−1, +1}
+ */
+function perceptronPredict(X, w, b) {
+  return X.map((x) => (dot(w, x) + b >= 0 ? 1 : -1));
+}
+
+/* ═══════════ src/ml/ica.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 独立成分分析（FastICA，Hyvärinen & Oja 2000）
+ * 站在：Comon 1994《Independent Component Analysis, A New Concept?》（可识别性:
+ *       至多一个高斯源时盲源分离可辨识到置换与缩放）·
+ *       Hyvärinen & Oja 2000《Independent Component Analysis: Algorithms and
+ *       Applications》(Neural Networks 13(4-5))（FastICA 定点迭代）之上。
+ *
+ * 模型：观测 x = A·s（A 满秩混合矩阵，s 为相互独立的非高斯源），目标是恢复
+ * 「 unmixing 」矩阵 W 使 ŝ = W·x 逼近 s（Comon: 在置换、符号与缩放下可辨识）。
+ *
+ * 流程（经典两步法）：
+ *   ① 中心化 → ② 白化：协方差 C 特征分解 C = EΛEᵀ，白化矩阵 K = Λ^(−1/2)Eᵀ，
+ *      白化数据 Z = Xc·Kᵀ 满足 Cov(Z) = I（精确到特征分解精度）；
+ *   ③ FastICA 逐单位最大化非高斯性近似负熵 J(u) ≈ [E G(u) − E G(v)]²（v~N(0,1)），
+ *      取 G(u) = log cosh u（对称、稳健），g(u) = tanh u：
+ *        w⁺ ← E[z·g(wᵀz)] − E[g′(wᵀz)]·w，再 w⁺ ← (w⁺ − Σ_{j<p}(w⁺ᵀw_j)w_j)/‖·‖
+ *      （Gram–Schmidt deflation 去相关 + 单位化），收敛判据 |w⁺ᵀw| ≈ 1；
+ *   ④ unmixing：ŝ = (x − μ)·Kᵀ·Wᵀ。
+ *
+ * 不变量：
+ *   ① 白化数据协方差 ≡ I（maxAbs(Cov(Z) − I) < 1e-8）
+ *   ② W·Wᵀ ≡ I（deflation 保证各行单位范数且两两正交，误差 ≤ 1e-10）
+ *   ③ Comon 1994 源恢复：混合 A·s 后 ICA 恢复的每个源与某真实源 |corr| > 0.99
+ *   ④ 非高斯性增强：恢复源的平均 |超额峰度| > 原始混合信号（FastICA 的构造目标）
+ *   ⑤ 恢复源近似去相关：Cov(ŝ) ≈ I（非对角元 → 0）
+ *   ⑥ 确定性：同种子两次拟合的 W 逐位一致（算法无隐藏随机性）
+ */
+
+
+
+
+/** 中心化：返回中心化数据与列均值 */
+function icaCenter(X) {
+  const mu = mean(X);
+  const Xc = X.map((row) => row.map((v, j) => v - mu[j]));
+  return { Xc, mu };
+}
+
+/**
+ * 白化：对中心化数据协方差 C = EΛEᵀ 做特征分解，得 K = Λ^(−1/2)Eᵀ，
+ * 使 Z = Xc·Kᵀ 的协方差为单位阵。特征值按相对下限 reg·λ_max 兜底（防数值奇异，
+ * 对良态数据不触发、不影响任何精确恒等式）。
+ * @returns {{Z:number[][], K:number[][], eigenvalues:number[], eigenvectors:number[][]}}
+ */
+function icaWhiten(Xc, { reg = 1e-12 } = {}) {
+  const d = Xc[0].length;
+  const C = covarianceMatrix(Xc);
+  const { values, vectors } = jacobiEig(C); // 降序；vectors[k] 对应 values[k]
+  let lamMax = 0;
+  for (const l of values) if (l > lamMax) lamMax = l;
+  if (!(lamMax > 0)) throw new Error('icaWhiten: 协方差退化（数据零方差），无法白化');
+  const floor = reg * lamMax;
+  const K = zeros(d, d);
+  for (let k = 0; k < d; k++) {
+    const inv = 1 / Math.sqrt(Math.max(values[k], floor));
+    for (let i = 0; i < d; i++) K[k][i] = inv * vectors[k][i]; // K = Λ^(−1/2)·Eᵀ
+  }
+  const Z = matmul(Xc, transpose(K)); // Z = Xc·Kᵀ，Cov(Z) = I
+  return { Z, K, eigenvalues: values, eigenvectors: vectors };
+}
+
+/** Gram–Schmidt deflation：v 减去其在已确定各行 W[0..p−1] 上的投影 */
+function icaOrthogonalize(v, W, p) {
+  const out = v.slice();
+  for (let q = 0; q < p; q++) {
+    const proj = dot(out, W[q]);
+    for (let j = 0; j < out.length; j++) out[j] -= proj * W[q][j];
+  }
+  return out;
+}
+
+/** 确定性随机单位初始化：与已求分量正交；退化时退到标准基中最独立者 */
+function icaUnitInit(rng, d, W, p) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const w = new Array(d);
+    for (let j = 0; j < d; j++) w[j] = gaussianSample(rng, 0, 1);
+    const orth = icaOrthogonalize(w, W, p);
+    const nw = norm(orth);
+    if (nw > 1e-8) return orth.map((v) => v / nw);
+  }
+  let bestE = 0, bestNorm = -1;
+  for (let e = 0; e < d; e++) {
+    const w = new Array(d).fill(0);
+    w[e] = 1;
+    const nw = norm(icaOrthogonalize(w, W, p));
+    if (nw > bestNorm) { bestNorm = nw; bestE = e; }
+  }
+  const w = new Array(d).fill(0);
+  w[bestE] = 1;
+  const nw = norm(icaOrthogonalize(w, W, p)) || 1;
+  return icaOrthogonalize(w, W, p).map((v) => v / nw);
+}
+
+/**
+ * FastICA deflation 主循环（Hyvärinen & Oja 2000 算法 1/2 的白化空间版）。
+ * 每求出一个单位向量立即与已确定分量正交化，保证 W·Wᵀ = I。
+ * @returns {{W:number[][], steps:number, converged:boolean}}
+ */
+function icaDeflate(Z, { components = Z[0].length, maxIter = 200, tol = 1e-12, seed = 42 } = {}) {
+  const n = Z.length;
+  const d = Z[0].length;
+  const k = Math.min(components, d);
+  const rng = mulberry32(seed);
+  const W = zeros(k, d);
+  let steps = 0;
+  let converged = true;
+  for (let p = 0; p < k; p++) {
+    let w = icaUnitInit(rng, d, W, p);
+    let compConv = false;
+    for (let it = 0; it < maxIter && !compConv; it++) {
+      steps++;
+      // u_i = z_i·w；g(u) = tanh(u)；g′(u) = 1 − tanh²(u)
+      const u = matvec(Z, w);
+      let gPrimeMean = 0;
+      const acc = new Array(d).fill(0);
+      for (let i = 0; i < n; i++) {
+        const t = Math.tanh(u[i]);
+        gPrimeMean += 1 - t * t;
+        for (let j = 0; j < d; j++) acc[j] += Z[i][j] * t;
+      }
+      for (let j = 0; j < d; j++) acc[j] /= n;
+      gPrimeMean /= n;
+      // w⁺ = E[z·g(wᵀz)] − E[g′(wᵀz)]·w（定点方程）
+      const wRaw = new Array(d);
+      for (let j = 0; j < d; j++) wRaw[j] = acc[j] - gPrimeMean * w[j];
+      // deflation 去相关 + 单位化
+      const orth = icaOrthogonalize(wRaw, W, p);
+      const nw = norm(orth);
+      if (nw < 1e-300) { compConv = false; break; }
+      const wNew = orth.map((v) => v / nw);
+      // 收敛判据：两次迭代方向一致（含符号翻转）
+      compConv = Math.abs(1 - Math.abs(dot(wNew, w))) < tol;
+      w = wNew;
+    }
+    converged = converged && compConv;
+    for (let j = 0; j < d; j++) W[p][j] = w[j];
+  }
+  return { W, steps, converged };
+}
+
+/**
+ * FastICA 拟合。
+ * @param {number[][]} X 观测矩阵 n×d（行 = 样本，即混合信号）
+ * @param {{components?:number, maxIter?:number, tol?:number, seed?:number, reg?:number}} [opts]
+ *   components 要恢复的独立成分个数（默认 d）
+ *   maxIter    每个成分的最大定点迭代次数（默认 200）
+ *   tol        方向收敛阈值 |1 − |w⁺ᵀw||（默认 1e-12）
+ *   seed       初始化的 PRNG 种子（默认 42，决定性与可复现）
+ *   reg        白化特征值相对下限（默认 1e-12，仅防数值奇异）
+ * @returns {{W:number[][], K:number[][],
+ *            whitening:{mean:number[], eigenvalues:number[], eigenvectors:number[][]},
+ *            components:number, steps:number, converged:boolean}}
+ *   W         白化空间的 unmixing 矩阵（k×d，W·Wᵀ = I_k）
+ *   K         白化矩阵（d×d）；whitening 记录中心化均值与协方差谱（icaTransform 复用）
+ */
+function icaFit(X, opts = {}) {
+  const { components, maxIter = 200, tol = 1e-12, seed = 42, reg = 1e-12 } = opts;
+  if (X.length === 0) throw new Error('icaFit: 输入样本为空');
+  const d = X[0].length;
+  const { Xc, mu } = icaCenter(X);
+  const { Z, K, eigenvalues, eigenvectors } = icaWhiten(Xc, { reg });
+  const { W, steps, converged } = icaDeflate(Z, {
+    components: components || d, maxIter, tol, seed,
+  });
+  return {
+    W, K,
+    whitening: { mean: mu, eigenvalues, eigenvectors },
+    components: W.length,
+    steps,
+    converged,
+  };
+}
+
+/**
+ * 用拟合模型估计源信号：ŝ = (x − μ)·Kᵀ·Wᵀ（先白化、再 unmixing）。
+ * @param {number[][]} X 观测矩阵 n×d
+ * @param {{W:number[][], K:number[][], whitening:{mean:number[]}}} model icaFit 的产出
+ * @returns {number[][]} 估计源矩阵 n×k（行 = 样本；列顺序/符号与真实源可差置换与符号）
+ */
+function icaTransform(X, model) {
+  const { K, W, whitening } = model;
+  const mu = whitening.mean;
+  const Xc = X.map((row) => row.map((v, j) => v - mu[j]));
+  const Z = matmul(Xc, transpose(K)); // 白化
+  return matmul(Z, transpose(W));     // unmixing
+}
+
+/* ═══════════ src/ml/cca.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 典型相关分析（CCA，Hotelling 1936）
+ * 站在：Hotelling 1936《Relations Between Two Sets of Variates》
+ *       （Biometrika 28(3/4)，多元统计分析的原点之一）之上。
+ *
+ * 模型：给定两组变量 x∈ℝ^p、y∈ℝ^q，找线性组合 u = aᵀx、v = bᵀy 使
+ * corr(u, v) 最大。前 d = min(p, q) 个「典型对」(a_k, b_k) 依次最大化
+ * 与已得典型变量正交的约束下的相关系数 r_k（典型相关系数，降序）。
+ *
+ * 求解（eig 路线）：典型方向满足广义特征问题
+ *   (Σxy·Σyy⁻¹·Σyx)·a_k = ρ_k²·Σxx·a_k   （ρ_k² = 典型相关系数²）
+ * 因 Σxx⁻¹ΣxyΣyy⁻¹Σyx 是两个对称阵之积、本身非对称，实现将其归约为对称
+ * 半正定矩阵 H = Σxx^(−1/2)·(ΣxyΣyy⁻¹Σyx)·Σxx^(−1/2)（同一特征值，Jacobi
+ * 可解），再 a_k = Σxx^(−1/2)·u_k、b_k ∝ Σyy⁻¹Σyx·a_k，最后按
+ * a_kᵀΣxx a_k = 1、b_kᵀΣyy b_k = 1 归一化，使 Cov(U_k) = Cov(V_k) = 1、
+ * Cov(U_k, V_k) = r_k。协方差经特征值相对下限 reg·λ_max 兜底（仅防数值奇异）。
+ *
+ * 不变量：
+ *   ① 相关系数 r_k ∈ [0, 1] 且非增（r_1 ≥ r_2 ≥ …，Jacobi 输出按特征值降序）
+ *   ② 典型变量：Cov(U) = Cov(V) = I，Cov(U, V) = diag(r)（交叉协方差对角）
+ *   ③ 完美相关 ⇒ r_1 = 1：Y = X·M（M 满秩可逆）时全部 r_k ≡ 1（到 1e-6）
+ *   ④ 独立 X, Y ⇒ 各 r_k ≈ 0（< 1e-2；样本噪声尺度 ~ 1/√n）
+ *   ⑤ 交叉验证：白化 + 交叉协方差 SVD（独立实现的一条路线）与 ccaFit 一致（1e-8）
+ *   ⑥ 归一化约定：AᵀΣxxA = I、BᵀΣyyB = I（典型变量单位方差）
+ */
+
+
+
+
+/** 二次型 vᵀMv */
+function ccaQuad(M, v) {
+  let s = 0;
+  for (let i = 0; i < M.length; i++) {
+    let t = 0;
+    for (let j = 0; j < M[0].length; j++) t += M[i][j] * v[j];
+    s += v[i] * t;
+  }
+  return s;
+}
+
+/**
+ * 谱白化因子 W = Λ^(−1/2)·Eᵀ（对称矩阵 M = EΛEᵀ 的左白化因子）：
+ * 满足 W·M·Wᵀ = I。特征值按下限 max(λ, reg·λ_max) 截断——对良态矩阵是
+ * 恒等操作（reg 默认 1e-6，λ_min ≫ reg·λ_max 时不触发），对奇异协方差
+ * 仍给出数值稳定的白化。
+ * @returns {{half:number[][]}} half = W = Λ^(−1/2)·Eᵀ
+ */
+function ccaSpectrumHalf(values, vectors, reg) {
+  const d = values.length;
+  let lamMax = 0;
+  for (const l of values) if (l > lamMax) lamMax = l;
+  if (!(lamMax > 0)) throw new Error('ccaFit: 协方差退化（零方差数据）');
+  const floor = reg * lamMax;
+  const half = zeros(d, d);
+  for (let k = 0; k < d; k++) {
+    const c = 1 / Math.sqrt(Math.max(values[k], floor));
+    for (let i = 0; i < d; i++) half[k][i] = c * vectors[k][i]; // half = Λ^(−1/2)·Eᵀ
+  }
+  return { half };
+}
+
+/**
+ * 谱逆：对称矩阵 M = EΛEᵀ 的特征值按下限 max(λ, reg·λ_max) 截断后求逆。
+ */
+function ccaSpectrumInverse(values, vectors, reg) {
+  const d = values.length;
+  let lamMax = 0;
+  for (const l of values) if (l > lamMax) lamMax = l;
+  if (!(lamMax > 0)) throw new Error('ccaFit: 协方差退化（零方差数据）');
+  const floor = reg * lamMax;
+  const inv = zeros(d, d);
+  for (let k = 0; k < d; k++) {
+    const c = 1 / Math.max(values[k], floor);
+    for (let i = 0; i < d; i++) {
+      for (let j = 0; j < d; j++) inv[i][j] += c * vectors[k][i] * vectors[k][j];
+    }
+  }
+  return inv;
+}
+
+/**
+ * CCA 拟合（eig 路线：Σxx⁻¹ΣxyΣyy⁻¹Σyx 的特征对）。
+ * @param {number[][]} X 第一组变量 n×p
+ * @param {number[][]} Y 第二组变量 n×q
+ * @param {{reg?:number}} [opts] reg 协方差特征值相对下限（默认 1e-6，良态数据不触发）
+ * @returns {{A:number[][], B:number[][], correlations:number[],
+ *            xMeans:number[], yMeans:number[], reg:number, dimensions:{p:number,q:number,k:number}}}
+ *   A (p×k)、B (q×k)：典型方向（列）；correlations：典型相关系数降序
+ */
+function ccaFit(X, Y, { reg = 1e-6 } = {}) {
+  const n = X.length;
+  if (n === 0) throw new Error('ccaFit: 输入样本为空');
+  if (Y.length !== n) throw new Error('ccaFit: X 与 Y 样本数不一致');
+  const p = X[0].length, q = Y[0].length;
+  const xMeans = mean(X), yMeans = mean(Y);
+  const Xc = X.map((row) => row.map((v, j) => v - xMeans[j]));
+  const Yc = Y.map((row) => row.map((v, j) => v - yMeans[j]));
+  const Sxx = covarianceMatrix(X);
+  const Syy = covarianceMatrix(Y);
+  // 交叉协方差（全量累加、单次除 n−1，与引擎协方差铁律一致）
+  const Sxy = zeros(p, q);
+  for (let i = 0; i < p; i++) {
+    for (let j = 0; j < q; j++) {
+      let s = 0;
+      for (let t = 0; t < n; t++) s += Xc[t][i] * Yc[t][j];
+      Sxy[i][j] = s / (n - 1);
+    }
+  }
+  const Syx = transpose(Sxy);
+
+  const { values: lx, vectors: ex } = jacobiEig(Sxx);
+  const { values: ly, vectors: ey } = jacobiEig(Syy);
+  const Wx = ccaSpectrumHalf(lx, ex, reg).half;       // 白化因子：Wx·Σxx·Wxᵀ = I
+  const SyyInv = ccaSpectrumInverse(ly, ey, reg);    // Σyy⁻¹（特征值截断式）
+
+  // 对称约化：Σxx⁻¹ΣxyΣyy⁻¹Σyx 本身非对称（两个对称阵之积），但作白化代换
+  // a = Wxᵀ·u 后广义特征问题 (ΣxyΣyy⁻¹Σyx)·a = ρ²·Σxx·a 化为对称半正定问题
+  //   H·u = ρ²·u，  H = Wx·(ΣxyΣyy⁻¹Σyx)·Wxᵀ
+  // H 与「Σxx⁻¹ΣxyΣyy⁻¹Σyx 的特征对」特征值相同，且 a = Wxᵀ·u 天然满足
+  // a_iᵀΣxx a_j = δ_ij，归一化与对角化恒等式精确成立。
+  const P = matmul(matmul(Sxy, SyyInv), Syx);          // ΣxyΣyy⁻¹Σyx（p×p 对称半正定）
+  const H = matmul(matmul(Wx, P), transpose(Wx));      // Wx·P·Wxᵀ，对称半正定
+  const { values: mus, vectors: evecs } = jacobiEig(H); // 降序；特征值 = ρ²
+
+  const k = Math.min(p, q);
+  const A = zeros(p, k);
+  const B = zeros(q, k);
+  const correlations = [];
+  for (let idx = 0; idx < k; idx++) {
+    const rho2 = Math.max(0, mus[idx]);
+    const r = Math.min(1, Math.sqrt(rho2)); // 数值防冲：ρ² 可能为 1+ε
+    correlations.push(r);
+    // a_k = Wxᵀ·u_k（u 已单位化 ⇒ aᵀΣxx a = 1 精确成立）
+    const a = matvec(transpose(Wx), evecs[idx]);
+    // b_k ∝ Σyy⁻¹Σyx·a_k（Hotelling 标准关系 b = Σyy⁻¹Σyx a / ρ 的方向）
+    const bDir = matvec(SyyInv, matvec(Syx, a));
+    const nb = Math.sqrt(ccaQuad(Syy, bDir));
+    for (let j = 0; j < p; j++) A[j][idx] = a[j];
+    if (nb > 1e-300) {
+      for (let j = 0; j < q; j++) B[j][idx] = bDir[j] / nb;
+    } else {
+      // 病态兜底：r_k ≈ 0 时 b 方向无意义，取确定性基向量（不影响 r_k）
+      B[0][idx] = 1;
+    }
+  }
+  return {
+    A, B, correlations, xMeans, yMeans, reg,
+    dimensions: { p, q, k },
+  };
+}
+
+/**
+ * CCA 投影：按训练均值中心化后 U = (X − xMeans)·A、V = (Y − yMeans)·B。
+ * @param {number[][]} X n×p
+ * @param {number[][]} Y n×q
+ * @param {{A:number[][], B:number[][], xMeans:number[], yMeans:number[]}} model ccaFit 的产出
+ * @returns {{U:number[][], V:number[][]}} 典型变量矩阵（n×k，列 = 各阶典型变量）
+ */
+function ccaProject(X, Y, model) {
+  const { A, B, xMeans, yMeans } = model;
+  const kA = A[0].length, kB = B[0].length;
+  const U = X.map((row) => {
+    const xc = row.map((v, j) => v - xMeans[j]);
+    const out = new Array(kA).fill(0);
+    for (let c = 0; c < kA; c++) {
+      let s = 0;
+      for (let j = 0; j < xc.length; j++) s += xc[j] * A[j][c];
+      out[c] = s;
+    }
+    return out;
+  });
+  const V = Y.map((row) => {
+    const yc = row.map((v, j) => v - yMeans[j]);
+    const out = new Array(kB).fill(0);
+    for (let c = 0; c < kB; c++) {
+      let s = 0;
+      for (let j = 0; j < yc.length; j++) s += yc[j] * B[j][c];
+      out[c] = s;
+    }
+    return out;
+  });
+  return { U, V };
+}
+
+/* ═══════════ src/ml/hierarchical.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 凝聚式层次聚类（Sokal & Michener 1958 · Lance & Williams 1967）
+ * 站在：Sokal & Michener 1958《A Statistical Method for Evaluating Systematic
+ *       Relationships》（数值分类学，UPMGA 的思想源头）·
+ *       Lance & Williams 1967《A General Theory of Classificatory Sorting
+ *       Strategies》（簇间距递推的通式）之上。
+ *
+ * 算法：自底向上聚合——初始每点一簇，每轮合并「当前簇间距最小」的一对，
+ * 共 n−1 次合并后归为一族。合并距离用 Lance–Williams 递推统一表达：
+ *   d(A∪B, C) = α_A·d(A,C) + α_B·d(B,C) + β·d(A,B) + γ·|d(A,C) − d(B,C)|
+ * 三种 linkage 的参数：
+ *   single  （最近邻）  α_A=α_B=1/2, β=0, γ=−1/2
+ *   complete（最远邻）  α_A=α_B=1/2, β=0, γ=+1/2
+ *   average （类平均）  α_A=|A|/(|A|+|B|), α_B=|B|/(|A|+|B|), β=0, γ=0
+ * 平手时取字典序最小的簇对 ⇒ 算法完全确定（同输入必得同一合并树）。
+ *
+ * 不变量：
+ *   ① 合并距离单调非降（single/complete/average 均为可约 linkage ⇒ ultrametric）
+ *   ② n 个样本 ⇒ 恰 n−1 次合并，最终归为 1 个簇
+ *   ③ 强分离 3 高斯团：clusters(3) 与真实标签 ARI = 1
+ *   ④ Lance–Williams 一致性：4 点共线算例的合并距离 ≡ 闭式（single/complete/average）
+ *   ⑤ 递推 ≡ 定义：blob 数据上每次合并距离与成员集闭式（min/max/加权均值）一致
+ *   ⑥ 确定性：相同输入两次运行为逐位一致的合并树
+ *   ⑦ cophenetic：结构良好数据上 cophenetic 相关系数 ≥ 0.9
+ */
+
+
+
+/** 支持的 linkage 及其名称表（确定性错误提示用） */
+const HC_SUPPORTED_LINKAGES = ['single', 'complete', 'average'];
+
+/**
+ * Lance–Williams 递推：两簇 A、B 合并后与第三簇 C 的距离。
+ * 公式 d(A∪B,C) = α_A·d(A,C) + α_B·d(B,C) + β·d(A,B) + γ·|d(A,C) − d(B,C)|
+ * 中 β·d(A,B) 项在 single/complete/average 三种 linkage 下恒为 0，
+ * 故实现不收 d(A,B) 参数（等价于 β = 0 的代入）。
+ * @param {number} dAC d(A, C)
+ * @param {number} dBC d(B, C)
+ * @param {number} sizeA 簇 A 的样本数
+ * @param {number} sizeB 簇 B 的样本数
+ * @param {string} linkage 'single' | 'complete' | 'average'
+ * @returns {number} d(A∪B, C)
+ */
+function hcLanceWilliams(dAC, dBC, sizeA, sizeB, linkage) {
+  if (linkage === 'single') return 0.5 * dAC + 0.5 * dBC - 0.5 * Math.abs(dAC - dBC);
+  if (linkage === 'complete') return 0.5 * dAC + 0.5 * dBC + 0.5 * Math.abs(dAC - dBC);
+  if (linkage === 'average') {
+    const total = sizeA + sizeB;
+    return (sizeA * dAC + sizeB * dBC) / total;
+  }
+  throw new Error(`hcLanceWilliams: 不支持的 linkage "${linkage}"`);
+}
+
+/**
+ * 凝聚式层次聚类（O(n³) 朴素 Lance–Williams 递推，确定性平手打破）。
+ * @param {number[][]} X 样本矩阵 n×d
+ * @param {{linkage?:'single'|'complete'|'average'}} [opts]
+ * @returns {{linkage:string, n:number, merges:{a:number,b:number,distance:number,size:number}[],
+ *            distances:number[], labels:(k:number)=>number[], clusters:(k:number)=>number[][]}}
+ *   merges    合并序列（a、b 为参与合并的簇 id：< n 为原始点，n+step 为第 step 次合并的新簇）
+ *   distances 合并高度序列（长度 n−1，非降）
+ *   labels(k)  割成 k 簇时的逐点标签（编号按簇内最小点排序，确定性）
+ *   clusters(k) 割成 k 簇时的成员分组（每组为升序原始点索引）
+ */
+function hierarchicalCluster(X, { linkage = 'average' } = {}) {
+  if (!HC_SUPPORTED_LINKAGES.includes(linkage)) {
+    throw new Error(`hierarchicalCluster: 不支持的 linkage "${linkage}"（可选 ${HC_SUPPORTED_LINKAGES.join('/')}）`);
+  }
+  const n = X.length;
+  if (n === 0) throw new Error('hierarchicalCluster: 输入样本为空');
+  const d = X[0].length;
+  const size = 2 * n - 1;
+
+  // 簇间距矩阵 D：行/列索引 = 簇 id（< n 单点，≥ n 为历次合并产物）
+  const D = zeros(size, size);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let s = 0;
+      for (let k = 0; k < d; k++) {
+        const diff = X[i][k] - X[j][k];
+        s += diff * diff;
+      }
+      D[i][j] = Math.sqrt(s);
+      D[j][i] = D[i][j];
+    }
+  }
+
+  const members = Array.from({ length: size }, (_, id) => (id < n ? [id] : null));
+  const repOf = Array.from({ length: size }, (_, id) => (id < n ? id : -1));
+  let active = Array.from({ length: n }, (_, i) => i); // 保持升序 ⇒ 平手取字典序最小对
+  const merges = [];
+  const distances = [];
+
+  for (let step = 0; step < n - 1; step++) {
+    // 最小间距簇对（严格小于 ⇒ 保留先扫到的字典序最小对）
+    let bi = -1, bj = -1, best = Infinity;
+    for (let ii = 0; ii < active.length; ii++) {
+      for (let jj = ii + 1; jj < active.length; jj++) {
+        const i = active[ii], j = active[jj];
+        if (D[i][j] < best) { best = D[i][j]; bi = i; bj = j; }
+      }
+    }
+    if (bi < 0) throw new Error('hierarchicalCluster: 找不到可合并的簇对');
+    const sizeA = members[bi].length, sizeB = members[bj].length;
+    const newId = n + step;
+    merges.push({ a: bi, b: bj, distance: best, size: sizeA + sizeB });
+    distances.push(best);
+    // Lance–Williams 更新新簇与其余各簇的间距
+    for (const k of active) {
+      if (k === bi || k === bj) continue;
+      const dNew = hcLanceWilliams(D[bi][k], D[bj][k], sizeA, sizeB, linkage);
+      D[newId][k] = dNew;
+      D[k][newId] = dNew;
+    }
+    members[newId] = members[bi].concat(members[bj]).sort((a, b) => a - b);
+    repOf[newId] = members[newId][0];
+    active = active.filter((id) => id !== bi && id !== bj);
+    active.push(newId); // newId 恒大于现存 id，序列仍升序
+  }
+
+  /** 割成 k 簇：施加前 n−k 次合并（并查集），返回按最小成员排序的成员分组 */
+  const cutAt = (k) => {
+    if (!Number.isInteger(k) || k < 1 || k > n) {
+      throw new Error(`hierarchicalCluster: k 必须为 [1, ${n}] 的整数，收到 ${k}`);
+    }
+    const uf = Array.from({ length: n }, (_, i) => i);
+    const find = (x) => {
+      while (uf[x] !== x) { uf[x] = uf[uf[x]]; x = uf[x]; }
+      return x;
+    };
+    for (let m = 0; m < n - k; m++) {
+      const ra = find(repOf[merges[m].a]);
+      const rb = find(repOf[merges[m].b]);
+      if (ra !== rb) uf[ra] = rb;
+    }
+    const groups = new Map();
+    for (let i = 0; i < n; i++) {
+      const r = find(i);
+      if (!groups.has(r)) groups.set(r, []);
+      groups.get(r).push(i);
+    }
+    return [...groups.values()].sort((g1, g2) => g1[0] - g2[0]);
+  };
+
+  return {
+    linkage, n, merges, distances,
+    labels: (k) => {
+      const groups = cutAt(k);
+      const labels = new Array(n).fill(0);
+      groups.forEach((g, ci) => {
+        for (const i of g) labels[i] = ci;
+      });
+      return labels;
+    },
+    clusters: (k) => cutAt(k),
+  };
+}
+
+/**
+ * Cophenetic 距离矩阵：d_c(i,j) = i 与 j 首次被合并进同一簇时的合并高度。
+ * @param {{a:number,b:number,distance:number}[]} merges hierarchicalCluster 的合并序列
+ * @param {number} n 原始样本数
+ * @returns {number[][]} n×n 对称矩阵（对角为 0）
+ */
+function hierarchicalCophenetic(merges, n) {
+  const members = Array.from({ length: 2 * n - 1 }, (_, id) => (id < n ? [id] : null));
+  const C = zeros(n, n);
+  merges.forEach((m, step) => {
+    const newId = n + step;
+    const left = members[m.a];
+    const right = members[m.b];
+    members[newId] = left.concat(right).sort((a, b) => a - b);
+    for (const i of left) {
+      for (const j of right) {
+        C[i][j] = m.distance;
+        C[j][i] = m.distance;
+      }
+    }
+  });
+  return C;
 }
 
 /* ═══════════ src/ml/svm.js ═══════════ */
@@ -6596,8 +7304,12 @@ function bellmanResidualQ(P, R, gamma, Q) {
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 38 组套件全绿 = 引擎数学正确性的机器证明。
+ * 42 组套件全绿 = 引擎数学正确性的机器证明。
  */
+
+
+
+
 
 
 
@@ -6722,6 +7434,10 @@ function runAllInvariants() {
     ['线性判别分析 · LDA/Fisher', suiteLDA],
     ['高斯朴素贝叶斯 · Naive Bayes', suiteNaiveBayes],
     ['随机森林 · Random Forest', suiteRandomForest],
+    ['感知机 · Perceptron (Rosenblatt 1958)', suitePerceptron],
+    ['独立成分分析 · FastICA (Hyvärinen & Oja 2000)', suiteICA],
+    ['典型相关分析 · CCA (Hotelling 1936)', suiteCCA],
+    ['层次聚类 · Hierarchical (Lance & Williams 1967)', suiteHierarchical],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -8927,9 +9643,445 @@ function suiteRandomForest(check) {
   });
 }
 
+/* ============================================================
+ * 套件 39 · 感知机（Rosenblatt 1958 / Novikoff 1962）
+ * 定理背书：Novikoff 1962 — 线性可分数据（几何间隔 γ > 0、最大样本范数 R）
+ * 上感知机误分次数 ≤ (R/γ)²。本套件以已知分隔面 w*=(1,0) 取 γ 的下界，
+ * 故 (R/γ_true)² ≤ (R/γ_lb)² 仍是合法上界。
+ * ============================================================ */
+function suitePerceptron(check) {
+  const run = (label, fn) => {
+    try { fn((ok, info) => check(label, ok, info)); }
+    catch (e) { check(label, false, '执行异常: ' + (e && e.message)); }
+  };
+
+  // 线性可分数据：+1 类 x_1 ≥ 1、−1 类 x_1 ≤ −1 ⇒ w*=(1,0)、b*=0 为已知分隔面
+  const rngP = mulberry32(2024);
+  const nPer = 40, sig = 0.5;
+  const Xp = [], yp = [];
+  for (let i = 0; i < nPer; i++) {
+    const u = Math.abs(gaussianSample(rngP, 0, sig)), v = gaussianSample(rngP, 0, sig);
+    Xp.push([1 + u, v]); yp.push(1);
+    Xp.push([-1 - u, v]); yp.push(-1);
+  }
+  const modelP = perceptronTrain(Xp, yp, { lr: 1, maxPasses: 100 });
+
+  run('感知机：线性可分数据收敛且 min_i y_i(w·x_i+b) > 0（0 训练误差）', (c) => {
+    let minM = Infinity;
+    for (let i = 0; i < Xp.length; i++) minM = Math.min(minM, yp[i] * (dot(modelP.w, Xp[i]) + modelP.b));
+    c(modelP.converged && minM > 0,
+      `converged=${modelP.converged}，minMargin=${minM.toFixed(6)}，passes=${modelP.updates}`);
+  });
+
+  run('感知机：收敛后 sign(w·x+b) ≡ y（mismatch=0）', (c) => {
+    const pred = perceptronPredict(Xp, modelP.w, modelP.b);
+    let mismatch = 0;
+    for (let i = 0; i < Xp.length; i++) if (pred[i] !== yp[i]) mismatch++;
+    c(mismatch === 0, `mismatch=${mismatch}/${Xp.length}`);
+  });
+
+  run('感知机：Novikoff 定理 mistakes ≤ (R/γ)²（可分数据有限步收敛界）', (c) => {
+    let R = 0;
+    for (const x of Xp) R = Math.max(R, norm(x));
+    let gamma = Infinity; // 已知分隔面 w*=(1,0) 的几何间隔下界（真实 γ ≥ gamma）
+    for (let i = 0; i < Xp.length; i++) gamma = Math.min(gamma, Math.abs(Xp[i][0]));
+    const bound = (R / gamma) ** 2;
+    c(modelP.mistakes <= bound,
+      `mistakes=${modelP.mistakes} ≤ (R/γ)²=${bound.toFixed(3)}（R=${R.toFixed(3)}，γ≥${gamma.toFixed(3)}）`);
+  });
+
+  run('感知机：单步更新确定性 — perceptronStep ≡ 手算 w+lr·y·x / b+lr·y（误差 0）', (c) => {
+    const x0 = Xp[0], y0 = yp[0];
+    const st = perceptronStep([0, 0], 0, x0, y0, 1);
+    const err = Math.max(Math.abs(st.w[0] - y0 * x0[0]), Math.abs(st.w[1] - y0 * x0[1]), Math.abs(st.b - y0));
+    c(err === 0, `w=[${st.w[0]},${st.w[1]}]，b=${st.b}，误差=${err}`);
+  });
+
+  run('感知机：train(maxPasses=1) ≡ 用 perceptronStep 逐点模拟一整轮（误差 0）', (c) => {
+    let w = [0, 0], b = 0, nUp = 0;
+    for (let i = 0; i < Xp.length; i++) {
+      if (yp[i] * (dot(w, Xp[i]) + b) <= 0) {
+        const s = perceptronStep(w, b, Xp[i], yp[i], 1);
+        w = s.w; b = s.b; nUp++;
+      }
+    }
+    const m1 = perceptronTrain(Xp, yp, { maxPasses: 1 });
+    let errW = 0;
+    for (let j = 0; j < w.length; j++) errW = Math.max(errW, Math.abs(w[j] - m1.w[j]));
+    const errB = Math.abs(b - m1.b);
+    c(nUp > 0 && errW === 0 && errB === 0 && m1.updates === 1,
+      `一轮误分=${nUp}，w/b 最大误差=${Math.max(errW, errB)}，updates=${m1.updates}`);
+  });
+
+  run('感知机：不可分数据（XOR）在 maxPasses 内有界停止（仅报告，非硬失败）', (c) => {
+    const Xxor = [[0, 0], [0, 1], [1, 0], [1, 1]], yxor = [-1, 1, 1, -1];
+    const mX = perceptronTrain(Xxor, yxor, { maxPasses: 50 });
+    c(!mX.converged && mX.mistakes > 0 && mX.updates === 50 && Number.isFinite(mX.mistakes),
+      `mistakes=${mX.mistakes}，passes=${mX.updates}，converged=${mX.converged}（有界停止）`);
+  });
+}
+
+/* ============================================================
+ * 套件 40 · 独立成分分析（FastICA，Hyvärinen & Oja 2000 / Comon 1994）
+ * 定理背书：Comon 1994 — 至多一个高斯源时 ICA 可辨识到置换与缩放；
+ * 白化保证 Cov(Z)=I；deflation 正交化保证 W·Wᵀ=I。
+ * ============================================================ */
+function suiteICA(check) {
+  const run = (label, fn) => {
+    try { fn((ok, info) => check(label, ok, info)); }
+    catch (e) { check(label, false, '执行异常: ' + (e && e.message)); }
+  };
+
+  // 5 个相互独立的非高斯源（logistic / χ²(1) / 指数，各自独立 RNG 流）
+  const nI = 8000, dI = 5;
+  const kinds = [0, 1, 2, 0, 1];
+  const rngs = kinds.map((_, j) => mulberry32(1000 + 17 * j));
+  const mkSrc = (rng, kind) => {
+    if (kind === 0) { const u = rng(); return Math.log(u / (1 - u)); } // 标准 logistic（超额峰度 +1.2）
+    if (kind === 1) { const g = gaussianSample(rng); return g * g; }   // χ²(1)（+12）
+    return -Math.log(rng() || 1e-12);                                   // 指数(1)（+6）
+  };
+  const S = [];
+  for (let i = 0; i < nI; i++) {
+    const row = [];
+    for (let j = 0; j < dI; j++) row.push(mkSrc(rngs[j], kinds[j]));
+    S.push(row);
+  }
+  // 随机满秩混合矩阵 A ⇒ 观测 X = S·Aᵀ（Comon 可识别性前提）
+  const A = randomMatrix(dI, dI, mulberry32(777), -1, 1);
+  const X = matmul(S, transpose(A));
+  const model = icaFit(X, { components: dI, maxIter: 300, tol: 1e-12, seed: 42 });
+  const Shat = icaTransform(X, model);
+
+  // 局部工具：Pearson 相关系数与超额峰度
+  const pearson = (a, b) => {
+    let ma = 0, mb = 0;
+    for (let i = 0; i < a.length; i++) { ma += a[i]; mb += b[i]; }
+    ma /= a.length; mb /= b.length;
+    let sab = 0, saa = 0, sbb = 0;
+    for (let i = 0; i < a.length; i++) {
+      const da = a[i] - ma, db = b[i] - mb;
+      sab += da * db; saa += da * da; sbb += db * db;
+    }
+    return sab / (Math.sqrt(saa * sbb) + 1e-300);
+  };
+  const excessKurt = (a) => {
+    let m = 0;
+    for (const v of a) m += v;
+    m /= a.length;
+    let m2 = 0, m4 = 0;
+    for (const v of a) { const dv = v - m; m2 += dv * dv; m4 += dv * dv * dv * dv; }
+    m2 /= a.length; m4 /= a.length;
+    return m4 / (m2 * m2) - 3;
+  };
+
+  run('ICA：白化后数据协方差 ≡ I（maxAbs(Cov(Z)−I) < 1e-8）', (c) => {
+    const mu = model.whitening.mean;
+    const Xc = X.map((r) => r.map((v, j) => v - mu[j]));
+    const Z = matmul(Xc, transpose(model.K));
+    const CZ = covarianceMatrix(Z);
+    let err = 0;
+    for (let i = 0; i < dI; i++) for (let j = 0; j < dI; j++) {
+      err = Math.max(err, Math.abs(CZ[i][j] - (i === j ? 1 : 0)));
+    }
+    c(err < 1e-8, `maxAbs(Cov(Z)−I)=${err.toExponential(2)}`);
+  });
+
+  run('ICA：unmixing 矩阵 W·Wᵀ ≡ I（deflation 去相关，< 1e-10）', (c) => {
+    const WWt = matmul(model.W, transpose(model.W));
+    let err = 0;
+    for (let i = 0; i < dI; i++) for (let j = 0; j < dI; j++) {
+      err = Math.max(err, Math.abs(WWt[i][j] - (i === j ? 1 : 0)));
+    }
+    c(err < 1e-10, `maxAbs(W·Wᵀ−I)=${err.toExponential(2)}`);
+  });
+
+  run('ICA：源恢复（Comon 1994）— 每个恢复源与某真实源 |corr| > 0.99', (c) => {
+    let minBest = Infinity;
+    for (let p = 0; p < dI; p++) {
+      const col = Shat.map((r) => r[p]);
+      let best = 0;
+      for (let j = 0; j < dI; j++) best = Math.max(best, Math.abs(pearson(col, S.map((r) => r[j]))));
+      minBest = Math.min(minBest, best);
+    }
+    c(minBest > 0.99, `min_j |corr(ŝ_p, s_j)|=${minBest.toFixed(6)}（允许置换/符号）`);
+  });
+
+  run('ICA：非高斯性增强 — 恢复源 mean|超额峰度| > 原始混合信号', (c) => {
+    let rec = 0, mix = 0;
+    for (let j = 0; j < dI; j++) {
+      rec += Math.abs(excessKurt(Shat.map((r) => r[j])));
+      mix += Math.abs(excessKurt(X.map((r) => r[j])));
+    }
+    c(rec > mix, `恢复 mean|excess|=${(rec / dI).toFixed(3)} > 混合 ${(mix / dI).toFixed(3)}（FastICA 增大非高斯性）`);
+  });
+
+  run('ICA：恢复源近似去相关 — Cov(ŝ) ≈ I（< 1e-8）', (c) => {
+    const CS = covarianceMatrix(Shat);
+    let err = 0;
+    for (let i = 0; i < dI; i++) for (let j = 0; j < dI; j++) {
+      err = Math.max(err, Math.abs(CS[i][j] - (i === j ? 1 : 0)));
+    }
+    c(err < 1e-8, `maxAbs(Cov(ŝ)−I)=${err.toExponential(2)}`);
+  });
+
+  run('ICA：确定性 — 同种子两次拟合 W 逐位一致', (c) => {
+    const m2 = icaFit(X, { components: dI, maxIter: 300, tol: 1e-12, seed: 42 });
+    let err = 0;
+    for (let i = 0; i < dI; i++) for (let j = 0; j < dI; j++) {
+      err = Math.max(err, Math.abs(model.W[i][j] - m2.W[i][j]));
+    }
+    c(err === 0, `maxDiff(W, W′)=${err}`);
+  });
+}
+
+/* ============================================================
+ * 套件 41 · 典型相关分析（CCA，Hotelling 1936）
+ * 定理背书：Hotelling 1936 — 典型对逐阶最大化相关系数；
+ * Y = X·M（M 满秩可逆）时全部 r_k ≡ 1；独立数据 r_k → 0（速率 ~1/√n）。
+ * 交叉验证：「白化 + 交叉协方差 SVD」与 eig 路线相互独立。
+ * ============================================================ */
+function suiteCCA(check) {
+  const run = (label, fn) => {
+    try { fn((ok, info) => check(label, ok, info)); }
+    catch (e) { check(label, false, '执行异常: ' + (e && e.message)); }
+  };
+
+  // 相关非完美数据：X、Y 共享二维隐因子 z，各加 0.5 噪声
+  const nC = 400;
+  const rngC = mulberry32(4242);
+  const X = [], Y = [];
+  for (let i = 0; i < nC; i++) {
+    const z1 = gaussianSample(rngC), z2 = gaussianSample(rngC);
+    X.push([z1 + gaussianSample(rngC, 0, 0.5), z2 + gaussianSample(rngC, 0, 0.5)]);
+    Y.push([z1 + gaussianSample(rngC, 0, 0.5), z2 + gaussianSample(rngC, 0, 0.5)]);
+  }
+  const model = ccaFit(X, Y, { reg: 1e-6 });
+  const { U, V } = ccaProject(X, Y, model);
+  const Sxx = covarianceMatrix(X);
+  const Syy = covarianceMatrix(Y);
+  const kC = model.correlations.length;
+
+  run('CCA：相关系数 r_k ∈ [0,1] 且非增（r_1 ≥ r_2 ≥ …）', (c) => {
+    const rs = model.correlations;
+    let inRange = true, mono = true;
+    for (const r of rs) if (!(r >= 0 && r <= 1)) inRange = false;
+    for (let k = 1; k < rs.length; k++) if (rs[k] > rs[k - 1] + 1e-12) mono = false;
+    c(inRange && mono, `r=[${rs.map((r) => r.toFixed(6)).join(', ')}]`);
+  });
+
+  run('CCA：典型变量 Cov(U)=Cov(V)=I 且 Cov(U,V)=diag(r)（交叉协方差对角）', (c) => {
+    const CU = covarianceMatrix(U), CV = covarianceMatrix(V);
+    let cuErr = 0, cvErr = 0;
+    for (let i = 0; i < CU.length; i++) for (let j = 0; j < CU.length; j++) {
+      cuErr = Math.max(cuErr, Math.abs(CU[i][j] - (i === j ? 1 : 0)));
+      cvErr = Math.max(cvErr, Math.abs(CV[i][j] - (i === j ? 1 : 0)));
+    }
+    // 交叉协方差（全量累加、单次除 n−1）
+    const muU = colMean(U), muV = colMean(V);
+    let offErr = 0, diagErr = 0;
+    for (let i = 0; i < kC; i++) {
+      for (let j = 0; j < kC; j++) {
+        let s = 0;
+        for (let t = 0; t < U.length; t++) s += (U[t][i] - muU[i]) * (V[t][j] - muV[j]);
+        const cc = s / (U.length - 1);
+        if (i === j) diagErr = Math.max(diagErr, Math.abs(cc - model.correlations[i]));
+        else offErr = Math.max(offErr, Math.abs(cc));
+      }
+    }
+    c(cuErr < 1e-8 && cvErr < 1e-8 && offErr < 1e-8 && diagErr < 1e-8,
+      `Cov(U)−I=${cuErr.toExponential(2)}，Cov(V)−I=${cvErr.toExponential(2)}，非对角=${offErr.toExponential(2)}，对角−r=${diagErr.toExponential(2)}`);
+  });
+
+  run('CCA：归一化约定 AᵀΣxxA = I、BᵀΣyyB = I', (c) => {
+    const AxA = matmul(matmul(transpose(model.A), Sxx), model.A);
+    const ByB = matmul(matmul(transpose(model.B), Syy), model.B);
+    let err = 0;
+    for (let i = 0; i < AxA.length; i++) {
+      for (let j = 0; j < AxA.length; j++) {
+        err = Math.max(err, Math.abs(AxA[i][j] - (i === j ? 1 : 0)), Math.abs(ByB[i][j] - (i === j ? 1 : 0)));
+      }
+    }
+    c(err < 1e-10, `maxAbs(归一化偏差)=${err.toExponential(2)}`);
+  });
+
+  run('CCA：完美相关 ⇒ r ≡ 1 — Y = X·M（M 满秩可逆）', (c) => {
+    const rngM = mulberry32(888);
+    const Xp = Array.from({ length: 300 }, () => [gaussianSample(rngM), gaussianSample(rngM), gaussianSample(rngM)]);
+    const Mp = randomMatrix(3, 3, mulberry32(999), -1, 1);
+    const Yp = matmul(Xp, Mp);
+    const mP = ccaFit(Xp, Yp, { reg: 1e-6 });
+    let err = 0;
+    for (const r of mP.correlations) err = Math.max(err, Math.abs(1 - r));
+    c(err < 1e-6, `max|1−r_k|=${err.toExponential(2)}，r=[${mP.correlations.map((r) => r.toFixed(10)).join(', ')}]`);
+  });
+
+  run('CCA：独立 X,Y ⇒ 各 r_k ≈ 0（< 1e-2；n=400000 压低 1/√n 样本噪声）', (c) => {
+    const nI = 400000;
+    const rngX = mulberry32(31), rngY = mulberry32(32);
+    const Xi = Array.from({ length: nI }, () => [gaussianSample(rngX), gaussianSample(rngX), gaussianSample(rngX)]);
+    const Yi = Array.from({ length: nI }, () => [gaussianSample(rngY), gaussianSample(rngY), gaussianSample(rngY)]);
+    const mI = ccaFit(Xi, Yi, { reg: 1e-6 });
+    let rmax = 0;
+    for (const r of mI.correlations) rmax = Math.max(rmax, r);
+    c(rmax < 1e-2, `max r_k=${rmax.toExponential(2)}（理论 ρ=0，样本噪声 ~2√(p/n)）`);
+  });
+
+  run('CCA：交叉验证 — 白化+交叉协方差 SVD 与 ccaFit 相关系数一致（1e-8）', (c) => {
+    // 第二条独立路线：Σxx、Σyy 各自白化 ⇒ 对 Σxy 做 SVD，奇异值即典型相关系数
+    const n = X.length, p = Sxx.length, q = Syy.length;
+    const xMu = colMean(X), yMu = colMean(Y);
+    const Xc2 = X.map((r) => r.map((v, j) => v - xMu[j]));
+    const Yc2 = Y.map((r) => r.map((v, j) => v - yMu[j]));
+    const Sxy = zeros(p, q);
+    for (let i = 0; i < p; i++) {
+      for (let j = 0; j < q; j++) {
+        let s = 0;
+        for (let t = 0; t < n; t++) s += Xc2[t][i] * Yc2[t][j];
+        Sxy[i][j] = s / (n - 1);
+      }
+    }
+    const wm = (values, vectors) => {
+      const dd = values.length;
+      const M = zeros(dd, dd);
+      let lamMax = 0;
+      for (const l of values) if (l > lamMax) lamMax = l;
+      for (let k = 0; k < dd; k++) {
+        const cc = 1 / Math.sqrt(Math.max(values[k], 1e-12 * lamMax));
+        for (let i = 0; i < dd; i++) M[k][i] = cc * vectors[k][i];
+      }
+      return M;
+    };
+    const { values: lx, vectors: ex } = jacobiEig(Sxx);
+    const { values: ly, vectors: ey } = jacobiEig(Syy);
+    const Cw = matmul(matmul(wm(lx, ex), Sxy), transpose(wm(ly, ey)));
+    const s = (Cw.length >= Cw[0].length) ? svd(Cw).s : svd(transpose(Cw)).s;
+    let err = 0;
+    for (let k = 0; k < kC; k++) err = Math.max(err, Math.abs(s[k] - model.correlations[k]));
+    c(err < 1e-8, `max|s_k − r_k|=${err.toExponential(2)}`);
+  });
+}
+
+/* ============================================================
+ * 套件 42 · 凝聚式层次聚类（Sokal & Michener 1958 / Lance & Williams 1967）
+ * 定理背书：single/complete/average 均为可约 linkage ⇒ 合并高度单调非降
+ * （凝聚 ultrametric）；Lance–Williams 递推 ≡ 成员集闭式定义。
+ * ============================================================ */
+function suiteHierarchical(check) {
+  const run = (label, fn) => {
+    try { fn((ok, info) => check(label, ok, info)); }
+    catch (e) { check(label, false, '执行异常: ' + (e && e.message)); }
+  };
+
+  // 强分离 3 高斯团（中心间距 ≫ 方差，average linkage 可精确切分）
+  const rngH = mulberry32(909);
+  const centers = [[0, 0], [12, 0], [6, 10]];
+  const Xh = [], yh = [];
+  centers.forEach((c, ci) => {
+    for (let i = 0; i < 30; i++) {
+      Xh.push([gaussianSample(rngH, c[0], 0.5), gaussianSample(rngH, c[1], 0.5)]);
+      yh.push(ci);
+    }
+  });
+  const nH = Xh.length;
+  const hc = hierarchicalCluster(Xh, { linkage: 'average' });
+
+  run('层次聚类：合并距离单调非降（可约 linkage ⇒ ultrametric）', (c) => {
+    let mono = true, minStep = Infinity;
+    for (let k = 1; k < hc.distances.length; k++) {
+      const d = hc.distances[k] - hc.distances[k - 1];
+      if (d < minStep) minStep = d;
+      if (d < -1e-12) mono = false;
+    }
+    c(mono, `最小递增量=${minStep.toExponential(2)}，末次合并高度=${hc.distances[nH - 2].toFixed(4)}`);
+  });
+
+  run('层次聚类：n 样本 ⇒ n−1 次合并，最终归为 1 簇', (c) => {
+    const okM = hc.merges.length === nH - 1;
+    const okC = hc.clusters(1).length === 1 && hc.clusters(1)[0].length === nH;
+    c(okM && okC, `merges=${hc.merges.length}（应为 ${nH - 1}），clusters(1) 得到 ${hc.clusters(1).length} 簇`);
+  });
+
+  run('层次聚类：强分离 3 高斯团 clusters(3) 与真实标签 ARI = 1', (c) => {
+    const lab3 = hc.labels(3);
+    const ari = adjustedRandIndex(lab3, yh);
+    c(ari === 1, `ARI=${ari.toFixed(6)}`);
+  });
+
+  run('层次聚类：Lance–Williams 一致性 — 4 点共线算例 ≡ 闭式（single/complete/average）', (c) => {
+    // 点 {0,1,3,6}：手算合并序列（先 (0,1) 高 1；随后 single 接 2、complete 平手接 (2,3)、average 接 2）
+    const X4 = [[0], [1], [3], [6]];
+    const expect = { single: [1, 2, 3], complete: [1, 3, 6], average: [1, 2.5, 14 / 3] };
+    let worst = 0;
+    const got = [];
+    for (const lk of ['single', 'complete', 'average']) {
+      const r4 = hierarchicalCluster(X4, { linkage: lk });
+      for (let k = 0; k < 3; k++) worst = Math.max(worst, Math.abs(r4.distances[k] - expect[lk][k]));
+      got.push(`${lk}=[${r4.distances.map((v) => v.toFixed(4)).join(', ')}]`);
+    }
+    c(worst < 1e-12, `最大偏差=${worst.toExponential(2)}；${got.join('；')}`);
+  });
+
+  run('层次聚类：递推 ≡ 定义 — blob 数据每次合并距离 ≡ 成员集闭式（min/max/加权均值）', (c) => {
+    let worst = 0;
+    for (const lk of ['single', 'complete', 'average']) {
+      const res = hierarchicalCluster(Xh, { linkage: lk });
+      const members = Array.from({ length: 2 * nH - 1 }, (_, id) => (id < nH ? [id] : null));
+      res.merges.forEach((m, step) => {
+        const ga = members[m.a], gb = members[m.b];
+        let mn = Infinity, mx = -Infinity, acc = 0, cnt = 0;
+        for (const i of ga) {
+          for (const j of gb) {
+            const dij = Math.hypot(Xh[i][0] - Xh[j][0], Xh[i][1] - Xh[j][1]);
+            if (dij < mn) mn = dij;
+            if (dij > mx) mx = dij;
+            acc += dij; cnt++;
+          }
+        }
+        const closed = lk === 'single' ? mn : lk === 'complete' ? mx : acc / cnt;
+        worst = Math.max(worst, Math.abs(closed - m.distance));
+        members[nH + step] = ga.concat(gb);
+      });
+    }
+    c(worst < 1e-9, `三种 linkage 全部 ${nH - 1} 次合并的最大偏差=${worst.toExponential(2)}`);
+  });
+
+  run('层次聚类：确定性 — 相同输入 ⇒ 相同合并树（逐位一致）', (c) => {
+    const hc2 = hierarchicalCluster(Xh, { linkage: 'average' });
+    let err = 0;
+    for (let k = 0; k < hc.merges.length; k++) {
+      err = Math.max(err, Math.abs(hc.merges[k].distance - hc2.merges[k].distance));
+      if (hc.merges[k].a !== hc2.merges[k].a || hc.merges[k].b !== hc2.merges[k].b) err = Infinity;
+    }
+    c(err === 0, `两次运行 merges 最大差异=${err}`);
+  });
+
+  run('层次聚类：cophenetic 相关系数 ≥ 0.9（结构良好数据）', (c) => {
+    const C = hierarchicalCophenetic(hc.merges, nH);
+    const orig = [], coph = [];
+    for (let i = 0; i < nH; i++) {
+      for (let j = i + 1; j < nH; j++) {
+        orig.push(Math.hypot(Xh[i][0] - Xh[j][0], Xh[i][1] - Xh[j][1]));
+        coph.push(C[i][j]);
+      }
+    }
+    let mo = 0, mc = 0;
+    for (let t = 0; t < orig.length; t++) { mo += orig[t]; mc += coph[t]; }
+    mo /= orig.length; mc /= coph.length;
+    let so = 0, sc = 0, soc = 0;
+    for (let t = 0; t < orig.length; t++) {
+      so += (orig[t] - mo) ** 2;
+      sc += (coph[t] - mc) ** 2;
+      soc += (orig[t] - mo) * (coph[t] - mc);
+    }
+    const r = soc / Math.sqrt(so * sc);
+    c(r >= 0.9, `cophenetic corr=${r.toFixed(6)}`);
+  });
+}
+
 const colMean = mean;
 /* ───── 挂载全局命名空间 ───── */
-const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, randomForestTrain, randomForestPredict, rfSingleTree, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, gprKernelMatrix, gprFit, gprPredict, gprPriorVariance, gprInverseK, gprHyperGradAnalytic, gprHyperGradNumeric, regressionTreeFit, regressionTreePredict, regressionTreePredictAll, gbdtFit, gbdtPredict, gbdtStagedPredict, pearsonCorr, kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate, innovationAutocorr, empiricalVariance, metropolisHastings, mhAcceptProb, detailedBalanceResidual, importanceSampling, mcmcEmpiricalMoments, marginal, nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData, pageRank, pagerankExact, pagerankStationary, pagerankSum, gibbsBivariateGaussian, gibbsSampler, gibbsMarginal, gibbsCovariance, gibbsConditionalCheck, gibbsDiscrete, gibbsConvergence, gmmFit, gmmPredict, ldaFit, ldaProject, nbFit, nbPredict, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, batchNormForward, batchNormBackward, batchNormInfer, batchNormGradCheck, layerNorm2d, layerNormBackward, layerNormGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, convOutputSize, im2col, conv2dForward, conv2dBackward, maxPool2d, maxPoolBackward, conv2dNaive, convGradientCheck, randomConvTensors, vaeMake, vaeEncode, vaeReparametrize, vaeDecode, vaeKL, vaeKLMonteCarlo, vaeSampleEps, vaeForward, vaeBackward, vaeGradientCheck, cosineSim, sigmoidNegIdentity, sgnsLoss, sgnsGradients, sgnsLossReference, sgnsGradientCheck, trainSGNS, wordSimilarity, makeToyCorpus, ResidualBlock, ResNet, resnetAccuracy, trainResNet, residualIdentityCheck, residualJacobianIdentity, residualGradientCheck, residualGradientHighway, residualVsPlain, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, runAllInvariants };
+const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, randomForestTrain, randomForestPredict, rfSingleTree, perceptronStep, perceptronTrain, perceptronPredict, icaFit, icaTransform, ccaFit, ccaProject, hierarchicalCluster, hierarchicalCophenetic, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, gprKernelMatrix, gprFit, gprPredict, gprPriorVariance, gprInverseK, gprHyperGradAnalytic, gprHyperGradNumeric, regressionTreeFit, regressionTreePredict, regressionTreePredictAll, gbdtFit, gbdtPredict, gbdtStagedPredict, pearsonCorr, kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate, innovationAutocorr, empiricalVariance, metropolisHastings, mhAcceptProb, detailedBalanceResidual, importanceSampling, mcmcEmpiricalMoments, marginal, nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData, pageRank, pagerankExact, pagerankStationary, pagerankSum, gibbsBivariateGaussian, gibbsSampler, gibbsMarginal, gibbsCovariance, gibbsConditionalCheck, gibbsDiscrete, gibbsConvergence, gmmFit, gmmPredict, ldaFit, ldaProject, nbFit, nbPredict, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, batchNormForward, batchNormBackward, batchNormInfer, batchNormGradCheck, layerNorm2d, layerNormBackward, layerNormGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, convOutputSize, im2col, conv2dForward, conv2dBackward, maxPool2d, maxPoolBackward, conv2dNaive, convGradientCheck, randomConvTensors, vaeMake, vaeEncode, vaeReparametrize, vaeDecode, vaeKL, vaeKLMonteCarlo, vaeSampleEps, vaeForward, vaeBackward, vaeGradientCheck, cosineSim, sigmoidNegIdentity, sgnsLoss, sgnsGradients, sgnsLossReference, sgnsGradientCheck, trainSGNS, wordSimilarity, makeToyCorpus, ResidualBlock, ResNet, resnetAccuracy, trainResNet, residualIdentityCheck, residualJacobianIdentity, residualGradientCheck, residualGradientHighway, residualVsPlain, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, runAllInvariants };
 if (typeof globalThis !== 'undefined') {
   globalThis.FlagshipAI = Object.assign({}, globalThis.FlagshipAI, __FlagshipAI__);
 }
@@ -9813,6 +10965,136 @@ if (typeof globalThis !== 'undefined') {
       `<span style="font-family:monospace">${model.numTrees} 棵树 · 训练准确率=${acc.toFixed(3)} · 特征重要性Σ=${impSum.toFixed(3)}</span>`;
   }
 
+  /* ================= v1.8 · 感知机 Perceptron（线性可分散点 + 决策边界） ================= */
+  let percSeed = 7;
+  function drawPerc() {
+    const { mulberry32, gaussianSample, perceptronTrain, perceptronPredict } = A;
+    const rng = mulberry32(percSeed);
+    const X = [], y = [];
+    for (let i = 0; i < 40; i++) { X.push([gaussianSample(rng, -1.5, 0.7), gaussianSample(rng, -1.5, 0.7)]); y.push(-1); }
+    for (let i = 0; i < 40; i++) { X.push([gaussianSample(rng, 1.5, 0.7), gaussianSample(rng, 1.5, 0.7)]); y.push(1); }
+    const model = perceptronTrain(X, y, { lr: 1, maxPasses: 100, seed: percSeed });
+    const w = model.w, b = model.b;
+    const pred = perceptronPredict(X, w, b);
+    let mism = 0; for (let i = 0; i < X.length; i++) if (pred[i] !== y[i]) mism++;
+    const xs = X.map(p => p[0]), ys = X.map(p => p[1]);
+    const xmin = Math.min(...xs) - 0.5, xmax = Math.max(...xs) + 0.5, ymin = Math.min(...ys) - 0.5, ymax = Math.max(...ys) + 0.5;
+    const px = (v) => 30 + (v - xmin) / (xmax - xmin) * 400, py = (v) => 270 - (v - ymin) / (ymax - ymin) * 240;
+    let svg = '<line x1="30" y1="270" x2="430" y2="270" stroke="#d5dbe5"/><line x1="30" y1="20" x2="30" y2="270" stroke="#d5dbe5"/>';
+    if (Math.abs(w[1]) > 1e-9) {
+      const by0 = -(w[0] * xmin + b) / w[1], by1 = -(w[0] * xmax + b) / w[1];
+      svg += `<line x1="${px(xmin).toFixed(1)}" y1="${py(by0).toFixed(1)}" x2="${px(xmax).toFixed(1)}" y2="${py(by1).toFixed(1)}" stroke="#17994f" stroke-width="2"/>`;
+    }
+    for (let i = 0; i < X.length; i++) {
+      const col = y[i] === -1 ? '#2980b9' : '#e74c3c';
+      svg += `<circle cx="${px(X[i][0]).toFixed(1)}" cy="${py(X[i][1]).toFixed(1)}" r="3.6" fill="${col}" fill-opacity="0.85" stroke="#fff" stroke-width="0.5"/>`;
+    }
+    $('svg-perc').innerHTML = svg;
+    $('legend-perc').innerHTML =
+      `<span><i style="background:#2980b9"></i>类 -1</span><span><i style="background:#e74c3c"></i>类 +1</span>` +
+      `<span style="font-family:monospace">${model.converged ? '已收敛' : '未收敛'} · mistakes=${model.mistakes} · 训练错误=${mism}</span>`;
+  }
+
+  /* ================= v1.8 · 独立成分分析 ICA（盲源分离：混合 vs 恢复） ================= */
+  let icaSeed = 7;
+  function drawICA() {
+    const { mulberry32, gaussianSample, icaFit, icaTransform } = A;
+    const rng = mulberry32(icaSeed);
+    const gs = () => gaussianSample(rng, 0, 1);
+    const n = 300, s1 = [], s2 = [];
+    for (let i = 0; i < n; i++) { s1.push(gs() - gs()); s2.push(gs() * gs() + gs() * gs()); } // Laplace / χ²：独立非高斯源
+    const Mx = [[1.6 * rng() - 0.3, 0.5 * rng() - 0.1], [0.4 * rng() - 0.1, 1.5 * rng() - 0.3]];
+    const X = []; for (let i = 0; i < n; i++) X.push([Mx[0][0] * s1[i] + Mx[0][1] * s2[i], Mx[1][0] * s1[i] + Mx[1][1] * s2[i]]);
+    const model = icaFit(X, { components: 2, seed: icaSeed });
+    const S = icaTransform(X, model);
+    const corr = (a, bb) => { let ma = 0, mb = 0; for (const v of a) ma += v; ma /= a.length; for (const v of bb) mb += v; mb /= bb.length; let num = 0, da = 0, db = 0; for (let i = 0; i < a.length; i++) { const x = a[i] - ma, y2 = bb[i] - mb; num += x * y2; da += x * x; db += y2 * y2; } return num / Math.sqrt(da * db || 1); };
+    const c1 = Math.max(Math.abs(corr(S.map(r => r[0]), s1)), Math.abs(corr(S.map(r => r[0]), s2)));
+    const c2 = Math.max(Math.abs(corr(S.map(r => r[1]), s1)), Math.abs(corr(S.map(r => r[1]), s2)));
+    const minc = Math.min(c1, c2);
+    const plot = (arr, ox, oy, w, h, col) => { let mn = Infinity, mx = -Infinity; for (const v of arr) { if (v < mn) mn = v; if (v > mx) mx = v; } const rg = (mx - mn) || 1; let d = ''; for (let i = 0; i < arr.length; i++) { const cx = ox + i / (arr.length - 1) * w, cy = oy + h - (arr[i] - mn) / rg * h; d += (i ? 'L' : 'M') + cx.toFixed(1) + ',' + cy.toFixed(1); } return `<path d="${d}" fill="none" stroke="${col}" stroke-width="1"/>`; };
+    const r0 = S.map(r => r[0]), r1 = S.map(r => r[1]), x0 = X.map(r => r[0]), x1 = X.map(r => r[1]);
+    let svg = '';
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">混合 x1</text>` + plot(x0, 30, 20, 200, 105, '#b0b8cc');
+    svg += `<text x="250" y="14" font-size="10" fill="#5b6478" font-family="monospace">混合 x2</text>` + plot(x1, 250, 20, 200, 105, '#b0b8cc');
+    svg += `<text x="30" y="146" font-size="10" fill="#3b5bfd" font-family="monospace">ICA 分离 s1</text>` + plot(r0, 30, 152, 200, 105, '#3b5bfd');
+    svg += `<text x="250" y="146" font-size="10" fill="#3b5bfd" font-family="monospace">ICA 分离 s2</text>` + plot(r1, 250, 152, 200, 105, '#3b5bfd');
+    $('svg-ica').innerHTML = svg;
+    $('legend-ica').innerHTML =
+      `<span><i style="background:#b0b8cc"></i>混合输入</span><span><i style="background:#3b5bfd"></i>ICA 分离</span>` +
+      `<span style="font-family:monospace">源恢复 min|corr|=${minc.toFixed(4)}（>0.99）</span>`;
+  }
+
+  /* ================= v1.8 · 典型相关分析 CCA（典型变量散点） ================= */
+  let ccaSeed = 7;
+  function drawCCA() {
+    const { mulberry32, gaussianSample, ccaFit, ccaProject } = A;
+    const rng = mulberry32(ccaSeed);
+    const n = 200;
+    const X = []; for (let i = 0; i < n; i++) X.push([gaussianSample(rng, 0, 1), gaussianSample(rng, 0, 1), gaussianSample(rng, 0, 1)]);
+    const Mm = [[1.0, 0.2], [-0.3, 0.8], [0.5, 0.4]];
+    const Y = []; for (let i = 0; i < n; i++) {
+      Y.push([X[i][0] * Mm[0][0] + X[i][1] * Mm[1][0] + X[i][2] * Mm[2][0] + gaussianSample(rng, 0, 0.15),
+              X[i][0] * Mm[0][1] + X[i][1] * Mm[1][1] + X[i][2] * Mm[2][1] + gaussianSample(rng, 0, 0.15)]);
+    }
+    const model = ccaFit(X, Y, { reg: 1e-6 });
+    const { U, V } = ccaProject(X, Y, model);
+    const u = U.map(r => r[0]), v = V.map(r => r[0]);
+    const r1 = model.correlations[0], r2 = model.correlations[1];
+    const umin = Math.min(...u), umax = Math.max(...u), vmin = Math.min(...v), vmax = Math.max(...v);
+    const px = (val) => 40 + (val - umin) / (umax - umin) * 400, py = (val) => 270 - (val - vmin) / (vmax - vmin) * 240;
+    let svg = '<line x1="40" y1="270" x2="440" y2="270" stroke="#d5dbe5"/><line x1="40" y1="20" x2="40" y2="270" stroke="#d5dbe5"/>';
+    for (let i = 0; i < n; i++) svg += `<circle cx="${px(u[i]).toFixed(1)}" cy="${py(v[i]).toFixed(1)}" r="3" fill="#3b5bfd" fill-opacity="0.5"/>`;
+    $('svg-cca').innerHTML = svg;
+    $('legend-cca').innerHTML =
+      `<span><i style="background:#3b5bfd"></i>典型变量 (U₁, V₁)</span>` +
+      `<span style="font-family:monospace">r₁=${r1.toFixed(4)} · r₂=${r2.toFixed(4)}（非增）</span>`;
+  }
+
+  /* ================= v1.8 · 层次聚类 Hierarchical（凝聚树状图） ================= */
+  let hcSeed = 7;
+  function drawHC() {
+    const { mulberry32, gaussianSample, hierarchicalCluster } = A;
+    const rng = mulberry32(hcSeed);
+    const centers = [[-3, -2], [3, -1], [0, 3.5]], truth = [], X = [];
+    for (let c = 0; c < 3; c++) for (let i = 0; i < 30; i++) { X.push([gaussianSample(rng, centers[c][0], 0.5), gaussianSample(rng, centers[c][1], 0.5)]); truth.push(c); }
+    const n = X.length;
+    const model = hierarchicalCluster(X, { linkage: 'average' });
+    const lab = model.labels(3);
+    const C = (x) => x * (x - 1) / 2;
+    const tab = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    for (let i = 0; i < n; i++) tab[lab[i]][truth[i]]++;
+    let sij = 0; const a = [0, 0, 0], b = [0, 0, 0];
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) { sij += C(tab[i][j]); a[i] += tab[i][j]; b[j] += tab[i][j]; }
+    const ai = a.reduce((p, c) => p + C(c), 0), bi = b.reduce((p, c) => p + C(c), 0), tot = C(n);
+    const expct = ai * bi / tot, maxi = 0.5 * (ai + bi);
+    const ari = Math.abs(maxi - expct) < 1e-12 ? 1 : (sij - expct) / (maxi - expct);
+    const merges = model.merges;
+    const posX = new Array(2 * n - 1), posY = new Array(2 * n - 1).fill(0);
+    for (let i = 0; i < n; i++) posX[i] = i;
+    const maxH = merges.length ? merges[merges.length - 1].distance : 1;
+    const ox = 40, oy = 250, W = 400, H = 200;
+    const sx = (i) => ox + (i / (n - 1)) * W, sy = (h) => oy - (h / maxH) * H;
+    let d = '';
+    for (let k = 0; k < merges.length; k++) {
+      const { a: ca, b: cb, distance } = merges[k]; const node = n + k;
+      posX[node] = (posX[ca] + posX[cb]) / 2; posY[node] = distance;
+      const xa = sx(posX[ca]), xb = sx(posX[cb]), yn = sy(distance), ya = sy(posY[ca]), yb = sy(posY[cb]);
+      d += `M${xa.toFixed(1)},${ya.toFixed(1)}L${xa.toFixed(1)},${yn.toFixed(1)}M${xb.toFixed(1)},${yb.toFixed(1)}L${xb.toFixed(1)},${yn.toFixed(1)}M${xa.toFixed(1)},${yn.toFixed(1)}L${xb.toFixed(1)},${yn.toFixed(1)}`;
+    }
+    const cols = ['#2980b9', '#e74c3c', '#17994f'];
+    let svg = `<path d="${d}" fill="none" stroke="#95a5a6" stroke-width="1"/>`;
+    for (let i = 0; i < n; i++) svg += `<circle cx="${sx(i).toFixed(1)}" cy="${(oy + 4).toFixed(1)}" r="2.4" fill="${cols[truth[i]]}"/>`;
+    $('svg-hc').innerHTML = svg;
+    $('legend-hc').innerHTML =
+      `<span><i style="background:#2980b9"></i>团0</span><span><i style="background:#e74c3c"></i>团1</span><span><i style="background:#17994f"></i>团2</span>` +
+      `<span style="font-family:monospace">${model.linkage} linkage · 切 3 簇 ARI=${ari.toFixed(4)}</span>`;
+  }
+
+  $('btn-perc').addEventListener('click', () => { percSeed = (percSeed * 31 + 17) % 100000; drawPerc(); });
+  $('btn-ica').addEventListener('click', () => { icaSeed = (icaSeed * 37 + 11) % 100000; drawICA(); });
+  $('btn-cca').addEventListener('click', () => { ccaSeed = (ccaSeed * 29 + 13) % 100000; drawCCA(); });
+  $('btn-hc').addEventListener('click', () => { hcSeed = (hcSeed * 41 + 9) % 100000; drawHC(); });
+
   $('btn-gmm').addEventListener('click', () => { gmmSeed = (gmmSeed * 31 + 17) % 100000; drawGMM(); });
   $('btn-lda').addEventListener('click', () => { ldaSeed = (ldaSeed * 37 + 11) % 100000; drawLDA(); });
   $('btn-nb').addEventListener('click', () => { nbSeed = (nbSeed * 29 + 13) % 100000; drawNB(); });
@@ -9846,6 +11128,10 @@ if (typeof globalThis !== 'undefined') {
   drawLDA();
   drawNB();
   drawRF();
+  drawPerc();
+  drawICA();
+  drawCCA();
+  drawHC();
   drawOpt();
 })();
 </script>

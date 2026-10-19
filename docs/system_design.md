@@ -1,7 +1,7 @@
 # 旗舰AI引擎 (Flagship AI Engine) — 系统架构设计说明书
 
 > 作者署名：晨星 (Morning Star / CJX0712) ｜ 架构师：高见远 (Bob)
-> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、38/38 全绿**。
+> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、42/42 全绿**。
 
 ---
 
@@ -11,13 +11,13 @@
 
 | 设计稿 | 最终实现 | 说明 |
 |---|---|---|
-| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 38 组套件，Node 与浏览器共用同一份 |
+| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 42 组套件，Node 与浏览器共用同一份 |
 | `src/verify/suites.js` | 并入 `src/verify/invariants.js` | 套件与检查器同文件，杜绝跨文件漂移 |
 | `src/core/rng.js` / `src/core/utils.js` | 并入 `src/core/stats.js`（mulberry32/gaussianSample）与 `src/core/linalg.js`/`numerical.js` | 随机源归概率层，工具归各自的消费者 |
 | 浏览器 `<script type="module">` 直引 src | `scripts/bundle.mjs` 按依赖序内联进 `showcase/index.html`（`globalThis.FlagshipAI`） | 兼容 `file://` 双击即用；`node --check` 兜底语法校验 |
-| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 38/38`（CI grep 校验） | 语义一致，命名对齐实现 |
+| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 42/42`（CI grep 校验） | 语义一致，命名对齐实现 |
 
-落地验证结论：`node test/run.mjs` → **PASS 38/38（约 2.5s，227 条不变量）**，与本设计书的全部不变量承诺一致。
+落地验证结论：`node test/run.mjs` → **PASS 42/42（约 2.9s，252 条不变量）**，与本设计书的全部不变量承诺一致。
 
 ### v1.1 增补（2026-10-19）
 
@@ -86,6 +86,17 @@
 
 > ⚠️ 选型纪律：v1.7 曾拟新增「Metropolis-Hastings」，经核查 `src/ml/mcmc.js` 已含 `metropolisHastings` 且 `suiteMCMC` 已覆盖，遂**弃用重复实现**，改以引擎缺失的 Random Forest 补全集成学习三足鼎立（AdaBoost + GBDT + RF）。复用既有 `tree.js` 的 `DecisionTree` 与 `giniImpurity`，不重复造轮子。
 
+### v1.8 增补（2026-10-20）
+
+| 增补模块 | 不变量（定理背书） |
+|---|---|
+| `src/ml/perceptron.js`（感知机，Rosenblatt 1958 / Novikoff 1962） | 可分数收敛 min yᵢ(w·xᵢ+b)>0、0 训练错误；Novikoff mistakes ≤ (R/γ)²（2≤3.869）；单步更新确定性；XOR 有界停止 |
+| `src/ml/ica.js`（FastICA，Hyvärinen & Oja 2000 / Comon 1994） | 白化 Cov(Z)≡I（1.4e-12）；unmixing W·Wᵀ≡I（2.2e-16）；源恢复 \|corr\|>0.99（0.9993，Comon 可识别性）；非高斯性增强；源间去相关 |
+| `src/ml/cca.js`（典型相关，Hotelling 1936） | r_k∈[0,1] 非增；Cov(U,V)=diag(r)；完美相关 r₁≡1（1e-15）；独立 r≈0；白化+SVD 交叉验证一致（0.00e+0） |
+| `src/ml/hierarchical.js`（层次聚类，Sokal & Michener 1958 / Lance & Williams 1967） | 合并高度单调非降；n−1 次合并；强分离 3 团 ARI=1.000000；Lance-Williams 递推≡闭式；cophenetic≥0.9 |
+
+> 数值要点：CCA 将 `Σxx⁻¹ΣxyΣyy⁻¹Σyx`（两对称阵之积、非对称）经白化代换为对称半正定 `H = Wx·(ΣxyΣyy⁻¹Σyx)·Wxᵀ`，使 Jacobi 特征向量正确、对角化恒等式达 1e-15——直接对非对称积做 Jacobi 会得到错误特征向量（联调中 offErr≈3e-3）。
+
 ---
 
 ## 0. 设计总览
@@ -95,7 +106,7 @@
 | 运行形态 | 原生 **ES Module**（源码 `.js` + `package.json` 声明 `type:module`，测试入口 `.mjs`），浏览器 `<script type="module">` 与 Node `node test/run.mjs` 双跑 |
 | 依赖 | **零第三方依赖**；测试/服务仅用 Node 内置模块（`node:assert`、`node:process`、`node:http`、`node:fs`、`node:path`） |
 | 可复现 | 全确定性：核心不使用 `Math.random()` / `Date.now()`，统一经 `mulberry32(seed)` 种子随机数 |
-| 验证 | **38 组不变量套件**（v1.0 的 8 组起步，逐版本累积至 v1.7 的 38 组、227 条），每组聚合若干「不变量自检」，全部通过即为 38/38 全绿；CI 中以退出码 0/1 反映 |
+| 验证 | **42 组不变量套件**（v1.0 的 8 组起步，逐版本累积至 v1.8 的 42 组、252 条），每组聚合若干「不变量自检」，全部通过即为 42/42 全绿；CI 中以退出码 0/1 反映 |
 | 展示 | 单文件 `showcase/index.html`，内联 CSS/JS，零外部依赖，实时渲染自检报告 + 算法演示 |
 | 文档 | `README.md` / `ARCHITECTURE.md` / `MATH.md`（数学证明与不变量）/ `LICENSE`(MIT) / `.github/workflows/ci.yml` |
 

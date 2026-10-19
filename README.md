@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Zero Dependency](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](package.json)
 [![Self-Test](https://img.shields.io/badge/self--test-34%2F34%20green-success.svg)](test/run.mjs)
-[![Release](https://img.shields.io/badge/release-v1.7.0-blue.svg)](https://github.com/CJX0712/flagship-ai-engine/releases)
+[![Release](https://img.shields.io/badge/release-v1.8.0-blue.svg)](https://github.com/CJX0712/flagship-ai-engine/releases)
 
 ---
 
@@ -26,7 +26,7 @@ cd flagship-ai-engine
 
 # 运行不变量自检（无需安装任何依赖）
 node test/run.mjs
-# 期望输出：PASS 38/38 — 全部不变量自检通过
+# 期望输出：PASS 42/42 — 全部不变量自检通过
 ```
 
 **旗舰展示页**：直接双击 `showcase/index.html`（引擎已内联，零服务器、零网络），
@@ -42,7 +42,7 @@ node test/run.mjs
 经典机器学习层 ml/    regression · classification · clustering · dimreduction · dbscan · tsne · kpca · spectral · svm · boosting · hmm · tree
 深度学习层   nn/    denseNet · attention · transformerBlock · rnn · lstm · optimizers · activations · schedulers
 强化学习层   rl/    valueIteration · policyEvaluation · qLearning · gridworld
-验证层       verify/ 每条算法的不变量自检（38 组套件）
+验证层       verify/ 每条算法的不变量自检（42 组套件）
 展示层       showcase/ 单文件 HTML 旗舰页
 ```
 
@@ -82,8 +82,12 @@ node test/run.mjs
 | 线性判别 | LDA / Fisher（Fisher 1936 / Rao 1948，闭式 Sw⁻¹(μ₁−μ₂)） | 类心 ≡ 暴力均值；Sw/Sb 对称；Fisher 方向恒等式 w∥Sw⁻¹(μ₁−μ₂)；Fisher 比 ≥ 随机方向；线性可分 acc=1 |
 | 朴素贝叶斯 | 高斯朴素贝叶斯（Maron 1961 / Domingos&Pazzani 1997，对数域 + softmax） | 先验和=1；后验行和=1；独立可分 acc=1；对数项 ≡ 手算；labels=argmax |
 | 集成学习（扩展） | Random Forest（Breiman 2001，bootstrap + mtry 随机特征 + 多数投票） | 特征重要性 Σ=1；twoMoons acc≥0.95；OOB 误差<0.1；方差低于单树 |
+| 基础神经网络 | 感知机 Perceptron（Rosenblatt 1958 / Novikoff 1962） | 可分数收敛 min yᵢ(w·xᵢ+b)>0、0 训练错误；mistakes ≤ (R/γ)²；单步更新确定性；XOR 有界停止 |
+| 盲源分离 | ICA / FastICA（Hyvärinen & Oja 2000，白化 + 非高斯性最大化） | 白化协方差≡I；unmixing 行正交；源恢复 \|corr\|>0.99（Comon 可识别性）；非高斯性增强；源间去相关 |
+| 多变量分析 | CCA 典型相关（Hotelling 1936） | r_k∈[0,1] 且非增；Cov(U,V)=diag(r)；完美相关 r₁≡1；独立数据 r≈0；白化+SVD 交叉验证一致 |
+| 层次聚类 | Hierarchical（Sokal & Michener 1958 / Lance & Williams 1967） | 合并高度单调非降；n−1 次合并；强分离 3 团 ARI=1.000；Lance-Williams 递推≡闭式；cophenetic≥0.9 |
 
-## 展示页实时演示（23 个）
+## 展示页实时演示（27 个）
 
 k-means 聚类 · 注意力热力图 · 核 SVM 决策边界 · AdaBoost 集成边界 · RL 网格世界（值迭代）
 · LSTM 序列回归 · t-SNE 嵌入 · DBSCAN 含噪声识别 · 优化器等势面轨迹
@@ -94,16 +98,18 @@ k-means 聚类 · 注意力热力图 · 核 SVM 决策边界 · AdaBoost 集成�
 · **网页排名 PageRank（有向图节点半径 ∝ 重要性，含悬挂节点）** · **吉布斯采样 Gibbs（二元高斯样本云 + 理论 2σ 等值线）**
 · **高斯混合模型 GMM（两高斯团软指派配色 + 聚类中心 + EM 对数似然单调）** · **线性判别 LDA（Fisher 投影方向 + 类心分离）**
 · **朴素贝叶斯（二次决策面 + 后验和=1）** · **随机森林 Random Forest（twoMoons 决策边界 + 64 棵树 + 特征重要性）**
+· **感知机 Perceptron（线性可分散点 + 决策边界 + mistakes）** · **ICA 盲源分离（混合信号 vs 恢复源波形 + |corr|）**
+· **CCA 典型相关（典型变量 U₁–V₁ 散点 + r₁≥r₂）** · **层次聚类（凝聚树状图 + 切 3 簇 ARI）**
 ——全部由本页内联引擎实时计算，种子化随机可复现。
 
 ## 验证
 
 ```bash
 node test/run.mjs
-# 期望输出：PASS 38/38 — 全部不变量自检通过
+# 期望输出：PASS 42/42 — 全部不变量自检通过
 ```
 
-38 组套件覆盖 227 条硬不变量。CI 在 Node 16/18/20 三个版本上运行同一自检（精确校验 `PASS 38/38`）。
+42 组套件覆盖 252 条硬不变量。CI 在 Node 16/18/20 三个版本上运行同一自检（精确校验 `PASS 42/42`）。
 
 ## 许可证
 

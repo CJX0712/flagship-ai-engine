@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">38 组套件 · 227 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">42 组套件 · 252 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -317,6 +317,46 @@
     </div>
   </div>
 
+  <h2>v1.8 新增算法 <span class="tag">感知机 · 独立成分分析 · 典型相关 · 层次聚类 · 均由本页引擎实时求解</span></h2>
+  <div class="demos">
+    <div class="card">
+      <div class="demo-head">
+        <strong>感知机 Perceptron</strong>
+        <button id="btn-perc">重新生成</button>
+      </div>
+      <div class="desc">Rosenblatt 1958 · 误分驱动线性判别：可分数收敛、mistakes ≤ (R/γ)² · 决策边界</div>
+      <svg id="svg-perc" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-perc"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>独立成分分析 ICA / FastICA</strong>
+        <button id="btn-ica">重新混合</button>
+      </div>
+      <div class="desc">Hyvärinen &amp; Oja 2000 · 白化 + 非高斯性最大化：从混合信号分离独立源（|corr|>0.99）</div>
+      <svg id="svg-ica" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-ica"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>典型相关分析 CCA</strong>
+        <button id="btn-cca">重新生成</button>
+      </div>
+      <div class="desc">Hotelling 1936 · 找两组变量最大相关方向：典型变量 (U₁,V₁) 散点，r₁≥r₂≥…</div>
+      <svg id="svg-cca" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-cca"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>层次聚类 Hierarchical</strong>
+        <button id="btn-hc">重新聚类</button>
+      </div>
+      <div class="desc">Sokal &amp; Michener 1958 / Lance &amp; Williams 1967 · 凝聚树状图 + 切 3 簇（叶色=真值，ARI）</div>
+      <svg id="svg-hc" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-hc"></div>
+    </div>
+  </div>
+
   <div class="refs">
     站在巨人肩上：<code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
     <code>Bishop · PRML</code><code>Hastie et al. · ESL</code><code>Vaswani et al. 2017 · Attention Is All You Need</code>
@@ -339,6 +379,10 @@
     <code>Fisher 1936 · 线性判别分析</code><code>Rao 1948 · 判别函数</code>
     <code>Maron 1961 · 朴素贝叶斯</code><code>Domingos &amp; Pazzani 1997 · 最优偏见</code>
     <code>Breiman 2001 · Random Forest</code><code>Breiman et al. 1984 · CART</code>
+    <code>Rosenblatt 1958 · Perceptron</code><code>Novikoff 1962 · 收敛定理</code>
+    <code>Hyvärinen &amp; Oja 2000 · FastICA</code><code>Comon 1994 · ICA 可识别性</code>
+    <code>Hotelling 1936 · 典型相关</code><code>Sokal &amp; Michener 1958 · 层次聚类</code>
+    <code>Lance &amp; Williams 1967 · 凝聚递推</code>
   </div>
 
   <footer>
@@ -1227,6 +1271,136 @@
       `<span style="font-family:monospace">${model.numTrees} 棵树 · 训练准确率=${acc.toFixed(3)} · 特征重要性Σ=${impSum.toFixed(3)}</span>`;
   }
 
+  /* ================= v1.8 · 感知机 Perceptron（线性可分散点 + 决策边界） ================= */
+  let percSeed = 7;
+  function drawPerc() {
+    const { mulberry32, gaussianSample, perceptronTrain, perceptronPredict } = A;
+    const rng = mulberry32(percSeed);
+    const X = [], y = [];
+    for (let i = 0; i < 40; i++) { X.push([gaussianSample(rng, -1.5, 0.7), gaussianSample(rng, -1.5, 0.7)]); y.push(-1); }
+    for (let i = 0; i < 40; i++) { X.push([gaussianSample(rng, 1.5, 0.7), gaussianSample(rng, 1.5, 0.7)]); y.push(1); }
+    const model = perceptronTrain(X, y, { lr: 1, maxPasses: 100, seed: percSeed });
+    const w = model.w, b = model.b;
+    const pred = perceptronPredict(X, w, b);
+    let mism = 0; for (let i = 0; i < X.length; i++) if (pred[i] !== y[i]) mism++;
+    const xs = X.map(p => p[0]), ys = X.map(p => p[1]);
+    const xmin = Math.min(...xs) - 0.5, xmax = Math.max(...xs) + 0.5, ymin = Math.min(...ys) - 0.5, ymax = Math.max(...ys) + 0.5;
+    const px = (v) => 30 + (v - xmin) / (xmax - xmin) * 400, py = (v) => 270 - (v - ymin) / (ymax - ymin) * 240;
+    let svg = '<line x1="30" y1="270" x2="430" y2="270" stroke="#d5dbe5"/><line x1="30" y1="20" x2="30" y2="270" stroke="#d5dbe5"/>';
+    if (Math.abs(w[1]) > 1e-9) {
+      const by0 = -(w[0] * xmin + b) / w[1], by1 = -(w[0] * xmax + b) / w[1];
+      svg += `<line x1="${px(xmin).toFixed(1)}" y1="${py(by0).toFixed(1)}" x2="${px(xmax).toFixed(1)}" y2="${py(by1).toFixed(1)}" stroke="#17994f" stroke-width="2"/>`;
+    }
+    for (let i = 0; i < X.length; i++) {
+      const col = y[i] === -1 ? '#2980b9' : '#e74c3c';
+      svg += `<circle cx="${px(X[i][0]).toFixed(1)}" cy="${py(X[i][1]).toFixed(1)}" r="3.6" fill="${col}" fill-opacity="0.85" stroke="#fff" stroke-width="0.5"/>`;
+    }
+    $('svg-perc').innerHTML = svg;
+    $('legend-perc').innerHTML =
+      `<span><i style="background:#2980b9"></i>类 -1</span><span><i style="background:#e74c3c"></i>类 +1</span>` +
+      `<span style="font-family:monospace">${model.converged ? '已收敛' : '未收敛'} · mistakes=${model.mistakes} · 训练错误=${mism}</span>`;
+  }
+
+  /* ================= v1.8 · 独立成分分析 ICA（盲源分离：混合 vs 恢复） ================= */
+  let icaSeed = 7;
+  function drawICA() {
+    const { mulberry32, gaussianSample, icaFit, icaTransform } = A;
+    const rng = mulberry32(icaSeed);
+    const gs = () => gaussianSample(rng, 0, 1);
+    const n = 300, s1 = [], s2 = [];
+    for (let i = 0; i < n; i++) { s1.push(gs() - gs()); s2.push(gs() * gs() + gs() * gs()); } // Laplace / χ²：独立非高斯源
+    const Mx = [[1.6 * rng() - 0.3, 0.5 * rng() - 0.1], [0.4 * rng() - 0.1, 1.5 * rng() - 0.3]];
+    const X = []; for (let i = 0; i < n; i++) X.push([Mx[0][0] * s1[i] + Mx[0][1] * s2[i], Mx[1][0] * s1[i] + Mx[1][1] * s2[i]]);
+    const model = icaFit(X, { components: 2, seed: icaSeed });
+    const S = icaTransform(X, model);
+    const corr = (a, bb) => { let ma = 0, mb = 0; for (const v of a) ma += v; ma /= a.length; for (const v of bb) mb += v; mb /= bb.length; let num = 0, da = 0, db = 0; for (let i = 0; i < a.length; i++) { const x = a[i] - ma, y2 = bb[i] - mb; num += x * y2; da += x * x; db += y2 * y2; } return num / Math.sqrt(da * db || 1); };
+    const c1 = Math.max(Math.abs(corr(S.map(r => r[0]), s1)), Math.abs(corr(S.map(r => r[0]), s2)));
+    const c2 = Math.max(Math.abs(corr(S.map(r => r[1]), s1)), Math.abs(corr(S.map(r => r[1]), s2)));
+    const minc = Math.min(c1, c2);
+    const plot = (arr, ox, oy, w, h, col) => { let mn = Infinity, mx = -Infinity; for (const v of arr) { if (v < mn) mn = v; if (v > mx) mx = v; } const rg = (mx - mn) || 1; let d = ''; for (let i = 0; i < arr.length; i++) { const cx = ox + i / (arr.length - 1) * w, cy = oy + h - (arr[i] - mn) / rg * h; d += (i ? 'L' : 'M') + cx.toFixed(1) + ',' + cy.toFixed(1); } return `<path d="${d}" fill="none" stroke="${col}" stroke-width="1"/>`; };
+    const r0 = S.map(r => r[0]), r1 = S.map(r => r[1]), x0 = X.map(r => r[0]), x1 = X.map(r => r[1]);
+    let svg = '';
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">混合 x1</text>` + plot(x0, 30, 20, 200, 105, '#b0b8cc');
+    svg += `<text x="250" y="14" font-size="10" fill="#5b6478" font-family="monospace">混合 x2</text>` + plot(x1, 250, 20, 200, 105, '#b0b8cc');
+    svg += `<text x="30" y="146" font-size="10" fill="#3b5bfd" font-family="monospace">ICA 分离 s1</text>` + plot(r0, 30, 152, 200, 105, '#3b5bfd');
+    svg += `<text x="250" y="146" font-size="10" fill="#3b5bfd" font-family="monospace">ICA 分离 s2</text>` + plot(r1, 250, 152, 200, 105, '#3b5bfd');
+    $('svg-ica').innerHTML = svg;
+    $('legend-ica').innerHTML =
+      `<span><i style="background:#b0b8cc"></i>混合输入</span><span><i style="background:#3b5bfd"></i>ICA 分离</span>` +
+      `<span style="font-family:monospace">源恢复 min|corr|=${minc.toFixed(4)}（>0.99）</span>`;
+  }
+
+  /* ================= v1.8 · 典型相关分析 CCA（典型变量散点） ================= */
+  let ccaSeed = 7;
+  function drawCCA() {
+    const { mulberry32, gaussianSample, ccaFit, ccaProject } = A;
+    const rng = mulberry32(ccaSeed);
+    const n = 200;
+    const X = []; for (let i = 0; i < n; i++) X.push([gaussianSample(rng, 0, 1), gaussianSample(rng, 0, 1), gaussianSample(rng, 0, 1)]);
+    const Mm = [[1.0, 0.2], [-0.3, 0.8], [0.5, 0.4]];
+    const Y = []; for (let i = 0; i < n; i++) {
+      Y.push([X[i][0] * Mm[0][0] + X[i][1] * Mm[1][0] + X[i][2] * Mm[2][0] + gaussianSample(rng, 0, 0.15),
+              X[i][0] * Mm[0][1] + X[i][1] * Mm[1][1] + X[i][2] * Mm[2][1] + gaussianSample(rng, 0, 0.15)]);
+    }
+    const model = ccaFit(X, Y, { reg: 1e-6 });
+    const { U, V } = ccaProject(X, Y, model);
+    const u = U.map(r => r[0]), v = V.map(r => r[0]);
+    const r1 = model.correlations[0], r2 = model.correlations[1];
+    const umin = Math.min(...u), umax = Math.max(...u), vmin = Math.min(...v), vmax = Math.max(...v);
+    const px = (val) => 40 + (val - umin) / (umax - umin) * 400, py = (val) => 270 - (val - vmin) / (vmax - vmin) * 240;
+    let svg = '<line x1="40" y1="270" x2="440" y2="270" stroke="#d5dbe5"/><line x1="40" y1="20" x2="40" y2="270" stroke="#d5dbe5"/>';
+    for (let i = 0; i < n; i++) svg += `<circle cx="${px(u[i]).toFixed(1)}" cy="${py(v[i]).toFixed(1)}" r="3" fill="#3b5bfd" fill-opacity="0.5"/>`;
+    $('svg-cca').innerHTML = svg;
+    $('legend-cca').innerHTML =
+      `<span><i style="background:#3b5bfd"></i>典型变量 (U₁, V₁)</span>` +
+      `<span style="font-family:monospace">r₁=${r1.toFixed(4)} · r₂=${r2.toFixed(4)}（非增）</span>`;
+  }
+
+  /* ================= v1.8 · 层次聚类 Hierarchical（凝聚树状图） ================= */
+  let hcSeed = 7;
+  function drawHC() {
+    const { mulberry32, gaussianSample, hierarchicalCluster } = A;
+    const rng = mulberry32(hcSeed);
+    const centers = [[-3, -2], [3, -1], [0, 3.5]], truth = [], X = [];
+    for (let c = 0; c < 3; c++) for (let i = 0; i < 30; i++) { X.push([gaussianSample(rng, centers[c][0], 0.5), gaussianSample(rng, centers[c][1], 0.5)]); truth.push(c); }
+    const n = X.length;
+    const model = hierarchicalCluster(X, { linkage: 'average' });
+    const lab = model.labels(3);
+    const C = (x) => x * (x - 1) / 2;
+    const tab = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    for (let i = 0; i < n; i++) tab[lab[i]][truth[i]]++;
+    let sij = 0; const a = [0, 0, 0], b = [0, 0, 0];
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) { sij += C(tab[i][j]); a[i] += tab[i][j]; b[j] += tab[i][j]; }
+    const ai = a.reduce((p, c) => p + C(c), 0), bi = b.reduce((p, c) => p + C(c), 0), tot = C(n);
+    const expct = ai * bi / tot, maxi = 0.5 * (ai + bi);
+    const ari = Math.abs(maxi - expct) < 1e-12 ? 1 : (sij - expct) / (maxi - expct);
+    const merges = model.merges;
+    const posX = new Array(2 * n - 1), posY = new Array(2 * n - 1).fill(0);
+    for (let i = 0; i < n; i++) posX[i] = i;
+    const maxH = merges.length ? merges[merges.length - 1].distance : 1;
+    const ox = 40, oy = 250, W = 400, H = 200;
+    const sx = (i) => ox + (i / (n - 1)) * W, sy = (h) => oy - (h / maxH) * H;
+    let d = '';
+    for (let k = 0; k < merges.length; k++) {
+      const { a: ca, b: cb, distance } = merges[k]; const node = n + k;
+      posX[node] = (posX[ca] + posX[cb]) / 2; posY[node] = distance;
+      const xa = sx(posX[ca]), xb = sx(posX[cb]), yn = sy(distance), ya = sy(posY[ca]), yb = sy(posY[cb]);
+      d += `M${xa.toFixed(1)},${ya.toFixed(1)}L${xa.toFixed(1)},${yn.toFixed(1)}M${xb.toFixed(1)},${yb.toFixed(1)}L${xb.toFixed(1)},${yn.toFixed(1)}M${xa.toFixed(1)},${yn.toFixed(1)}L${xb.toFixed(1)},${yn.toFixed(1)}`;
+    }
+    const cols = ['#2980b9', '#e74c3c', '#17994f'];
+    let svg = `<path d="${d}" fill="none" stroke="#95a5a6" stroke-width="1"/>`;
+    for (let i = 0; i < n; i++) svg += `<circle cx="${sx(i).toFixed(1)}" cy="${(oy + 4).toFixed(1)}" r="2.4" fill="${cols[truth[i]]}"/>`;
+    $('svg-hc').innerHTML = svg;
+    $('legend-hc').innerHTML =
+      `<span><i style="background:#2980b9"></i>团0</span><span><i style="background:#e74c3c"></i>团1</span><span><i style="background:#17994f"></i>团2</span>` +
+      `<span style="font-family:monospace">${model.linkage} linkage · 切 3 簇 ARI=${ari.toFixed(4)}</span>`;
+  }
+
+  $('btn-perc').addEventListener('click', () => { percSeed = (percSeed * 31 + 17) % 100000; drawPerc(); });
+  $('btn-ica').addEventListener('click', () => { icaSeed = (icaSeed * 37 + 11) % 100000; drawICA(); });
+  $('btn-cca').addEventListener('click', () => { ccaSeed = (ccaSeed * 29 + 13) % 100000; drawCCA(); });
+  $('btn-hc').addEventListener('click', () => { hcSeed = (hcSeed * 41 + 9) % 100000; drawHC(); });
+
   $('btn-gmm').addEventListener('click', () => { gmmSeed = (gmmSeed * 31 + 17) % 100000; drawGMM(); });
   $('btn-lda').addEventListener('click', () => { ldaSeed = (ldaSeed * 37 + 11) % 100000; drawLDA(); });
   $('btn-nb').addEventListener('click', () => { nbSeed = (nbSeed * 29 + 13) % 100000; drawNB(); });
@@ -1260,6 +1434,10 @@
   drawLDA();
   drawNB();
   drawRF();
+  drawPerc();
+  drawICA();
+  drawCCA();
+  drawHC();
   drawOpt();
 })();
 </script>
