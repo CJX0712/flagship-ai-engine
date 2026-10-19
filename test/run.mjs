@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 旗舰AI引擎 · 无头不变量自检入口
- * 期望输出：PASS 26/26 — 全部不变量自检通过
+ * 期望输出：PASS 30/30 — 全部不变量自检通过
  */
 import { runAllInvariants } from '../src/verify/invariants.js';
 

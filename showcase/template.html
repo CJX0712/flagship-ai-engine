@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">26 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">30 组套件 · 每条算法 ≥ 1 条硬不变量 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -217,6 +217,24 @@
       <svg id="svg-kf" viewBox="0 0 460 300"></svg>
       <div class="legend" id="legend-kf"></div>
     </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>MCMC 采样分布（Metropolis-Hastings）</strong>
+        <button id="btn-mcmc">换提议尺度</button>
+      </div>
+      <div class="desc">仅需未归一化密度 · 直方图 vs 理论 N(0,1) 曲线 · 接受率诊断</div>
+      <svg id="svg-mcmc" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-mcmc"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>Word2Vec 词向量（SGNS 训练后投影）</strong>
+        <button id="btn-w2v">重新训练</button>
+      </div>
+      <div class="desc">Skip-gram + 负采样 · PCA 投影到 2D · 共现词自动聚成语义团簇</div>
+      <svg id="svg-w2v" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-w2v"></div>
+    </div>
   </div>
 
   <div class="refs">
@@ -232,6 +250,8 @@
     <code>Hendrycks &amp; Gimpel 2016 · GELU</code><code>Loshchilov &amp; Hutter 2016 · SGDR</code>
     <code>LeCun et al. 1998 · CNN</code><code>Rasmussen &amp; Williams 2006 · GPML</code>
     <code>Friedman 2001 · Gradient Boosting</code><code>Kalman 1960 · 最优滤波</code>
+    <code>Kingma &amp; Welling 2013 · VAE</code><code>Metropolis 1953 / Hastings 1970 · MCMC</code>
+    <code>Mikolov et al. 2013 · Word2Vec</code><code>Lee &amp; Seung 1999 · NMF</code>
   </div>
 
   <footer>
@@ -726,10 +746,101 @@
       `<span style="font-family:monospace">RMSE: 观测 ${rmseObs.toFixed(3)} → 滤波 ${rmseKf.toFixed(3)}（降 ${((1 - rmseKf / rmseObs) * 100).toFixed(0)}%）</span>`;
   }
 
+  /* ================= v1.5 · MCMC 采样分布 ================= */
+  const mcmcSigmas = [0.5, 1.2, 2.4, 6.0];
+  let mcmcIdx = 2;
+  function drawMCMC() {
+    const sigma = mcmcSigmas[mcmcIdx];
+    // 目标：标准正态（**未归一化** −x²/2，常数项在比值中相消）
+    const res = A.metropolisHastings((v) => -0.5 * v[0] * v[0], [0], {
+      iters: 30000, proposalSigma: sigma, burnIn: 3000, thin: 2, seed: 42,
+    });
+    const series = res.samples.map((s) => s[0]);
+    const mom = A.mcmcEmpiricalMoments(series);
+    // 直方图
+    const lo = -4, hi = 4, bins = 44;
+    const hist = new Array(bins).fill(0);
+    for (const v of series) {
+      const b = Math.floor((v - lo) / (hi - lo) * bins);
+      if (b >= 0 && b < bins) hist[b]++;
+    }
+    const maxH = Math.max(...hist);
+    const mx = (x) => 34 + (x - lo) / (hi - lo) * 400;
+    const my = (h) => 272 - (h / maxH) * 240;
+    let svg = `<line x1="34" y1="272" x2="434" y2="272" stroke="#d5dbe5" stroke-width="1"/>`;
+    for (let b = 0; b < bins; b++) {
+      if (hist[b] === 0) continue;
+      const x0 = mx(lo + (b / bins) * (hi - lo)), x1 = mx(lo + ((b + 1) / bins) * (hi - lo));
+      svg += `<rect x="${x0.toFixed(1)}" y="${my(hist[b]).toFixed(1)}" width="${(x1 - x0 - 1).toFixed(1)}"
+        height="${(272 - my(hist[b])).toFixed(1)}" fill="#2980b9" fill-opacity="0.55"/>`;
+    }
+    // 理论密度 N(0,1) 按面积归一到直方图计数标度：期望计数 = 密度 × 箱宽 × 样本数
+    const area = (hi - lo) / bins;
+    const pts2 = [];
+    for (let i = 0; i <= 200; i++) {
+      const x = lo + (i / 200) * (hi - lo);
+      const dens = Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+      pts2.push(`${mx(x).toFixed(1)},${my(dens * area * series.length).toFixed(1)}`);
+    }
+    svg += `<polyline fill="none" stroke="#c0392b" stroke-width="2.4" points="${pts2.join(' ')}"/>`;
+    $('svg-mcmc').innerHTML = svg;
+    $('legend-mcmc').innerHTML =
+      `<span><i style="background:#2980b9;opacity:.6"></i>MH 采样直方图</span>` +
+      `<span><i style="background:#c0392b"></i>理论 N(0,1)</span>` +
+      `<span style="font-family:monospace">σ_prop=${sigma} 接受率=${(res.acceptanceRate * 100).toFixed(1)}% · μ=${mom.mean.toFixed(3)} σ²=${mom.variance.toFixed(3)}</span>`;
+  }
+
+  /* ================= v1.5 · Word2Vec 词向量投影 ================= */
+  let w2vSeed = 42;
+  function drawW2V() {
+    const toy = A.makeToyCorpus({ clusterSize: 5, windowSize: 2, repeats: 16, seed: 42 });
+    const tr = A.trainSGNS(toy.pairs, toy.vocabSize, {
+      dim: 16, negatives: 5, lr: 0.08, epochs: 120, seed: w2vSeed,
+    });
+    // PCA 投影到 2D（复用引擎的 pca：返回 {components, explained, proj, ...}）
+    const p = A.pca(tr.Win, 2);
+    const xs = p.proj.map((r) => r[0]), ys = p.proj.map((r) => r[1]);
+    const spanX = Math.max(...xs) - Math.min(...xs) || 1;
+    const spanY = Math.max(...ys) - Math.min(...ys) || 1;
+    const padX = spanX * 0.15, padY = spanY * 0.15;
+    const loX = Math.min(...xs) - padX, hiX = Math.max(...xs) + padX;
+    const loY = Math.min(...ys) - padY, hiY = Math.max(...ys) + padY;
+    const mx = (v) => 40 + (v - loX) / (hiX - loX) * 380;
+    const my = (v) => 270 - (v - loY) / (hiY - loY) * 240;
+    const half = toy.vocabSize / 2;
+    let svg = '';
+    // 团内连线（共现关系）
+    for (const [a, b] of toy.cooc) {
+      if (a >= b) continue;
+      svg += `<line x1="${mx(xs[a]).toFixed(1)}" y1="${my(ys[a]).toFixed(1)}"
+        x2="${mx(xs[b]).toFixed(1)}" y2="${my(ys[b]).toFixed(1)}"
+        stroke="#95a5a6" stroke-width="0.6" stroke-opacity="0.35"/>`;
+    }
+    for (let i = 0; i < toy.vocabSize; i++) {
+      const color = i < half ? '#2980b9' : '#c0392b';
+      svg += `<circle cx="${mx(xs[i]).toFixed(1)}" cy="${my(ys[i]).toFixed(1)}" r="6.5"
+        fill="${color}" stroke="#fff" stroke-width="1.2"/>`;
+      svg += `<text x="${mx(xs[i]).toFixed(1)}" y="${(my(ys[i]) + 3.5).toFixed(1)}" font-size="9"
+        text-anchor="middle" fill="#fff" font-family="monospace" font-weight="700">${i}</text>`;
+    }
+    $('svg-w2v').innerHTML = svg;
+    const meanSim = (pairs) => {
+      let s = 0;
+      for (const [a, b] of pairs) s += A.wordSimilarity(tr.Win[a], tr.Win[b]);
+      return s / pairs.length;
+    };
+    $('legend-w2v').innerHTML =
+      `<span><i style="background:#2980b9"></i>语义团 A</span><span><i style="background:#c0392b"></i>语义团 B</span>` +
+      `<span><i style="background:#95a5a6"></i>共现关系</span>` +
+      `<span style="font-family:monospace">共现相似度 ${meanSim(toy.cooc).toFixed(3)} vs 非共现 ${meanSim(toy.noncooc).toFixed(3)}</span>`;
+  }
+
   $('btn-moons').addEventListener('click', () => { moonSeed = (moonSeed * 47 + 3) % 100000; drawMoons(); });
   $('btn-act').addEventListener('click', () => { actShowDeriv = !actShowDeriv; drawAct(); });
   $('btn-gpr').addEventListener('click', () => { gprSeed = (gprSeed * 53 + 7) % 100000; drawGPR(); });
   $('btn-kf').addEventListener('click', () => { kfSeed = (kfSeed * 59 + 11) % 100000; drawKF(); });
+  $('btn-mcmc').addEventListener('click', () => { mcmcIdx = (mcmcIdx + 1) % mcmcSigmas.length; drawMCMC(); });
+  $('btn-w2v').addEventListener('click', () => { w2vSeed = (w2vSeed * 61 + 13) % 100000; drawW2V(); });
 
   renderSuites();
   drawKmeans();
@@ -744,6 +855,8 @@
   drawAct();
   drawGPR();
   drawKF();
+  drawMCMC();
+  drawW2V();
   drawOpt();
 })();
 </script>

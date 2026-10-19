@@ -6,15 +6,15 @@
 [![CI](https://github.com/CJX0712/flagship-ai-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/CJX0712/flagship-ai-engine/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Zero Dependency](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](package.json)
-[![Self-Test](https://img.shields.io/badge/self--test-26%2F26%20green-success.svg)](test/run.mjs)
-[![Release](https://img.shields.io/badge/release-v1.4.0-blue.svg)](https://github.com/CJX0712/flagship-ai-engine/releases)
+[![Self-Test](https://img.shields.io/badge/self--test-30%2F30%20green-success.svg)](test/run.mjs)
+[![Release](https://img.shields.io/badge/release-v1.5.0-blue.svg)](https://github.com/CJX0712/flagship-ai-engine/releases)
 
 ---
 
 ## 旗舰宣言
 
 - **零重写 · 集大成**：每一行代码都站在世界顶级成果之上。数学来自 Numerical Recipes / Golub & Van Loan；机器学习来自 ESL / Bishop；深度学习来自 Attention Is All You Need；循环网络来自 Werbos 1990；SVM 来自 Cortes & Vapnik 1995；集成学习来自 Freund & Schapire 1997；HMM 来自 Baum & Petrie 1966；强化学习来自 Bellman 1957；免模型控制来自 Watkins 1989；密度聚类来自 Ester et al. 1996；流形嵌入来自 van der Maaten & Hinton 2008；自适应优化来自 Kingma & Ba 2015；核主成分来自 Schölkopf et al. 1998；谱聚类来自 Shi & Malik 2000 / Ng-Jordan-Weiss 2002；现代激活来自 Hendrycks & Gimpel 2016（GELU）；学习率调度来自 Vaswani et al. 2017（Noam）与 Loshchilov & Hutter 2016（SGDR）。凡有更强现成方案，立即替换自写。
-- **可验证 · 不变量驱动**：每条算法至少带 1 条"可验证不变量"——解析解 vs 数值解、梯度检验、责任度和 1、KL≥0、EM 单调性、Bellman 残差→0、KKT 互补松弛、ARI=1、困惑度达成、Adam 首步闭式、线性核 KPCA ≡ 经典 PCA、谱聚类两月亮 ARI=1.000000、GELU/SiLU/Mish 导数 ≡ 中心差分、Noam 两支在 warmup 顶点精确连续…… 浏览器一键自检 + 无头 Node `26/26` 全绿。
+- **可验证 · 不变量驱动**：每条算法至少带 1 条"可验证不变量"——解析解 vs 数值解、梯度检验、责任度和 1、KL≥0、EM 单调性、Bellman 残差→0、KKT 互补松弛、ARI=1、困惑度达成、Adam 首步闭式、线性核 KPCA ≡ 经典 PCA、谱聚类两月亮 ARI=1.000000、GELU/SiLU/Mish 导数 ≡ 中心差分、Noam 两支在 warmup 顶点精确连续…… 浏览器一键自检 + 无头 Node `30/30` 全绿。
 - **闭环交付**：完整开源、可运行、可复现、可验证。
 
 ## 快速开始
@@ -26,7 +26,7 @@ cd flagship-ai-engine
 
 # 运行不变量自检（无需安装任何依赖）
 node test/run.mjs
-# 期望输出：PASS 26/26 — 全部不变量自检通过
+# 期望输出：PASS 30/30 — 全部不变量自检通过
 ```
 
 **旗舰展示页**：直接双击 `showcase/index.html`（引擎已内联，零服务器、零网络），
@@ -42,7 +42,7 @@ node test/run.mjs
 经典机器学习层 ml/    regression · classification · clustering · dimreduction · dbscan · tsne · kpca · spectral · svm · boosting · hmm · tree
 深度学习层   nn/    denseNet · attention · transformerBlock · rnn · lstm · optimizers · activations · schedulers
 强化学习层   rl/    valueIteration · policyEvaluation · qLearning · gridworld
-验证层       verify/ 每条算法的不变量自检（26 组套件）
+验证层       verify/ 每条算法的不变量自检（30 组套件）
 展示层       showcase/ 单文件 HTML 旗舰页
 ```
 
@@ -68,24 +68,29 @@ node test/run.mjs
 | 高斯过程 | GPR（RBF 核 + Cholesky + 边际似然 + 超参数梯度） | LLᵀ≡K；无噪声极限插值；后验方差≤先验且远点→σ_f²；解析梯度 ≡ 差分（R&W 5.9） |
 | 梯度提升 | GBDT（回归树基学习器 + 负梯度 + 学习率收缩） | 训练 MSE 单调不增；树 ≡ 残差正交投影（⟨h,r⟩=‖h‖²）；lr→0 ⇒ 预测 ≡ ȳ |
 | 状态空间 | 卡尔曼滤波（Joseph 协方差更新 + DARE 稳态） | K=P⁻H/(HP⁻H+R)；新息白噪声；P⁻ 收敛到 Riccati 解析解；协方差恒半正定 |
+| 深度生成 | VAE（重参数化 + ELBO + 解析 KL） | KL 解析闭式 ≡ 蒙特卡洛；KL≥0 且后验≡先验时为 0；重参数化梯度 ≡ 中心差分 |
+| 贝叶斯推断 | MCMC（Metropolis-Hastings + 重要性采样） | 未归一化密度即可采样；经验矩 ≡ 解析矩；细致平衡；接受率随尺度单调 |
+| 表示学习 | Word2Vec SGNS（Skip-gram + 负采样） | 解析梯度 ≡ 中心差分；σ(−x)=1−σ(x)；训练后共现相似度 ≫ 非共现 |
+| 非负分解 | NMF（Lee-Seung 乘性更新） | 重构误差单调不增（定理）；非负性保持；≥ 同秩 SVD 最优误差（Eckart–Young） |
 | 一阶优化 | SGD-Momentum · RMSProp · Adam（统一 step 接口 + minimize） | Adam 首步 Δ=−lr·sign(g) 且尺度不变，动量速度闭式，二次型收敛到 x*=A⁻¹b |
 | 强化学习 | 值迭代 · 策略评估 · Q-learning · 4×4 随机网格世界 | Bellman 残差→0，V^{π*}≡V*，V*=r/(1−γ)，Q≡qFromV(V*) |
 
-## 展示页实时演示（13 个）
+## 展示页实时演示（15 个）
 
 k-means 聚类 · 注意力热力图 · 核 SVM 决策边界 · AdaBoost 集成边界 · RL 网格世界（值迭代）
 · LSTM 序列回归 · t-SNE 嵌入 · DBSCAN 含噪声识别 · 优化器等势面轨迹
 · **谱聚类 vs k-means（两月亮，图边可视化 + ARI 对照）** · 现代激活函数族（GELU/SiLU/Mish 函数/导数视图） · **高斯过程回归（后验均值 + 95% 置信带）**
-· **卡尔曼滤波（真值 vs 观测 vs 滤波估计）**——全部由本页内联引擎实时计算，种子化随机可复现。
+· 卡尔曼滤波（真值 vs 观测 vs 滤波估计） · **MCMC 采样分布（直方图 vs 理论密度）**
+· **Word2Vec 词向量（SGNS 训练后 PCA 投影）**——全部由本页内联引擎实时计算，种子化随机可复现。
 
 ## 验证
 
 ```bash
 node test/run.mjs
-# 期望输出：PASS 26/26 — 全部不变量自检通过
+# 期望输出：PASS 30/30 — 全部不变量自检通过
 ```
 
-26 组套件覆盖 130+ 条硬不变量。CI 在 Node 16/18/20 三个版本上运行同一自检（精确校验 `PASS 26/26`）。
+30 组套件覆盖 155+ 条硬不变量。CI 在 Node 16/18/20 三个版本上运行同一自检（精确校验 `PASS 30/30`）。
 
 ## 许可证
 

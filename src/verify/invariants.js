@@ -1,7 +1,7 @@
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 26 组套件全绿 = 引擎数学正确性的机器证明。
+ * 30 组套件全绿 = 引擎数学正确性的机器证明。
  */
 
 import {
@@ -72,6 +72,21 @@ import {
   kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate,
   innovationAutocorr, empiricalVariance,
 } from '../ml/kalman.js';
+import {
+  vaeMake, vaeForward, vaeBackward, vaeKL, vaeKLMonteCarlo, vaeSampleEps,
+  vaeReparametrize, vaeGradientCheck,
+} from '../nn/vae.js';
+import {
+  metropolisHastings, mhAcceptProb, detailedBalanceResidual,
+  importanceSampling, mcmcEmpiricalMoments,
+} from '../ml/mcmc.js';
+import {
+  sgnsLoss, sgnsGradients, sgnsLossReference, sgnsGradientCheck,
+  trainSGNS, wordSimilarity, makeToyCorpus,
+} from '../nn/word2vec.js';
+import {
+  nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData,
+} from '../ml/nmf.js';
 
 /** 向量最大绝对值 */
 function vinf(v) {
@@ -142,6 +157,10 @@ export function runAllInvariants() {
     ['高斯过程回归 · GPR', suiteGPR],
     ['梯度提升树 · GBDT', suiteGBDT],
     ['卡尔曼滤波 · Kalman', suiteKalman],
+    ['变分自编码器 · VAE', suiteVAE],
+    ['马尔可夫链蒙特卡洛 · MCMC', suiteMCMC],
+    ['词向量 · Word2Vec SGNS', suiteWord2Vec],
+    ['非负矩阵分解 · NMF', suiteNMF],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -1528,4 +1547,238 @@ function suiteKalman(check) {
   const kfRmse = Math.sqrt(se / obs.length);
   check('Kalman：滤波估计 RMSE < 观测噪声 σ（优于直接观测）', kfRmse < Math.sqrt(r),
     `RMSE=${kfRmse.toFixed(5)} vs 观测噪声 σ=${Math.sqrt(r).toFixed(5)}`);
+}
+
+/* ============================================================
+ * 套件 27 · 变分自编码器（Kingma & Welling 2013）
+ * ============================================================ */
+function suiteVAE(check) {
+  const net = vaeMake({ dimX: 6, dimH: 8, dimZ: 3, seed: 42 });
+  const rng = mulberry32(1234);
+  const x = [];
+  for (let i = 0; i < 6; i++) x.push(rng() * 2 - 1);
+  const eps = vaeSampleEps(3, rng);
+
+  // ① KL 解析闭式 ≡ 蒙特卡洛估计（大样本）
+  const mu = [0.7, -1.2, 0.3], logvar = [0.2, -0.5, 0.9];
+  const klAna = vaeKL(mu, logvar);
+  const klMC = vaeKLMonteCarlo(mu, logvar, mulberry32(99), 200000);
+  check('VAE：KL 解析闭式 ≡ 蒙特卡洛估计（20 万样本，相对偏差 < 2%）',
+    Math.abs(klAna - klMC) / klAna < 0.02,
+    `解析=${klAna.toFixed(6)}，MC=${klMC.toFixed(6)}（偏差 ${(Math.abs(klAna - klMC) / klAna * 100).toFixed(2)}%）`);
+
+  // ② KL ≥ 0；后验 ≡ 先验（μ=0, logvar=0）时 KL = 0 精确
+  let minKL = Infinity;
+  const rng2 = mulberry32(7);
+  for (let t = 0; t < 200; t++) {
+    const m = [rng2() * 4 - 2, rng2() * 4 - 2, rng2() * 4 - 2];
+    const lv = [rng2() * 4 - 2, rng2() * 4 - 2, rng2() * 4 - 2];
+    minKL = Math.min(minKL, vaeKL(m, lv));
+  }
+  check('VAE：KL ≥ 0（200 组随机后验）且 μ=0,σ²=1 时 KL = 0',
+    minKL >= -1e-12 && vaeKL([0, 0, 0], [0, 0, 0]) === 0,
+    `minKL=${minKL.toExponential(3)}，KL(先验)=${vaeKL([0, 0, 0], [0, 0, 0])}`);
+
+  // ③ 重参数化恒等：μ=0、logvar=0 ⇒ z ≡ ε
+  const zId = vaeReparametrize([0, 0, 0], [0, 0, 0], eps);
+  let idErr = 0;
+  for (let i = 0; i < eps.length; i++) idErr = Math.max(idErr, Math.abs(zId[i] - eps[i]));
+  check('VAE：重参数化恒等 μ=0,logvar=0 ⇒ z ≡ ε', idErr < 1e-15,
+    `maxDiff=${idErr.toExponential(2)}`);
+
+  // ④ 梯度检验：重参数化后 loss 为确定性函数 ⇒ 解析梯度 ≡ 中心差分
+  const gc = vaeGradientCheck(net, x, eps);
+  check('VAE：重参数化路径解析梯度 ≡ 中心差分（编码器+解码器全部参数）',
+    gc.maxRel < 1e-6 && gc.maxAbs < 1e-7,
+    `maxRel=${gc.maxRel.toExponential(2)}，maxAbs=${gc.maxAbs.toExponential(2)}`);
+
+  // ⑤ ELBO ≤ log p(x) 的构造性证据：ELBO ≡ −(重构 + KL) 恒等
+  const fwd = vaeForward(net, x, eps);
+  const elboRef = -(fwd.recon + fwd.kl);
+  check('VAE：ELBO ≡ −(重构误差 + KL)（变分下界分解恒等）',
+    Math.abs(fwd.elbo - elboRef) < 1e-15 && fwd.kl >= 0,
+    `ELBO=${fwd.elbo.toFixed(6)}，重构=${fwd.recon.toFixed(6)}，KL=${fwd.kl.toFixed(6)}`);
+
+  // ⑥ KL 随后验逼近先验单调趋零（σ² → 1、μ → 0 时 KL → 0）
+  let klMono = true, prev = Infinity;
+  for (const scale of [3, 2, 1.5, 1.2, 1.05, 1.0]) {
+    const k = vaeKL([0.5 * (scale - 1)], [Math.log(scale)]);
+    if (k > prev + 1e-12) klMono = false;
+    prev = k;
+  }
+  check('VAE：KL 随后验逼近先验单调趋零', klMono && prev < 1e-3,
+    `末值（后验≡先验）=${prev.toExponential(2)}`);
+}
+
+/* ============================================================
+ * 套件 28 · MCMC（Metropolis-Hastings + 重要性采样）
+ * ============================================================ */
+function suiteMCMC(check) {
+  // 目标：标准正态。注意两个版本都**未归一化**（缺少 −½log2π），
+  // 这正是 MH 的关键优势：归一化常数在比值中相消。
+  const logUnnorm = (v) => -0.5 * v[0] * v[0];
+  const res = metropolisHastings(logUnnorm, [0], {
+    iters: 40000, proposalSigma: 2.4, burnIn: 4000, thin: 2, seed: 42,
+  });
+  const series = res.samples.map((s) => s[0]);
+  const mom = mcmcEmpiricalMoments(series);
+
+  // ① 经验矩 ≡ 解析矩（标准正态：均值 0、方差 1、四阶矩 3、P(|x|<1)=0.6827）
+  const okMean = Math.abs(mom.mean) < 0.05;
+  const okVar = Math.abs(mom.variance - 1) < 0.06;
+  const okM4 = Math.abs(mom.m4 - 3) / 3 < 0.10;
+  const okP = Math.abs(mom.pWithin1 - 0.682689) < 0.03;
+  check('MCMC：未归一化目标采样 ≡ 标准正态（均值0/方差1/四阶矩3/P(|x|<1)=0.6827）',
+    okMean && okVar && okM4 && okP,
+    `μ=${mom.mean.toFixed(4)}，σ²=${mom.variance.toFixed(4)}，E[x⁴]=${mom.m4.toFixed(4)}，P=${mom.pWithin1.toFixed(4)}（n=${mom.n}）`);
+
+  // ② 归一化常数无关性：补上常数项后应得同一分布
+  const logNorm = (v) => -0.5 * v[0] * v[0] - 0.5 * Math.log(2 * Math.PI);
+  const res2 = metropolisHastings(logNorm, [0], {
+    iters: 40000, proposalSigma: 2.4, burnIn: 4000, thin: 2, seed: 42,
+  });
+  const m2 = mcmcEmpiricalMoments(res2.samples.map((s) => s[0]));
+  check('MCMC：归一化常数无关性（未归一化 vs 归一化同一平稳分布）',
+    Math.abs(m2.variance - mom.variance) < 0.02 && Math.abs(m2.mean - mom.mean) < 0.05,
+    `σ²: ${mom.variance.toFixed(4)} vs ${m2.variance.toFixed(4)}`);
+
+  // ③ 接受率落在有效区间（Roberts et al. 1997 理论最优 ≈ 0.234）
+  const rates = [];
+  for (const sig of [0.5, 1.0, 2.4, 5.0, 10.0]) {
+    const r = metropolisHastings(logUnnorm, [0], { iters: 6000, proposalSigma: sig, burnIn: 500, thin: 1, seed: 5 });
+    rates.push(r.acceptanceRate);
+  }
+  let monoDown = true;
+  for (let i = 1; i < rates.length; i++) if (rates[i] > rates[i - 1] + 1e-12) monoDown = false;
+  check('MCMC：接受率随提议尺度单调下降，且 σ=2.4 时落在有效区间 [0.2, 0.6]',
+    monoDown && rates[2] >= 0.2 && rates[2] <= 0.6,
+    `σ=0.5/1/2.4/5/10 → ${rates.map((v) => v.toFixed(3)).join(' / ')}`);
+
+  // ④ 细致平衡：π(x)T(x→x') = π(x')T(x'→x)（对称提议下逐对相消）
+  const xA = [0.7], xB = [-1.1];
+  const dbRes = detailedBalanceResidual(logNorm(xA), logNorm(xB), xA, xB, 2.4);
+  check('MCMC：细致平衡 π(x)T(x→x′) = π(x′)T(x′→x)（对称提议）', dbRes < 1e-12,
+    `相对残差=${dbRes.toExponential(2)}`);
+
+  // ⑤ 接受概率闭式 min(1, π(x')/π(x))
+  const ap = mhAcceptProb(logNorm([0]), logNorm([1]));
+  check('MCMC：接受概率 ≡ min(1, π(x′)/π(x)) = e^{−½}', Math.abs(ap - Math.exp(-0.5)) < 1e-15,
+    `α=${ap.toFixed(10)}，e^{−½}=${Math.exp(-0.5).toFixed(10)}`);
+
+  // ⑥ 重要性采样：E_π[x²] = 1（目标 N(0,1)，提议 N(0,2²)）
+  const isRes = importanceSampling(
+    (v) => -0.5 * v[0] * v[0],
+    (v) => -0.5 * (v[0] / 2) ** 2 - Math.log(2),
+    (rng) => [2 * gaussianSample(rng, 0, 1)],
+    (v) => v[0] * v[0],
+    200000, 42,
+  );
+  check('MCMC：重要性采样 E_π[x²] ≡ 1（提议 N(0,2²)，ESS 合理）',
+    Math.abs(isRes.estimate - 1) < 0.03 && isRes.ess > 20000,
+    `估计=${isRes.estimate.toFixed(5)}，ESS=${Math.round(isRes.ess)}/200000（${(isRes.ess / 2000).toFixed(1)}%）`);
+}
+
+/* ============================================================
+ * 套件 29 · Word2Vec：Skip-gram + 负采样（Mikolov 2013）
+ * ============================================================ */
+function suiteWord2Vec(check) {
+  const rng = mulberry32(2026);
+  const dim = 6;
+  const vc = [], uo = [], u1 = [], u2 = [], u3 = [];
+  for (let i = 0; i < dim; i++) {
+    vc.push(rng() * 2 - 1); uo.push(rng() * 2 - 1);
+    u1.push(rng() * 2 - 1); u2.push(rng() * 2 - 1); u3.push(rng() * 2 - 1);
+  }
+  const negs = [u1, u2, u3];
+
+  // ① 梯度检验：解析梯度 ≡ 中心差分（v_c / u_o / u_neg 三路）
+  const gc = sgnsGradientCheck(vc, uo, negs);
+  check('Word2Vec：SGNS 解析梯度 ≡ 中心差分（v_c/u_o/u_neg 三路）',
+    gc.maxRel < 1e-6 && gc.maxAbs < 1e-7,
+    `maxRel=${gc.maxRel.toExponential(2)}，maxAbs=${gc.maxAbs.toExponential(2)}`);
+
+  // ② 损失闭式 ≡ 逐项 sigmoid 参考实现（双实现互证）
+  const l1 = sgnsLoss(vc, uo, negs);
+  const l2 = sgnsLossReference(vc, uo, negs);
+  const l3 = sgnsGradients(vc, uo, negs).loss;
+  check('Word2Vec：损失闭式 ≡ 逐项 sigmoid 参考实现（三路互证）',
+    Math.abs(l1 - l2) < 1e-12 && Math.abs(l1 - l3) < 1e-12,
+    `loss=${l1.toFixed(10)}（参考 ${l2.toFixed(10)}，梯度版 ${l3.toFixed(10)}）`);
+
+  // ③ σ(−x) = 1 − σ(x)（负采样损失的对偶恒等）
+  let sigId = 0;
+  for (const t of [-8, -3, -0.5, 0, 0.5, 3, 8]) {
+    sigId = Math.max(sigId, Math.abs(sigmoid(-t) - (1 - sigmoid(t))));
+  }
+  check('Word2Vec：σ(−x) = 1 − σ(x)（负采样对偶恒等，bit 级）', sigId < 1e-15,
+    `maxDiff=${sigId.toExponential(2)}`);
+
+  // ④ 训练有效性：共现词对相似度 > 非共现词对（表示学习把共现结构编码进向量）
+  const toy = makeToyCorpus({ clusterSize: 4, windowSize: 2, repeats: 14, seed: 42 });
+  const trained = trainSGNS(toy.pairs, toy.vocabSize, {
+    dim: 12, negatives: 5, lr: 0.08, epochs: 80, seed: 42,
+  });
+  const meanSim = (pairs) => {
+    let s = 0;
+    for (const [a, b] of pairs) s += wordSimilarity(trained.Win[a], trained.Win[b]);
+    return s / pairs.length;
+  };
+  const simCo = meanSim(toy.cooc);
+  const simNon = meanSim(toy.noncooc);
+  check('Word2Vec：训练后共现词对余弦相似度 > 非共现对（表示学习有效）',
+    simCo > simNon + 0.05,
+    `共现=${simCo.toFixed(4)} vs 非共现=${simNon.toFixed(4)}（差 ${(simCo - simNon).toFixed(4)}）`);
+
+  // ⑤ 训练损失整体下降（首尾 epoch 平均对比）
+  const losses = trained.losses;
+  const headAvg = losses.slice(0, 8).reduce((a, b) => a + b, 0) / 8;
+  const tailAvg = losses.slice(-8).reduce((a, b) => a + b, 0) / 8;
+  check('Word2Vec：训练损失整体下降（前 8 epoch vs 后 8 epoch）', tailAvg < headAvg,
+    `${headAvg.toFixed(5)} → ${tailAvg.toFixed(5)}（降 ${((1 - tailAvg / headAvg) * 100).toFixed(1)}%）`);
+}
+
+/* ============================================================
+ * 套件 30 · 非负矩阵分解（Lee & Seung 1999/2001）
+ * ============================================================ */
+function suiteNMF(check) {
+  const { V, W0, H0 } = makeNMFData({ m: 8, n: 10, k: 3, seed: 42 });
+  const res = nmf(V, 3, { iters: 400, seed: 42 });
+
+  // ① 重构误差单调不增（Lee & Seung 2001 定理 1：乘性更新的核心保证）
+  let mono = true, maxUp = 0;
+  for (let i = 1; i < res.errors.length; i++) {
+    const up = res.errors[i] - res.errors[i - 1];
+    if (up > 1e-15 * (1 + res.errors[i - 1])) { mono = false; maxUp = Math.max(maxUp, up); }
+  }
+  check('NMF：重构误差 ‖V−WH‖²_F 单调不增（Lee-Seung 定理）', mono,
+    `‖·‖²: ${res.errors[0].toExponential(3)} → ${res.errors[res.errors.length - 1].toExponential(3)}，最大回升=${maxUp.toExponential(2)}`);
+
+  // ② 非负性全程保持（乘性更新的结构性保证）
+  const minEntry = nmfMinEntry(res.W, res.H);
+  check('NMF：非负性全程保持（min entry ≥ 0）', minEntry >= 0,
+    `min=${minEntry.toExponential(3)}`);
+
+  // ③ 精确恢复：由 V = W₀H₀ 构造的秩匹配数据，误差 → 0
+  const exact = nmf(V, 3, { iters: 1500, seed: 42 });
+  const finalErr = exact.errors[exact.errors.length - 1];
+  const relErr = finalErr / (V.flat().reduce((s, v) => s + v * v, 0));
+  check('NMF：秩匹配构造数据可精确恢复（相对误差 < 1e-6）', relErr < 1e-6,
+    `绝对误差²=${finalErr.toExponential(3)}，相对=${relErr.toExponential(3)}`);
+
+  // ④ Eckart–Young 下界：NMF 误差 ≥ 同秩无约束 SVD 最优逼近误差
+  const svdErr = svdBestRankKError(V, 3);
+  const nmfErr = res.errors[res.errors.length - 1];
+  check('NMF：非负约束误差 ≥ 同秩 SVD 最优逼近误差（Eckart–Young 下界）',
+    nmfErr >= svdErr - 1e-9,
+    `NMF=${nmfErr.toExponential(3)} ≥ SVD 下界=${svdErr.toExponential(3)}`);
+
+  // ⑤ 收敛到不动点：末步乘性因子偏离 1 的幅度 → 0（驻点条件）
+  const lastStep = res.steps[res.steps.length - 1];
+  check('NMF：收敛到驻点（末步更新量 < 1e-3）', lastStep < 1e-3,
+    `末步相对更新=${lastStep.toExponential(3)}`);
+
+  // ⑥ 零件式表示：NMF 的基向量非负（与 PCA/SVD 的符号任意性形成对照）
+  const allNonNegBase = res.W.every((row) => row.every((v) => v >= 0));
+  check('NMF：分解基 W 全部非负（零件式表示，区别于 SVD 的符号任意性）', allNonNegBase,
+    `W 维度 ${res.W.length}×${res.W[0].length}，k=${res.k}`);
 }

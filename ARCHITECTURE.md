@@ -35,7 +35,9 @@ flagship-ai-engine/
 │   │   ├── spectral.js          # 谱聚类 NJW（归一化拉普拉斯 + 谱嵌入）
 │   │   ├── gpr.js               # 高斯过程回归（RBF 核 + Cholesky + 超参数梯度）
 │   │   ├── gbdt.js              # GBDT 梯度提升树（回归树基学习器 + 负梯度）
-│   │   └── kalman.js            # 卡尔曼滤波（Joseph 更新 + DARE 稳态）
+│   │   ├── kalman.js            # 卡尔曼滤波（Joseph 更新 + DARE 稳态）
+│   │   ├── mcmc.js              # Metropolis-Hastings + 重要性采样
+│   │   └── nmf.js               # NMF 非负矩阵分解（Lee-Seung 乘性更新）
 │   │   ├── svm.js               # RBF 核 SVM（SMO 对偶求解，KKT 自检）
 │   │   ├── boosting.js          # AdaBoost（决策树桩加权集成）
 │   │   ├── hmm.js               # HMM 前向/后向 + Baum-Welch(EM)
@@ -54,8 +56,8 @@ flagship-ai-engine/
 │   │   ├── valueIteration.js    # 值迭代/策略评估/网格世界/链式 MDP 暴力枚举
 │   │   └── qLearning.js         # Q-learning(免模型TD) + Bellman 残差 + qFromV
 │   └── verify/
-│       └── invariants.js        # 26 组不变量自检套件（Node 与浏览器共用同一份）
-├── test/run.mjs                 # 无头自检入口 → PASS 26/26
+│       └── invariants.js        # 30 组不变量自检套件（Node 与浏览器共用同一份）
+├── test/run.mjs                 # 无头自检入口 → PASS 30/30
 ├── showcase/
 │   ├── template.html            # 旗舰展示页模板（9 个实时演示）
 │   └── index.html               # 生成物：单文件、内联引擎、双击即用
@@ -124,8 +126,8 @@ graph LR
 | T4 | ml/classification + clustering + dimreduction + tree | T1,T2 |
 | T5 | nn/dense（反向传播 + 梯度检验） | T1,T2 |
 | T6 | nn/attention + transformer | T1,T2,T5 |
-| T7 | verify/invariants（26 组套件） | T1–T6 |
-| T8 | test/run.mjs 跑通 26/26 | T7 |
+| T7 | verify/invariants（30 组套件） | T1–T6 |
+| T8 | test/run.mjs 跑通 30/30 | T7 |
 | T9 | bundle + showcase 单文件页 | T7 |
 | T10 | 文档 + GitHub 推送 + CI 绿 | T8,T9 |
 
