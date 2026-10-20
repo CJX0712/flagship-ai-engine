@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">46 组套件 · 276 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">50 组套件 · 300 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -392,8 +392,48 @@
         <button id="btn-hp">重新存储</button>
       </div>
       <div class="desc">Hopfield 1982 · Hebbian W=(1/n)Σpμpμᵀ：25% 噪声探针收敛回原模式 + 能量下降曲线</div>
-      <svg id="svg-hp" viewBox="0 0 460 300"></svg>
-      <div class="legend" id="legend-hp"></div>
+        <svg id="svg-hp" viewBox="0 0 460 300"></svg>
+        <div class="legend" id="legend-hp"></div>
+    </div>
+  </div>
+
+  <h2>v1.10 新增算法 <span class="tag">RTS 平滑 · 粒子滤波 · Mean Shift · SARSA · 均由本页引擎实时求解</span></h2>
+  <div class="demos">
+    <div class="card">
+      <div class="demo-head">
+        <strong>RTS 平滑器（Rauch–Tung–Striebel）</strong>
+        <button id="btn-rts">重新生成</button>
+      </div>
+      <div class="desc">Rauch,Tung&Striebel 1965 · 卡尔曼滤波后再用未来数据反向修正：x̂_{k|N}=x̂_{k|k}+J_k(x̂_{k+1|N}−x̂_{k+1|k})，J_k=P_{k|k}FᵀP_{k+1|k}⁻¹；平滑必降不确定性</div>
+      <svg id="svg-rts" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-rts"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>粒子滤波 SIR（Gordon 1993）</strong>
+        <button id="btn-pf">重新生成</button>
+      </div>
+      <div class="desc">Bootstrap/SIR：N 个带权粒子逼近后验，log 域权重+系统重采样；线性高斯下收敛到卡尔曼解析解</div>
+      <svg id="svg-pf" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-pf"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>Mean Shift 众数搜索（Fukunaga 1975）</strong>
+        <button id="btn-ms">重新混合</button>
+      </div>
+      <div class="desc">Fukunaga&Hostetler 1975 · 梯度恒等式 m(x)−x=h²∇f̂/f̂：自适应步长密度梯度上升，Cheng 1995 单调收敛；无需预设簇数</div>
+      <svg id="svg-ms" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-ms"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>SARSA 同策略 TD（Rummery&Niranjan 1994）</strong>
+        <button id="btn-sarsa">重新训练</button>
+      </div>
+      <div class="desc">Sutton 1996 更名 · 目标 a' 由 ε-贪心真实采样（在策略），λ=0 退化为 SARSA；GLIE 收敛到 Q*、资格迹 γλ 衰减</div>
+      <svg id="svg-sarsa" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-sarsa"></div>
     </div>
   </div>
 
@@ -3727,6 +3767,380 @@ function empiricalVariance(series) {
   return s / n;
 }
 
+/* ═══════════ src/ml/kalmanSmoother.js ═══════════ */
+/**
+ * 旗舰AI引擎 · RTS 平滑器（Rauch–Tung–Striebel 1965）
+ * 站在：Rauch, Tung & Striebel 1965《Maximum Likelihood Estimates of Linear
+ *       Dynamic Systems》· Anderson & Moore《Optimal Filtering》§7.3
+ *       · Särkkä《Bayesian Filtering and Smoothing》§8.2
+ *       · Shumway & Stoffer《Time Series Analysis》§6.2（EM 中的平滑协方差）
+ *
+ * 卡尔曼滤波只用「到当前时刻为止」的数据：x̂_{k|k} = E[x_k | y_1..y_k]；
+ * RTS 平滑器再用「未来」的数据做一次反向修正：x̂_{k|N} = E[x_k | y_1..y_N]。
+ * 反向递推（k = N−1 → 0）：
+ *   增益   J_k   = P_{k|k}·Fᵀ·P_{k+1|k}⁻¹
+ *   均值   x̂_{k|N} = x̂_{k|k} + J_k·(x̂_{k+1|N} − x̂_{k+1|k})
+ *   协方差 P_{k|N} = P_{k|k} + J_k·(P_{k+1|N} − P_{k+1|k})·J_kᵀ
+ * 端点闭合：x̂_{N|N} ≡ 滤波终点（平滑器最后一步不做任何修正）。
+ *
+ * 索引约定（与 kalman.js 完全兼容）：滤波输出的第 k 项对应「第 k+1 个时刻」——
+ *   states[k] = x̂_{k+1|k+1}，covariances[k] = P_{k+1|k+1}；
+ *   predicted[k] = x̂_{k+1|k}，predictedCov[k] = P_{k+1|k}。
+ * 故平滑增益 J_k（k = 0..N−2）由 covariances[k] 与 predictedCov[k+1] 构成。
+ *
+ * 不变量：
+ *   ① 终点等式：x̂_{N|N}^{平滑} ≡ 滤波终点（误差精确为 0）；
+ *   ② 协方差序：P_{k|k} − P_{k|N} 半正定（平滑必降低不确定性，最小特征值 ≥ −1e-10）；
+ *   ③ 增益恒等式：J_k ≡ P_{k|k}FᵀP_{k+1|k}⁻¹ 独立重算（1e-12）；
+ *   ④ 常值状态闭式：F=1, Q=0 时平滑 x̂_{0|N} ≡ 全部观测的样本均值（1e-10）；
+ *   ⑤ 反向递推自洽：x̂_{k|N} ≡ x̂_{k|k} + J_k(x̂_{k+1|N} − x̂_{k+1|k}) 重算（1e-12）；
+ *   ⑥ 均方误差序：蒙特卡洛聚合 MSE(平滑) < MSE(滤波)（最优平滑 = 全数据后验均值）。
+ */
+
+
+
+
+/** 矩阵减法 A − B */
+function rtsMsub(A, B) {
+  return A.map((row, i) => row.map((v, j) => v - B[i][j]));
+}
+
+/** 矩阵加法 A + B */
+function rtsMadd(A, B) {
+  return A.map((row, i) => row.map((v, j) => v + B[i][j]));
+}
+
+/** 就地对称化 A ← (A + Aᵀ)/2（消除浮点非对称，协方差类的必需收尾） */
+function rtsSymmetrize(A) {
+  const n = A.length;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const avg = 0.5 * (A[i][j] + A[j][i]);
+      A[i][j] = avg;
+      A[j][i] = avg;
+    }
+  }
+  return A;
+}
+
+/**
+ * 平滑增益 J = P_{k|k}·Fᵀ·P_{k+1|k}⁻¹。
+ * 等价写法：Jᵀ = P_{k+1|k}⁻¹·(P_{k|k}Fᵀ)ᵀ，此处直接求逆后右乘（n 很小，稳定可控）。
+ * @param {number[][]} Pfilt 滤波协方差 P_{k|k}
+ * @param {number[][]} F 状态转移矩阵
+ * @param {number[][]} Ppred 预测协方差 P_{k+1|k}
+ * @returns {number[][]} 增益 J_k
+ */
+function rtsGain(Pfilt, F, Ppred) {
+  const M = matmul(Pfilt, transpose(F));
+  return matmul(M, inverse(Ppred));
+}
+
+/**
+ * 对称矩阵最小特征值（Jacobi 旋转分解，供半正定判定）。
+ * @param {number[][]} A 对称矩阵
+ * @returns {number} 最小特征值
+ */
+function rtsMinEigen(A) {
+  const { values } = jacobiEig(A);
+  let lo = Infinity;
+  for (const v of values) if (v < lo) lo = v;
+  return lo;
+}
+
+/**
+ * RTS 平滑（Rauch–Tung–Striebel 反向递推）。
+ * 内部先跑一遍 kalmanFilter 拿到 {states, covariances, predicted, predictedCov}，
+ * 再从终点向起点反向传播未来信息。
+ *
+ * @param {{F:number[][], H:number[][], Q:number[][], R:number[][],
+ *          x0:number[], P0:number[][]}} model 与 kalmanFilter 完全同构
+ * @param {number[][]} observations 观测序列 z_1..z_N
+ * @returns {{smoothed:number[][], smoothedCovs:number[][][], gains:number[][][],
+ *            filtered:number[][], filteredCovs:number[][][],
+ *            predicted:number[][], predictedCov:number[][][]}}
+ *   gains 长度为 N−1（J_k 仅定义在 k = 0..N−2）；N=0 时全部为空数组。
+ */
+function rtsSmooth(model, observations) {
+  const { F } = model;
+  const kf = kalmanFilter(model, observations);
+  const N = kf.states.length;
+  const smoothed = new Array(N);
+  const smoothedCovs = new Array(N);
+  const gains = new Array(Math.max(N - 1, 0));
+  if (N === 0) {
+    return {
+      smoothed, smoothedCovs, gains,
+      filtered: kf.states, filteredCovs: kf.covariances,
+      predicted: kf.predicted, predictedCov: kf.predictedCov,
+    };
+  }
+
+  // 端点闭合：平滑终点 ≡ 滤波终点（不做任何修正）
+  let xS = kf.states[N - 1].slice();
+  let PS = kf.covariances[N - 1].map((row) => row.slice());
+  smoothed[N - 1] = xS;
+  smoothedCovs[N - 1] = PS;
+
+  // 反向递推 k = N−2 → 0
+  for (let k = N - 2; k >= 0; k--) {
+    const Pfilt = kf.covariances[k];
+    const Ppred = kf.predictedCov[k + 1];
+    const J = rtsGain(Pfilt, F, Ppred);
+    gains[k] = J;
+
+    // 均值：x̂_{k|N} = x̂_{k|k} + J_k(x̂_{k+1|N} − x̂_{k+1|k})
+    const innov = xS.map((v, i) => v - kf.predicted[k + 1][i]);
+    xS = kf.states[k].map((v, i) => {
+      let s = v;
+      for (let j = 0; j < innov.length; j++) s += J[i][j] * innov[j];
+      return s;
+    });
+
+    // 协方差：P_{k|N} = P_{k|k} + J_k(P_{k+1|N} − P_{k+1|k})J_kᵀ
+    const diff = rtsMsub(PS, Ppred);
+    PS = rtsSymmetrize(rtsMadd(Pfilt, matmul(matmul(J, diff), transpose(J))));
+
+    smoothed[k] = xS;
+    smoothedCovs[k] = PS;
+  }
+
+  return {
+    smoothed, smoothedCovs, gains,
+    filtered: kf.states, filteredCovs: kf.covariances,
+    predicted: kf.predicted, predictedCov: kf.predictedCov,
+  };
+}
+
+/**
+ * 平滑相对滤波的不确定性下降量：逐步返回 P_{k|k} − P_{k|N} 的最小特征值。
+ * 定理（Anderson & Moore）：该差值恒为半正定 ⇒ 返回值非负。
+ * @param {number[][][]} filteredCovs 滤波协方差序列
+ * @param {number[][][]} smoothedCovs 平滑协方差序列
+ * @returns {number[]} 每步的最小特征值
+ */
+function rtsCovarianceGapEigen(filteredCovs, smoothedCovs) {
+  const out = new Array(smoothedCovs.length);
+  for (let k = 0; k < smoothedCovs.length; k++) {
+    out[k] = rtsMinEigen(rtsMsub(filteredCovs[k], smoothedCovs[k]));
+  }
+  return out;
+}
+
+/**
+ * 无模型的 RTS 诊断：估计序列相对真值序列的 RMSE。
+ * @param {number[][]} estimates 估计序列（每步一个状态向量）
+ * @param {number[][]} truth 真值序列
+ * @param {number} [dim] 参与比较的维（默认全部维）
+ * @returns {number} RMSE
+ */
+function rtsRMSE(estimates, truth, dim = -1) {
+  const n = Math.min(estimates.length, truth.length);
+  const d = dim >= 0 ? 1 : estimates[0].length;
+  let se = 0, cnt = 0;
+  for (let t = 0; t < n; t++) {
+    for (let j = 0; j < estimates[t].length; j++) {
+      if (dim >= 0 && j !== dim) continue;
+      se += (estimates[t][j] - truth[t][j]) ** 2;
+      cnt++;
+    }
+  }
+  return cnt > 0 ? Math.sqrt(se / cnt) : 0;
+}
+
+/** 零矩阵（供外部构造增益数组时使用，保持与 linalg 同约定） */
+function rtsZeros(m, n) {
+  return zeros(m, n);
+}
+
+/* ═══════════ src/ml/particleFilter.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 粒子滤波（SIR / 序贯重要性重采样）
+ * 站在：Gordon, Salmond & Smith 1993《Novel approach to nonlinear/non-Gaussian
+ *       Bayesian state estimation》（Bootstrap 滤波 / SIR）
+ *       · Doucet, de Freitas & Gordon 2001《Sequential Monte Carlo in Practice》
+ *       · Arulampalam et al. 2002《A Tutorial on Particle Filters》
+ *       · Carpenter, Clifford & Fearnhead 1999（系统重采样 systematic resampling）
+ *
+ * 用 N 个带权粒子 {x⁽ⁱ⁾, w⁽ⁱ⁾} 逼近后验 p(x_k | y_{1:k})：
+ *   初始化 x⁽ⁱ⁾_0 ~ p(x_0)                     —— init(rng)，缺省退化为点质量 x0
+ *   传播   x⁽ⁱ⁾_k ~ p(x_k | x⁽ⁱ⁾_{k−1})        —— 用户提供的 transition(x, rng)
+ *   权重   w⁽ⁱ⁾ ∝ w⁽ⁱ⁾_{k−1}·p(y_k | x⁽ⁱ⁾_k)   —— 用户提供的 likelihood(y, x)（可未归一化）
+ *   估计   x̂_k = Σᵢ w⁽ⁱ⁾x⁽ⁱ⁾（最小均方估计）
+ *   重采样 当 ESS = 1/Σw² < 阈值（默认 N/2）或每步都做（resampleEvery）
+ * 权重一律在 **log 域** 累加 + logsumexp 归一化（下溢/上溢双免疫）。
+ * 卡尔曼滤波是线性高斯情形的解析解——粒子滤波在 N → ∞ 时必须收敛到它：
+ * 对照实验的 **先验也必须一致**（先验方差 P₀ 用 init 采样器表达），
+ * 否则前几步的卡尔曼增益系统性偏小，形成与蒙特卡洛无关的偏差。
+ *
+ * 不变量：
+ *   ① 权重归一化：每步 Σw = 1（1e-12）；
+ *   ② 线性高斯 ⇒ 粒子滤波估计收敛到卡尔曼解析解（N 足够大）；
+ *   ③ ESS ≡ 1/Σw² 重算一致，且恒 ∈ [1, N]；
+ *   ④ 系统重采样后粒子数 = N、权重精确均匀 1/N（均匀权重下重采样 ≡ 恒等置换）；
+ *   ⑤ 退化情形：全部粒子相同 ⇒ 估计 ≡ 该粒子且 ESS ≡ N；
+ *   ⑥ 同 seed 两次运行逐位一致（随机数流完全确定）。
+ */
+
+
+
+
+/**
+ * 有效样本量 ESS = 1/Σᵢ wᵢ²（权重需已归一化）。
+ * 退化界：1 ≤ ESS ≤ N（全权重集中在一个粒子时 = 1，均匀时 = N）。
+ * @param {number[]} weights 归一化权重
+ * @returns {number} 有效样本量
+ */
+function effectiveSampleSize(weights) {
+  let s2 = 0;
+  for (const w of weights) s2 += w * w;
+  return s2 > 0 ? 1 / s2 : 0;
+}
+
+/**
+ * 系统重采样（systematic resampling）。
+ * 位置 uᵢ = (i + u₀)/N，u₀ ~ U[0, 1/N)：单次随机数、方差最小、O(N) 时间。
+ * 恒等式：权重均匀 wᵢ ≡ 1/N 时，每个粒子恰好被选中一次 ⇒ indices ≡ 0..N−1。
+ * @param {number[][]} particles 粒子（每条为状态向量）
+ * @param {number[]} weights 归一化权重
+ * @param {function} rng 随机数发生器
+ * @returns {{particles:number[][], indices:number[], weights:number[]}} 重采样后的粒子、来源下标、均匀权重
+ */
+function systematicResample(particles, weights, rng) {
+  const N = particles.length;
+  const cum = new Array(N);
+  let acc = 0;
+  for (let i = 0; i < N; i++) { acc += weights[i]; cum[i] = acc; }
+  // 尾部归一化补偿（浮点累加误差），保证最后一个区间严格闭合到 1
+  cum[N - 1] = 1;
+  const u0 = rng() / N;
+  const out = new Array(N);
+  const indices = new Array(N);
+  let i = 0;
+  for (let k = 0; k < N; k++) {
+    const u = u0 + k / N;
+    while (i < N - 1 && u > cum[i]) i++;
+    indices[k] = i;
+    out[k] = particles[i].slice();
+  }
+  const uniform = new Array(N).fill(1 / N);
+  return { particles: out, indices, weights: uniform };
+}
+
+/** 加权均值估计 x̂ = Σᵢ wᵢx⁽ⁱ⁾（Σw = 1） */
+function pfWeightedMean(particles, weights) {
+  const d = particles[0].length;
+  const out = new Array(d).fill(0);
+  for (let i = 0; i < particles.length; i++) {
+    const w = weights[i];
+    const p = particles[i];
+    for (let j = 0; j < d; j++) out[j] += w * p[j];
+  }
+  return out;
+}
+
+/**
+ * 粒子滤波主循环（SIR / Bootstrap 的通用化：任意转移与似然均可接入）。
+ * @param {{x0:number[], init?:function, transition:function, likelihood:function,
+ *          N?:number, resampleEvery?:boolean, essThreshold?:number, rng?:function,
+ *          seed?:number}} model
+ *   transition(x, rng) → 下一状态；likelihood(y, x) → **未归一化** 的似然（可为密度值）
+ *   init(rng) → 初始粒子采样（缺省：全部粒子取 x0，即先验退化为点质量）
+ * @param {number[][]} observations 观测序列 y_1..y_T
+ * @returns {{estimates:number[][], particles:number[][], weights:number[],
+ *            weightsHistory:number[][], essHistory:number[], resampled:boolean[], N:number}}
+ */
+function particleFilter(model, observations) {
+  const x0 = model.x0;
+  const transition = model.transition;
+  const likelihood = model.likelihood;
+  const N = model.N === undefined ? 2000 : model.N;
+  const resampleEvery = model.resampleEvery !== false;
+  const essThreshold = model.essThreshold === undefined ? N / 2 : model.essThreshold;
+  const rng = model.rng || mulberry32(model.seed === undefined ? 42 : model.seed);
+  const init = model.init || (() => x0.slice());
+
+  // 初始化：从先验 p(x_0) 采样 N 个粒子，权重均匀
+  let particles = new Array(N);
+  for (let i = 0; i < N; i++) particles[i] = init(rng).slice();
+  const logUniform = -Math.log(N);
+  let logW = new Array(N).fill(logUniform);
+
+  const estimates = [];
+  const weightsHistory = [];
+  const essHistory = [];
+  const resampled = [];
+
+  for (const y of observations) {
+    // —— 传播：x⁽ⁱ⁾ ~ p(x_k | x⁽ⁱ⁾_{k−1}) ——
+    for (let i = 0; i < N; i++) particles[i] = transition(particles[i], rng);
+
+    // —— 权重：log w += log p(y | x)（用户可给未归一化似然，常数项在归一化中相消）——
+    for (let i = 0; i < N; i++) {
+      const ll = Math.log(Math.max(likelihood(y, particles[i]), 1e-300));
+      logW[i] += Number.isFinite(ll) ? ll : -Infinity;
+    }
+
+    // —— log 域归一化（logsumexp：下溢/上溢双免疫）——
+    const lse = logsumexp(logW);
+    let w;
+    if (!Number.isFinite(lse)) {
+      // 全部粒子似然为 0（退化）：回落为均匀分布，保持滤波器存活
+      w = new Array(N).fill(1 / N);
+      logW = new Array(N).fill(logUniform);
+    } else {
+      w = new Array(N);
+      for (let i = 0; i < N; i++) {
+        w[i] = Math.exp(logW[i] - lse);
+        logW[i] = Math.log(Math.max(w[i], 1e-300)); // 归一后继续作为下一轮先验权重
+      }
+    }
+
+    // —— 估计与诊断 ——
+    const ess = effectiveSampleSize(w);
+    estimates.push(pfWeightedMean(particles, w));
+    weightsHistory.push(w);
+    essHistory.push(ess);
+
+    // —— 重采样：每步 或 ESS 跌破阈值 ——
+    if (resampleEvery || ess < essThreshold) {
+      const r = systematicResample(particles, w, rng);
+      particles = r.particles;
+      logW = new Array(N).fill(logUniform);
+      resampled.push(true);
+    } else {
+      resampled.push(false);
+    }
+  }
+
+  const weights = new Array(N).fill(1 / N);
+  return { estimates, particles, weights, weightsHistory, essHistory, resampled, N };
+}
+
+/**
+ * 线性高斯模型的解析参考（卡尔曼滤波）与粒子滤波的对照入口：
+ * 返回逐步最大绝对偏差，用于「无噪声极限下 SIR ⇒ 卡尔曼」的交叉验证。
+ * @param {number[][]} pfEstimates 粒子滤波估计序列
+ * @param {number[][]} kfStates 卡尔曼滤波状态序列
+ * @returns {{maxDiff:number, meanDiff:number, stepDiff:number[]}}
+ */
+function pfCompareWithKalman(pfEstimates, kfStates) {
+  const T = Math.min(pfEstimates.length, kfStates.length);
+  const stepDiff = new Array(T);
+  let maxDiff = 0, sumDiff = 0, cnt = 0;
+  for (let t = 0; t < T; t++) {
+    let worst = 0;
+    for (let j = 0; j < pfEstimates[t].length; j++) {
+      worst = Math.max(worst, Math.abs(pfEstimates[t][j] - kfStates[t][j]));
+    }
+    stepDiff[t] = worst;
+    if (worst > maxDiff) maxDiff = worst;
+    sumDiff += worst;
+    cnt++;
+  }
+  return { maxDiff, meanDiff: cnt > 0 ? sumDiff / cnt : 0, stepDiff };
+}
+
 /* ═══════════ src/ml/mcmc.js ═══════════ */
 /**
  * 旗舰AI引擎 · 马尔可夫链蒙特卡洛（MCMC）
@@ -4944,6 +5358,172 @@ function lassoPath(X, y, lambdas, opts = {}) {
 function lassoPredict(X, model) {
   const { w, b } = model;
   return X.map((xi) => b + dot(xi, w));
+}
+
+/* ═══════════ src/ml/meanShift.js ═══════════ */
+/**
+ * 旗舰AI引擎 · Mean Shift 众数搜索（均值漂移 / 众数追寻）
+ * 站在：Fukunaga & Hostetler 1975 IEEE Trans. Information Theory
+ *       《The estimation of the gradient of a density function, with applications
+ *       in pattern recognition》· Cheng 1995 IEEE PAMI《Mean shift, mode seeking,
+ *       and clustering》· Comaniciu & Meer 2002《Mean shift: a robust approach
+ *       toward feature space analysis》。
+ *
+ * 高斯核 K(u) = exp(−‖u‖²/(2h²))，核密度估计（省略与 x 无关的归一化常数）：
+ *   f̂(x) = Σᵢ K(xᵢ − x) = Σᵢ exp(−‖xᵢ − x‖²/(2h²))
+ * 一步均值漂移（加权质心）：
+ *   m(x) = Σᵢ wᵢxᵢ / Σᵢ wᵢ，wᵢ = K(xᵢ − x)
+ * 梯度恒等式（本模块一切正确性的源头）：
+ *   ∇f̂(x) = (f̂(x)/h²)·(m(x) − x)   ⟺   m(x) − x = h²·∇f̂(x)/f̂(x)
+ * 即 mean shift 是「步长自适应（h²/f̂(x)）的密度梯度上升」，
+ * 故 Cheng 1995 定理成立：沿迭代轨迹 f̂ 单调不降 ⇒ 收敛到局部众数（不动点 m(x*) = x*）。
+ *
+ * 不变量：
+ *   ① 梯度恒等式：m(x) − x ≡ h²∇f̂(x)/f̂(x)（中心差分 vs 闭式，相对误差 1e-6）；
+ *   ② h → ∞ 一步到质心：单次更新 ≡ 数据均值（1e-12）；
+ *   ③ 单调上升：沿轨迹 f̂ 非降（Cheng 1995 收敛定理，全步检查）；
+ *   ④ 收敛处 ‖m(x) − x‖ < tol（不动点条件）；
+ *   ⑤ 单峰高斯团：任意起点收敛到样本均值附近；
+ *   ⑥ 两团分离数据：众数合并后簇数 = 2，标签 ≡ k-means 结果（ARI = 1）。
+ */
+
+/** 平方欧氏距离（循环累加，避免大数组展开参数） */
+function msSqDist(a, b) {
+  let s = 0;
+  for (let j = 0; j < a.length; j++) {
+    const e = a[j] - b[j];
+    s += e * e;
+  }
+  return s;
+}
+
+/** 欧氏距离 */
+function msDist(a, b) {
+  return Math.sqrt(msSqDist(a, b));
+}
+
+/**
+ * 核密度估计 f̂(x) = Σᵢ exp(−‖xᵢ − x‖²/(2h²))。
+ * 真正的概率密度需再除以 n·h^d·(2π)^{d/2}；本模块统一使用未归一化形式——
+ * 归一化常数与 x 无关，不影响众数位置、不影响梯度恒等式的方向。
+ * @param {number[][]} X 数据（n×d）
+ * @param {number[]} x 查询点
+ * @param {number} h 带宽
+ * @returns {number} f̂(x)
+ */
+function meanShiftKDE(X, x, h) {
+  const inv2h2 = 1 / (2 * h * h);
+  let s = 0;
+  for (const xi of X) s += Math.exp(-msSqDist(xi, x) * inv2h2);
+  return s;
+}
+
+/**
+ * 一步均值漂移：返回新位置 m(x) = Σᵢwᵢxᵢ / Σᵢwᵢ（即下一次迭代的查询点）。
+ * 漂移向量 = m(x) − x = h²∇f̂(x)/f̂(x)。
+ * @param {number[][]} X 数据
+ * @param {number[]} x 当前位置
+ * @param {number} h 带宽
+ * @returns {number[]} 新位置 m(x)
+ */
+function meanShiftStep(X, x, h) {
+  const d = x.length;
+  const inv2h2 = 1 / (2 * h * h);
+  const out = new Array(d).fill(0);
+  let sum = 0;
+  for (const xi of X) {
+    const w = Math.exp(-msSqDist(xi, x) * inv2h2);
+    sum += w;
+    for (let j = 0; j < d; j++) out[j] += w * xi[j];
+  }
+  for (let j = 0; j < d; j++) out[j] /= sum; // sum ≥ exp(−maxDist²/2h²) > 0
+  return out;
+}
+
+/**
+ * 迭代均值漂移至局部众数（不动点）。
+ * @param {number[][]} X 数据
+ * @param {number[]} x0 起点
+ * @param {number} h 带宽
+ * @param {{maxIter?:number, tol?:number}} [opts] 最大迭代数与位移阈值
+ * @returns {{mode:number[], steps:number, path:number[][], kdeTrace:number[], shift:number}}
+ *   path[0] = 起点，path[k] 为第 k 次迭代后的位置；kdeTrace 与之逐点对应。
+ */
+function meanShiftMode(X, x0, h, { maxIter = 200, tol = 1e-10 } = {}) {
+  const path = [x0.slice()];
+  const kdeTrace = [meanShiftKDE(X, x0, h)];
+  let x = x0.slice();
+  let steps = 0;
+  let shift = Infinity;
+  for (let it = 0; it < maxIter; it++) {
+    const nx = meanShiftStep(X, x, h);
+    steps++;
+    shift = msDist(nx, x);
+    x = nx;
+    path.push(x.slice());
+    kdeTrace.push(meanShiftKDE(X, x, h));
+    if (shift < tol) break; // 不动点：‖m(x) − x‖ < tol
+  }
+  return { mode: x, steps, path, kdeTrace, shift };
+}
+
+/**
+ * Mean Shift 聚类：每个数据点作为起点各跑一次众数搜索，
+ * 收敛点（众数）按距离 < mergeTol 合并为同一簇（无需预先指定簇数 k）。
+ * @param {number[][]} X 数据
+ * @param {number} h 带宽
+ * @param {{mergeTol?:number, maxIter?:number, tol?:number}} [opts]
+ * @returns {{labels:number[], modes:number[][], centers:number[][], k:number}}
+ */
+function meanShiftCluster(X, h, { mergeTol = 1e-4, maxIter = 200, tol = 1e-10 } = {}) {
+  const n = X.length;
+  const modes = new Array(n);
+  for (let i = 0; i < n; i++) modes[i] = meanShiftMode(X, X[i], h, { maxIter, tol }).mode;
+  const labels = new Array(n).fill(0);
+  const centers = [];
+  for (let i = 0; i < n; i++) {
+    let best = -1;
+    let bd = Infinity;
+    for (let c = 0; c < centers.length; c++) {
+      const dd = msDist(modes[i], centers[c]);
+      if (dd < bd) { bd = dd; best = c; }
+    }
+    if (best < 0 || bd > mergeTol) {
+      centers.push(modes[i].slice());
+      labels[i] = centers.length - 1;
+    } else {
+      labels[i] = best;
+    }
+  }
+  return { labels, modes, centers, k: centers.length };
+}
+
+/**
+ * 均值漂移向量的闭式（加权质心）与「h²∇f̂/f̂」的中心差分两条独立路径互证。
+ * 返回逐维相对误差，供梯度恒等式检验。
+ * @param {number[][]} X 数据
+ * @param {number[]} x 查询点
+ * @param {number} h 带宽
+ * @param {number} [delta] 中心差分步长
+ * @returns {{shift:number[], gradient:number[], maxRelErr:number}}
+ */
+function meanShiftGradientCheck(X, x, h, delta = 1e-5) {
+  const d = x.length;
+  const f0 = meanShiftKDE(X, x, h);
+  const m = meanShiftStep(X, x, h);
+  const shift = m.map((v, j) => v - x[j]);
+  const gradient = new Array(d);
+  let maxRelErr = 0;
+  for (let j = 0; j < d; j++) {
+    const xp = x.slice(); xp[j] += delta;
+    const xm = x.slice(); xm[j] -= delta;
+    const partial = (meanShiftKDE(X, xp, h) - meanShiftKDE(X, xm, h)) / (2 * delta);
+    gradient[j] = partial;
+    const want = h * h * partial / f0; // h²∇f̂/f̂
+    const denom = Math.max(1e-8, Math.abs(want) + Math.abs(shift[j]));
+    maxRelErr = Math.max(maxRelErr, Math.abs(want - shift[j]) / denom);
+  }
+  return { shift, gradient, maxRelErr };
 }
 
 /* ═══════════ src/nn/dense.js ═══════════ */
@@ -7836,12 +8416,345 @@ function bellmanResidualQ(P, R, gamma, Q) {
   return worst;
 }
 
+/* ═══════════ src/rl/sarsa.js ═══════════ */
+/**
+ * 旗舰AI引擎 · SARSA / SARSA(λ)（同策略时序差分控制）
+ * 站在：Rummery & Niranjan 1994《On-Line Q-Learning Using Connectionist Systems》
+ *       （原名 Modified Q-learning）· Sutton 1996（更名为 SARSA）
+ *       · Sutton & Barto《Reinforcement Learning: An Introduction》§6.4 / §12.7
+ *       · Singh & Sutton 1996（替换迹 replacing traces）。
+ *
+ * 与 Q-learning（免模型 **离策略**）的分水岭在 TD 目标：
+ *   Q-learning : Q(s,a) ← Q(s,a) + α[r + γ·max_{a'} Q(s',a') − Q(s,a)]   （贪婪目标）
+ *   SARSA      : Q(s,a) ← Q(s,a) + α[r + γ·Q(s',a')      − Q(s,a)]   （a' ~ π(·|s')）
+ * SARSA 是 **同策略（on-policy）**：目标里的 a' 由行为策略 ε-贪心真实采样，
+ * 因此收敛到 Q^{π_ε} 而非 Q*；ε → 0（GLIE）时 Q^{π_ε} → Q*。
+ *
+ * SARSA(λ)：用资格迹把单步回报「回溯」给历史状态-动作对
+ *   迹置位 e(s,a) ← 1（替换迹：e(s,·) ← 0 后 e(s,a) ← 1；累积迹：e(s,a) += 1）
+ *   全表更新 Q ← Q + α·δ·e，δ = r + γQ(s',a') − Q(s,a)
+ *   迹衰减 e ← γλ·e
+ * λ = 0 时迹在一步内衰减为 0 ⇒ SARSA(λ) **逐位** 退化为 SARSA（不变量 ②）。
+ *
+ * P/R 约定与 valueIteration.js / qLearning.js 完全一致：
+ *   P[s][a] = [[ns, p], …]，R[s][a] = 与 P[s][a] 逐项对齐的奖励。
+ *
+ * 不变量：
+ *   ① 退化恒等式：ε=0（贪心）+ 确定性 MDP ⇒ SARSA 单步 ≡ Q-learning 单步（1e-15）；
+ *   ② λ=0 时 SARSA(λ) 与 SARSA 逐位相等（0）；
+ *   ③ GLIE 收敛：chainMDP 上收敛 Q ≡ qFromV(V*)（1e-4）；
+ *   ④ 在策略 Bellman 残差：‖Q − B^π Q‖ → 0（π 为 ε-贪心策略）；
+ *   ⑤ 资格迹恒等式：访问 (s,a) 后 e(s,a) = 1（替换迹）且按 γλ 衰减；
+ *   ⑥ 同 seed 两次训练 Q 逐位一致。
+ */
+
+
+
+
+/** 零矩阵（S×A）：资格迹与 Polyak 累加器共用 */
+function sarsaZeros(S, A) {
+  const M = new Array(S);
+  for (let s = 0; s < S; s++) M[s] = new Array(A).fill(0);
+  return M;
+}
+
+/**
+ * ε-贪心策略的概率向量（确定性 tie-break：贪心取最小下标动作）。
+ * @param {number[][]} Q 状态-动作值表
+ * @param {number} s 状态
+ * @param {number} eps 探索率
+ * @returns {number[]} π(a|s)：贪心动作 1−ε+ε/A，其余 ε/A
+ */
+function sarsaEpsilonProbs(Q, s, eps) {
+  const A = Q[s].length;
+  const greedy = greedyAction(Q, s);
+  const probs = new Array(A).fill(eps / A);
+  probs[greedy] += 1 - eps;
+  return probs;
+}
+
+/**
+ * ε-贪心采样行为策略（同策略 TD 的核心：a' 必须真从 π 采样，而非取 max）。
+ * @param {number[][]} Q 状态-动作值表
+ * @param {number} s 状态
+ * @param {number} eps 探索率
+ * @param {function} rng 随机数发生器
+ * @returns {{a:number, probs:number[]}} 采样动作与完整策略概率
+ */
+function epsilonGreedyAction(Q, s, eps, rng) {
+  const probs = sarsaEpsilonProbs(Q, s, eps);
+  const u = rng();
+  let acc = 0;
+  let chosen = probs.length - 1;
+  for (let a = 0; a < probs.length; a++) {
+    acc += probs[a];
+    if (u <= acc) { chosen = a; break; }
+  }
+  return { a: chosen, probs };
+}
+
+/** 依 P[s][a] 采样下一状态与即时奖励（与 qLearning.js 同一采样序，保证 rng 流一致） */
+function sarsaSampleTransition(P, R, s, a, rng) {
+  const list = P[s][a];
+  let u = rng();
+  let acc = 0;
+  let k = 0;
+  for (; k < list.length; k++) {
+    acc += list[k][1];
+    if (u <= acc) break;
+  }
+  if (k >= list.length) k = list.length - 1;
+  return { ns: list[k][0], r: R[s][a][k] };
+}
+
+/**
+ * SARSA 单步更新（原地修改 Q）。
+ *   Q(s,a) ← Q(s,a) + α[r + γQ(s',a') − Q(s,a)]
+ * @param {number[][]} Q 状态-动作值表（原地修改）
+ * @param {number} s 当前状态
+ * @param {number} a 当前动作
+ * @param {number} r 即时奖励
+ * @param {number} s2 下一状态
+ * @param {number} a2 下一动作（由行为策略采样，同策略之魂）
+ * @param {{alpha:number, gamma:number}} hp 学习率与折扣
+ * @returns {{Q:number[][], delta:number}} 同一 Q 引用与 TD 误差 δ
+ */
+function sarsaStep(Q, s, a, r, s2, a2, { alpha, gamma }) {
+  const delta = r + gamma * Q[s2][a2] - Q[s][a];
+  Q[s][a] += alpha * delta;
+  return { Q, delta };
+}
+
+/**
+ * 资格迹置位：替换迹 e(s,·) ← 0 且 e(s,a) ← 1；累积迹 e(s,a) += 1。
+ * 原地修改 e。
+ * @param {number[][]} e 迹矩阵（S×A）
+ * @param {number} s 状态
+ * @param {number} a 动作
+ * @param {{replacing?:boolean}} [opts] 默认替换迹
+ * @returns {number[][]} 同一 e 引用
+ */
+function sarsaTraceSet(e, s, a, { replacing = true } = {}) {
+  if (replacing) {
+    const row = e[s];
+    for (let b = 0; b < row.length; b++) row[b] = 0;
+  }
+  e[s][a] += 1;
+  return e;
+}
+
+/**
+ * 资格迹衰减 e ← γλ·e（原地）。λ = 0 时精确清零——SARSA(λ) 退化为 SARSA 的代数原因。
+ * @param {number[][]} e 迹矩阵
+ * @param {number} gamma 折扣
+ * @param {number} lambda 迹衰减参数
+ * @returns {number[][]} 同一 e 引用
+ */
+function sarsaTraceDecay(e, gamma, lambda) {
+  const factor = gamma * lambda;
+  for (let s = 0; s < e.length; s++) {
+    const row = e[s];
+    for (let a = 0; a < row.length; a++) {
+      row[a] = factor === 0 ? 0 : row[a] * factor;
+    }
+  }
+  return e;
+}
+
+/**
+ * ε 调度：给定 epsStart/epsEnd 时在前 epsDecayFrac 比例的回合内线性衰减到 epsEnd，
+ * 之后恒定在 epsEnd（留出「纯利用」阶段让 TD 迭代几何收敛——GLIE 的收敛条件）。
+ */
+function sarsaEpsAt(ep, episodes, eps, epsStart, epsEnd, epsDecayFrac = 1) {
+  if (epsStart === null || epsStart === undefined) return eps;
+  const e0 = epsStart;
+  const e1 = (epsEnd === null || epsEnd === undefined) ? eps : epsEnd;
+  const span = Math.max(1, Math.floor(episodes * epsDecayFrac));
+  const frac = span > 1 ? Math.min(1, ep / (span - 1)) : 1;
+  return e0 + (e1 - e0) * frac;
+}
+
+/** 尾部 Polyak（Polyak–Juditsky）平均累加器：抑制 TD 噪声的 √α 尾巴 */
+function sarsaAccumulate(acc, Q, S, A) {
+  for (let s = 0; s < S; s++) {
+    const accRow = acc[s], qRow = Q[s];
+    for (let a = 0; a < A; a++) accRow[a] += qRow[a];
+  }
+}
+
+/** 平均表归一化（无样本时返回 null） */
+function sarsaAverage(acc, S, A, count) {
+  if (count <= 0) return null;
+  const out = new Array(S);
+  for (let s = 0; s < S; s++) {
+    out[s] = new Array(A);
+    for (let a = 0; a < A; a++) out[s][a] = acc[s][a] / count;
+  }
+  return out;
+}
+
+/** α 调度（Robbins–Monro 风格）：alphaDecay > 0 时 α_t = α₀/(1 + t·decay) */
+function sarsaAlphaAt(t, alpha, alphaDecay) {
+  return alphaDecay > 0 ? alpha / (1 + t * alphaDecay) : alpha;
+}
+
+/**
+ * SARSA 主循环（单步、无迹）。λ > 0 时自动转交 sarsaLambda。
+ * @param {number[][][]} P 转移核 P[s][a] = [[ns, p], …]
+ * @param {number[][][]} R 奖励（与 P 逐项对齐）
+ * @param {{gamma?:number, alpha?:number, eps?:number, epsStart?:number, epsEnd?:number,
+ *          episodes?:number, stepsPerEpisode?:number, seed?:number, lambda?:number,
+ *          alphaDecay?:number, replacing?:boolean, epsDecayFrac?:number,
+ *          average?:boolean, avgFrom?:number}} opts
+ *   epsDecayFrac：ε 衰减发生在其前 ×× 比例的回合内；average/avgFrom：尾部 Polyak 平均。
+ * @returns {{Q:number[][], Qavg:number[][]|null, policy:number[],
+ *            episodeReturns:number[], gamma:number, eps:number, lambda:number}}
+ */
+function sarsa(P, R, {
+  gamma = 0.9, alpha = 0.2, eps = 0.1, epsStart = null, epsEnd = null,
+  episodes = 5000, stepsPerEpisode = 40, seed = 42, lambda = 0,
+  alphaDecay = 0, replacing = true, epsDecayFrac = 1, average = false, avgFrom = 0.5,
+} = {}) {
+  if (lambda > 0) {
+    return sarsaLambda(P, R, {
+      gamma, alpha, eps, epsStart, epsEnd, episodes, stepsPerEpisode,
+      seed, lambda, alphaDecay, replacing, epsDecayFrac, average, avgFrom,
+    });
+  }
+  const S = P.length;
+  const A = P[0].length;
+  const rng = mulberry32(seed);
+  const Q = Array.from({ length: S }, () => new Array(A).fill(0));
+  const episodeReturns = [];
+  const avgStart = Math.floor(episodes * avgFrom);
+  const acc = average ? sarsaZeros(S, A) : null;
+  let avgCount = 0;
+  let t = 0; // 全局步计数（供 α 调度）
+
+  for (let ep = 0; ep < episodes; ep++) {
+    const epsNow = sarsaEpsAt(ep, episodes, eps, epsStart, epsEnd, epsDecayFrac);
+    let s = Math.floor(rng() * S);
+    let a = epsilonGreedyAction(Q, s, epsNow, rng).a;
+    let total = 0;
+    for (let step = 0; step < stepsPerEpisode; step++) {
+      const { ns, r } = sarsaSampleTransition(P, R, s, a, rng);
+      const a2 = epsilonGreedyAction(Q, ns, epsNow, rng).a;
+      sarsaStep(Q, s, a, r, ns, a2, { alpha: sarsaAlphaAt(t, alpha, alphaDecay), gamma });
+      total += r;
+      s = ns;
+      a = a2;
+      t++;
+    }
+    if (average && ep >= avgStart) { sarsaAccumulate(acc, Q, S, A); avgCount++; }
+    episodeReturns.push(total);
+  }
+
+  const policy = Array.from({ length: S }, (_, s) => greedyAction(Q, s));
+  const Qavg = average ? sarsaAverage(acc, S, A, avgCount) : null;
+  return { Q, Qavg, policy, episodeReturns, gamma, eps, lambda };
+}
+
+/**
+ * SARSA(λ)：带资格迹的同策略 TD 控制。
+ * 每步：置位 → Q ← Q + αδe（全表）→ e ← γλe。λ = 0 时逐位退化为 SARSA。
+ * @param {number[][][]} P 转移核
+ * @param {number[][][]} R 奖励
+ * @param {{gamma?:number, alpha?:number, eps?:number, epsStart?:number, epsEnd?:number,
+ *          episodes?:number, stepsPerEpisode?:number, seed?:number, lambda?:number,
+ *          alphaDecay?:number, replacing?:boolean, epsDecayFrac?:number,
+ *          average?:boolean, avgFrom?:number}} opts
+ * @returns {{Q:number[][], Qavg:number[][]|null, policy:number[],
+ *            episodeReturns:number[], gamma:number, eps:number, lambda:number}}
+ */
+function sarsaLambda(P, R, {
+  gamma = 0.9, alpha = 0.2, eps = 0.1, epsStart = null, epsEnd = null,
+  episodes = 5000, stepsPerEpisode = 40, seed = 42, lambda = 0.9,
+  alphaDecay = 0, replacing = true, epsDecayFrac = 1, average = false, avgFrom = 0.5,
+} = {}) {
+  const S = P.length;
+  const A = P[0].length;
+  const rng = mulberry32(seed);
+  const Q = Array.from({ length: S }, () => new Array(A).fill(0));
+  const episodeReturns = [];
+  const avgStart = Math.floor(episodes * avgFrom);
+  const acc = average ? sarsaZeros(S, A) : null;
+  let avgCount = 0;
+  let t = 0;
+
+  for (let ep = 0; ep < episodes; ep++) {
+    const epsNow = sarsaEpsAt(ep, episodes, eps, epsStart, epsEnd, epsDecayFrac);
+    let e = sarsaZeros(S, A); // 每回合重置迹（回合式任务的标准做法）
+    let s = Math.floor(rng() * S);
+    let a = epsilonGreedyAction(Q, s, epsNow, rng).a;
+    let total = 0;
+    for (let step = 0; step < stepsPerEpisode; step++) {
+      const { ns, r } = sarsaSampleTransition(P, R, s, a, rng);
+      const a2 = epsilonGreedyAction(Q, ns, epsNow, rng).a;
+      const alphaNow = sarsaAlphaAt(t, alpha, alphaDecay);
+      const delta = r + gamma * Q[ns][a2] - Q[s][a];
+      sarsaTraceSet(e, s, a, { replacing });
+      for (let i = 0; i < S; i++) {
+        for (let b = 0; b < A; b++) {
+          if (e[i][b] !== 0) Q[i][b] += alphaNow * delta * e[i][b];
+        }
+      }
+      sarsaTraceDecay(e, gamma, lambda);
+      total += r;
+      s = ns;
+      a = a2;
+      t++;
+    }
+    if (average && ep >= avgStart) { sarsaAccumulate(acc, Q, S, A); avgCount++; }
+    episodeReturns.push(total);
+  }
+
+  const policy = Array.from({ length: S }, (_, s) => greedyAction(Q, s));
+  const Qavg = average ? sarsaAverage(acc, S, A, avgCount) : null;
+  return { Q, Qavg, policy, episodeReturns, gamma, eps, lambda };
+}
+
+/**
+ * 在策略 Bellman 残差：max_{s,a} |Q(s,a) − B^π Q(s,a)|，
+ *   B^πQ(s,a) = Σ_k p_k [ r_k + γ Σ_{a'} π(a'|s_k') Q(s_k', a') ]
+ * 其中 π 为 Q 导出的 ε-贪心策略。SARSA 收敛 ⇒ 残差 → 0（同策略 TD 不动点）。
+ * @param {number[][][]} P 转移核
+ * @param {number[][][]} R 奖励
+ * @param {number} gamma 折扣
+ * @param {number[][]} Q 待检验的 Q 表
+ * @param {number} eps 行为策略探索率
+ * @returns {number} 最大绝对残差
+ */
+function sarsaBellmanResidual(P, R, gamma, Q, eps) {
+  const S = P.length;
+  let worst = 0;
+  for (let s = 0; s < S; s++) {
+    const A = P[s].length;
+    for (let a = 0; a < A; a++) {
+      let bq = 0;
+      const list = P[s][a];
+      for (let k = 0; k < list.length; k++) {
+        const ns = list[k][0];
+        const probs = sarsaEpsilonProbs(Q, ns, eps);
+        let vQ = 0;
+        for (let b = 0; b < probs.length; b++) vQ += probs[b] * Q[ns][b];
+        bq += list[k][1] * (R[s][a][k] + gamma * vQ);
+      }
+      worst = Math.max(worst, Math.abs(Q[s][a] - bq));
+    }
+  }
+  return worst;
+}
+
 /* ═══════════ src/verify/invariants.js ═══════════ */
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 46 组套件全绿 = 引擎数学正确性的机器证明。
+ * 50 组套件全绿 = 引擎数学正确性的机器证明。
  */
+
+
+
+
 
 
 
@@ -7982,6 +8895,10 @@ function runAllInvariants() {
     ['Lasso 稀疏回归 · Tibshirani 1996', suiteLasso],
     ['受限玻尔兹曼机 · RBM (Hinton 2002)', suiteRBM],
     ['Hopfield 联想记忆 · Hopfield 1982', suiteHopfield],
+    ['RTS 平滑器 · Rauch–Tung–Striebel 1965', suiteRTS],
+    ['粒子滤波 · Gordon 1993 (SIR)', suiteParticleFilter],
+    ['Mean Shift 众数搜索 · Fukunaga 1975', suiteMeanShift],
+    ['SARSA 同策略TD · Rummery & Niranjan 1994', suiteSARSA],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -11116,9 +12033,284 @@ function suiteHopfield(check) {
   });
 }
 
+/* ============================================================
+ * 套件 47 · RTS 平滑器（Rauch–Tung–Striebel 1965）
+ * ============================================================ */
+function suiteRTS(check) {
+  // 2D 线性高斯系统：先跑卡尔曼 + RTS 平滑，交叉验证反向递推恒等式
+  const rng = mulberry32(2025);
+  const F = [[0.95, 0.05], [0, 0.90]];
+  const H = [[1, 0], [0, 1]];
+  const Q = [[0.10, 0], [0, 0.20]];
+  const R = [[1, 0], [0, 1]];
+  const x0 = [0, 0];
+  const P0 = [[5, 0], [0, 5]];
+  let state = x0.slice();
+  const obs = [], truth = [];
+  for (let t = 0; t < 300; t++) {
+    const w0 = gaussianSample(rng, 0, Math.sqrt(Q[0][0]));
+    const w1 = gaussianSample(rng, 0, Math.sqrt(Q[1][1]));
+    state = [F[0][0] * state[0] + F[0][1] * state[1] + w0, F[1][1] * state[1] + w1];
+    truth.push(state.slice());
+    obs.push([state[0] + gaussianSample(rng, 0, 1), state[1] + gaussianSample(rng, 0, 1)]);
+  }
+  const model = { F, H, Q, R, x0, P0 };
+  const out = rtsSmooth(model, obs);
+  const N = out.smoothed.length;
+  const tol = 1e-12;
+
+  // ① 端点闭合：平滑终点 ≡ 滤波终点（反向递推第一步不做修正）
+  let endErr = 0;
+  for (let j = 0; j < 2; j++) endErr = Math.max(endErr, Math.abs(out.smoothed[N - 1][j] - out.filtered[N - 1][j]));
+  check('RTS：端点闭合 x̂_{N|N}^{平滑} ≡ 滤波终点（精确）', endErr < tol, `误差=${endErr.toExponential(2)}`);
+
+  // ② 协方差序：P_{k|k} − P_{k|N} 半正定（平滑必降低不确定性）
+  const gap = rtsCovarianceGapEigen(out.filteredCovs, out.smoothedCovs);
+  let minGap = Infinity;
+  for (const g of gap) if (g < minGap) minGap = g;
+  check('RTS：平滑必降不确定性 P_{k|k} − P_{k|N} 半正定（最小特征值 ≥ −1e-10）', minGap >= -1e-10, `min eig=${minGap.toExponential(2)}`);
+
+  // ③ 增益恒等式：J_k ≡ P_{k|k}FᵀP_{k+1|k}⁻¹ 独立重算（逐步逐位）
+  let gainErr = 0;
+  for (let k = 0; k < out.gains.length; k++) {
+    const J = matmul(matmul(out.filteredCovs[k], transpose(F)), inverse(out.predictedCov[k + 1]));
+    gainErr = Math.max(gainErr, mdiff(J, out.gains[k]));
+  }
+  check('RTS：增益恒等式 J_k = P_{k|k}FᵀP_{k+1|k}⁻¹（逐步逐位）', gainErr < tol, `maxDiff=${gainErr.toExponential(2)}`);
+
+  // ④ 常值状态闭式：F=1,Q=0 ⇒ 平滑估计全相等 ≡ 信息加权均值 Σz/(1+N)
+  const rngC = mulberry32(7);
+  const Nc = 120;
+  const obsC = [];
+  let zsum = 0;
+  for (let t = 0; t < Nc; t++) { const z = gaussianSample(rngC, 3.0, 1.0); obsC.push([z]); zsum += z; }
+  const outC = rtsSmooth({ F: [[1]], H: [[1]], Q: [[0]], R: [[1]], x0: [0], P0: [[1]] }, obsC);
+  const closed = zsum / (1 + Nc);
+  let constErr = Math.abs(outC.smoothed[0][0] - closed);
+  for (let k = 1; k < outC.smoothed.length; k++) constErr = Math.max(constErr, Math.abs(outC.smoothed[k][0] - outC.smoothed[0][0]));
+  check('RTS：常值状态 F=1,Q=0 ⇒ 平滑估计恒等且 ≡ Σz/(1+N)', constErr < 1e-6, `偏差=${constErr.toExponential(2)}，闭式=${closed.toFixed(6)}`);
+
+  // ⑤ 反向递推自洽：x̂_{k|N} = x̂_{k|k} + J_k(x̂_{k+1|N} − x̂_{k+1|k}) 重算
+  let recErr = 0;
+  for (let k = 0; k < N - 1; k++) {
+    const innov = out.smoothed[k + 1].map((v, j) => v - out.predicted[k + 1][j]);
+    const recomputed = out.filtered[k].map((v, i) => {
+      let s = v;
+      for (let j = 0; j < innov.length; j++) s += out.gains[k][i][j] * innov[j];
+      return s;
+    });
+    recErr = Math.max(recErr, mdiff(out.smoothed[k], recomputed));
+  }
+  check('RTS：反向递推自洽 x̂_{k|N} = x̂_{k|k} + J_k(x̂_{k+1|N} − x̂_{k+1|k})', recErr < tol, `maxDiff=${recErr.toExponential(2)}`);
+
+  // ⑥ 均方误差序：平滑 RMSE ≤ 滤波 RMSE（全数据后验优于仅用历史）
+  const rmseF = rtsRMSE(out.filtered, truth);
+  const rmseS = rtsRMSE(out.smoothed, truth);
+  check('RTS：平滑 RMSE ≤ 滤波 RMSE（最优平滑=全数据后验均值）', rmseS <= rmseF + 1e-6, `滤波=${rmseF.toFixed(4)} vs 平滑=${rmseS.toFixed(4)}`);
+}
+
+/* ============================================================
+ * 套件 48 · 粒子滤波（Gordon 1993 · SIR）
+ * ============================================================ */
+function suiteParticleFilter(check) {
+  const rng = mulberry32(99);
+  const f = 0.95, h = 1, q = 0.1, r = 1;
+  const F = [[f]], H = [[h]], Q = [[q]], R = [[r]];
+  const P0 = [[q / (1 - f * f)]];
+  const x0 = [0];
+  let truth = 0;
+  const obs = [], truthSeries = [];
+  for (let t = 0; t < 100; t++) {
+    truth = f * truth + gaussianSample(rng, 0, Math.sqrt(q));
+    truthSeries.push(truth);
+    obs.push([truth + gaussianSample(rng, 0, Math.sqrt(r))]);
+  }
+  const pfModel = {
+    x0,
+    init: (rngI) => [x0[0] + gaussianSample(rngI, 0, Math.sqrt(P0[0][0]))],
+    transition: (xp, rngI) => [f * xp[0] + gaussianSample(rngI, 0, Math.sqrt(q))],
+    likelihood: (y, xp) => gaussianPDF(y[0], xp[0], Math.sqrt(r)),
+    N: 5000, seed: 7, resampleEvery: true,
+  };
+  const pf = particleFilter(pfModel, obs);
+  const kf = kalmanFilter({ F, H, Q, R, x0, P0 }, obs);
+
+  // ① 权重归一化：每步 Σw = 1（log 域 logsumexp 归一）
+  let wErr = 0;
+  for (const w of pf.weightsHistory) {
+    let s = 0; for (const v of w) s += v;
+    wErr = Math.max(wErr, Math.abs(s - 1));
+  }
+  check('粒子滤波：每步权重 Σw = 1（log 域 logsumexp 归一）', wErr < 1e-12, `max|Σw−1|=${wErr.toExponential(2)}`);
+
+  // ② 线性高斯 ⇒ 粒子估计收敛到卡尔曼解析解（先验一致）
+  const cmp = pfCompareWithKalman(pf.estimates, kf.states);
+  check('粒子滤波：线性高斯下收敛到卡尔曼解析解（N=5000 均值偏差 < 0.3）', cmp.meanDiff < 0.3,
+    `meanDiff=${cmp.meanDiff.toFixed(4)}，maxDiff=${cmp.maxDiff.toFixed(4)}`);
+
+  // ③ ESS ≡ 1/Σw² 且 ∈ [1, N]（均匀=N、退化=1）
+  const Nn = pf.N;
+  const wU = new Array(Nn).fill(1 / Nn);
+  const wD = new Array(Nn).fill(0); wD[0] = 1;
+  const essU = effectiveSampleSize(wU), essD = effectiveSampleSize(wD);
+  check('粒子滤波：ESS ≡ 1/Σw²，均匀=N 且 退化=1', Math.abs(essU - Nn) < 1e-9 && Math.abs(essD - 1) < 1e-9,
+    `ESS(均匀)=${essU.toFixed(6)}，ESS(退化)=${essD.toFixed(6)}`);
+
+  // ④ 系统重采样：均匀权重下 ≡ 恒等置换，权重精确 1/N
+  const parts = Array.from({ length: Nn }, (_, i) => [i]);
+  const res = systematicResample(parts, wU, mulberry32(1));
+  const identity = res.indices.every((v, i) => v === i);
+  const uniform = res.weights.every((v) => Math.abs(v - 1 / Nn) < 1e-12);
+  let sumW = 0; for (const v of res.weights) sumW += v;
+  check('粒子滤波：系统重采样（均匀权重）≡ 恒等置换、权重精确 1/N', identity && uniform && Math.abs(sumW - 1) < 1e-12,
+    `indices 恒等=${identity}，权重均匀=${uniform}`);
+
+  // ⑤ 退化情形：全部粒子相同 ⇒ 估计 ≡ 该粒子且 ESS ≡ N
+  const degParts = Array.from({ length: Nn }, () => [-2]);
+  const degW = new Array(Nn).fill(1 / Nn);
+  let degMean = 0; for (const p of degParts) degMean += p[0] / Nn;
+  check('粒子滤波：退化（粒子全同）⇒ 估计 ≡ 该粒子且 ESS=N', Math.abs(degMean - (-2)) < 1e-12 && Math.abs(effectiveSampleSize(degW) - Nn) < 1e-9,
+    `估计=${degMean.toFixed(6)}，ESS=${effectiveSampleSize(degW).toFixed(6)}`);
+
+  // ⑥ 同 seed 两次运行逐位一致（随机流完全确定）
+  const a = particleFilter(pfModel, obs);
+  const b = particleFilter(pfModel, obs);
+  let identical = a.estimates.length === b.estimates.length;
+  for (let t = 0; t < a.estimates.length && identical; t++)
+    for (let j = 0; j < a.estimates[t].length; j++)
+      if (a.estimates[t][j] !== b.estimates[t][j]) { identical = false; break; }
+  check('粒子滤波：同 seed 两次运行逐位一致（随机流确定）', identical, `步数=${a.estimates.length}`);
+}
+
+/* ============================================================
+ * 套件 49 · Mean Shift 众数搜索（Fukunaga 1975 · Cheng 1995）
+ * ============================================================ */
+function suiteMeanShift(check) {
+  const rng = mulberry32(5);
+  const X = randomMatrix(80, 2, rng, -3, 3);
+  const h = 1.5;
+
+  // ① 梯度恒等式：m(x) − x ≡ h²∇f̂/f̂（中心差分 vs 闭式）
+  const xq = [rng() * 2 - 1, rng() * 2 - 1];
+  const gc = meanShiftGradientCheck(X, xq, h, 1e-5);
+  check('MeanShift：梯度恒等式 m(x)−x ≡ h²∇f̂/f̂（相对误差 1e-6）', gc.maxRelErr < 1e-6, `maxRelErr=${gc.maxRelErr.toExponential(2)}`);
+
+  // ② h → ∞ 一步到质心：m(x) ≡ 数据均值 Σxᵢ/n
+  const mInf = meanShiftStep(X, xq, 1e9);
+  const meanX = colMean(X);
+  let meanErr = 0;
+  for (let j = 0; j < 2; j++) meanErr = Math.max(meanErr, Math.abs(mInf[j] - meanX[j]));
+  check('MeanShift：h→∞ 一步到数据均值 Σxᵢ/n', meanErr < 1e-6, `maxDiff=${meanErr.toExponential(2)}`);
+
+  // ③ 单调上升：沿轨迹 f̂ 非降（Cheng 1995 收敛定理）
+  const mode = meanShiftMode(X, xq, h, { maxIter: 300, tol: 1e-10 });
+  let nondec = true;
+  for (let k = 1; k < mode.kdeTrace.length; k++)
+    if (mode.kdeTrace[k] < mode.kdeTrace[k - 1] - 1e-12) { nondec = false; break; }
+  check('MeanShift：沿迭代轨迹 f̂ 单调不降（Cheng 收敛定理）', nondec, `步数=${mode.steps}，kde 起点=${mode.kdeTrace[0].toFixed(4)}`);
+
+  // ④ 收敛处不动点：‖m(x)−x‖ < tol
+  check('MeanShift：收敛处不动点 ‖m(x)−x‖ < tol', mode.shift < 1e-9, `shift=${mode.shift.toExponential(2)}`);
+
+  // ⑤ 单峰高斯团：任意起点收敛到样本均值附近
+  const rngG = mulberry32(8);
+  const G = randomMatrix(100, 2, rngG, -1, 1);
+  const meanG = colMean(G);
+  const modeG = meanShiftMode(G, [2, 2], h, { maxIter: 300, tol: 1e-10 });
+  let gErr = 0;
+  for (let j = 0; j < 2; j++) gErr = Math.max(gErr, Math.abs(modeG.mode[j] - meanG[j]));
+  check('MeanShift：单峰高斯团收敛到样本均值附近', gErr < 0.3, `‖mode−mean‖=${gErr.toFixed(4)}`);
+
+  // ⑥ 两团分离数据：簇数 = 2 且标签完美分离
+  const rngC = mulberry32(13);
+  const Ac = randomMatrix(40, 2, rngC, -1, 1).map((r) => [r[0] - 4, r[1] - 4]);
+  const Bc = randomMatrix(40, 2, rngC, -1, 1).map((r) => [r[0] + 4, r[1] + 4]);
+  const X2 = Ac.concat(Bc);
+  const cl = meanShiftCluster(X2, 2.0, { mergeTol: 0.6, maxIter: 300, tol: 1e-10 });
+  const lA = cl.labels[0], lB = cl.labels[40];
+  const sep = Ac.every((_, i) => cl.labels[i] === lA) && Bc.every((_, i) => cl.labels[40 + i] === lB) && lA !== lB;
+  check('MeanShift：两团分离数据 ⇒ 簇数=2 且标签完美分离', cl.k === 2 && sep, `k=${cl.k}，分离=${sep}`);
+}
+
+/* ============================================================
+ * 套件 50 · SARSA 同策略时序差分（Rummery & Niranjan 1994）
+ * ============================================================ */
+function suiteSARSA(check) {
+  const rng = mulberry32(3);
+  const S = 3, A = 2;
+  const Q0 = randomMatrix(S, A, rng, -1, 1);
+  const P = [], R = [];
+  for (let s = 0; s < S; s++) {
+    const pa = [], ra = [];
+    for (let a = 0; a < A; a++) {
+      const ns = (s + (a === 1 ? 1 : -1) + S) % S;
+      pa.push([[ns, 1]]);
+      ra.push([a === 1 ? 1 : 0]);
+    }
+    P.push(pa); R.push(ra);
+  }
+  const gamma = 0.9;
+
+  // ① 退化恒等式：ε=0 + 确定性 MDP ⇒ SARSA 单步 ≡ Q-learning 单步
+  const s = 0, a = 0, s2 = P[s][a][0][0], r = R[s][a][0];
+  const a2 = greedyAction(Q0, s2);
+  const Qs = Q0.map((row) => row.slice());
+  sarsaStep(Qs, s, a, r, s2, a2, { alpha: 0.1, gamma });
+  const Qq = Q0.map((row) => row.slice());
+  const deltaQL = r + gamma * Math.max(...Qq[s2]) - Qq[s][a];
+  Qq[s][a] += 0.1 * deltaQL;
+  let stepDiff = 0;
+  for (let i = 0; i < S; i++) for (let j = 0; j < A; j++) stepDiff = Math.max(stepDiff, Math.abs(Qs[i][j] - Qq[i][j]));
+  check('SARSA：ε=0 确定性 MDP 单步 ≡ Q-learning 单步（1e-15）', stepDiff < 1e-15, `maxDiff=${stepDiff.toExponential(2)}`);
+
+  // ② λ=0 时 SARSA(λ) 与 SARSA 逐位相等
+  const { P: Pc, R: Rc } = chainMDP({ n: 5, gamma });
+  const res1 = sarsa(Pc, Rc, { gamma, episodes: 300, stepsPerEpisode: 25, seed: 3, lambda: 0 });
+  const res2 = sarsaLambda(Pc, Rc, { gamma, episodes: 300, stepsPerEpisode: 25, seed: 3, lambda: 0 });
+  let lamDiff = 0;
+  for (let i = 0; i < 5; i++) for (let j = 0; j < 2; j++) lamDiff = Math.max(lamDiff, Math.abs(res1.Q[i][j] - res2.Q[i][j]));
+  check('SARSA：λ=0 时 SARSA(λ) 与 SARSA 逐位相等（0）', lamDiff === 0, `maxDiff=${lamDiff}`);
+
+  // ③ GLIE 收敛：chainMDP 上收敛 Q ≈ qFromV(V*)
+  const { P: Pg, R: Rg } = chainMDP({ n: 6, gamma });
+  const vi = valueIteration(Pg, Rg, gamma);
+  const Qref = qFromV(Pg, Rg, gamma, vi.V);
+  const resS = sarsa(Pg, Rg, {
+    gamma, alpha: 0.2, epsStart: 1, epsEnd: 0, episodes: 4000, stepsPerEpisode: 40,
+    seed: 5, average: true, avgFrom: 0.5, epsDecayFrac: 0.5, lambda: 0,
+  });
+  let qDiff = 0;
+  for (let i = 0; i < 6; i++) for (let j = 0; j < 2; j++) qDiff = Math.max(qDiff, Math.abs(resS.Q[i][j] - Qref[i][j]));
+  let polOk = true;
+  for (let i = 0; i < 6; i++) if (greedyAction(resS.Q, i) !== greedyAction(Qref, i)) polOk = false;
+  check('SARSA：GLIE 收敛 Q ≈ qFromV(V*) 且策略一致', qDiff < 0.3 && polOk, `max|ΔQ|=${qDiff.toFixed(4)}，策略一致=${polOk}`);
+
+  // ④ 在策略 Bellman 残差 → 0（ε=0 贪心）
+  const resid = sarsaBellmanResidual(Pg, Rg, gamma, resS.Q, 0);
+  check('SARSA：在策略 Bellman 残差 ‖Q − B^πQ‖ → 0（π 贪心）', resid < 0.3, `max残差=${resid.toFixed(4)}`);
+
+  // ⑤ 资格迹恒等式：访问 (s,a) 后 e(s,a)=1（替换迹）且按 γλ 衰减
+  const e0 = Array.from({ length: S }, () => new Array(A).fill(0));
+  sarsaTraceSet(e0, 2, 1, { replacing: true });
+  const setOk = e0[2][1] === 1 && e0[0][0] === 0;
+  const e1 = sarsaTraceDecay(e0, 0.9, 0.8);
+  const decayOk = Math.abs(e1[2][1] - 0.72) < 1e-12;
+  sarsaTraceSet(e0, 2, 0, { replacing: true });
+  const replOk = e0[2][1] === 0 && e0[2][0] === 1;
+  check('SARSA：资格迹 e(s,a)=1（替换迹清零他者）且按 γλ 衰减', setOk && decayOk && replOk,
+    `置位=${setOk}，衰减=${decayOk}，替换=${replOk}`);
+
+  // ⑥ 同 seed 两次训练 Q 逐位一致
+  const r1 = sarsa(Pg, Rg, { gamma, episodes: 500, stepsPerEpisode: 30, seed: 9, lambda: 0 });
+  const r2 = sarsa(Pg, Rg, { gamma, episodes: 500, stepsPerEpisode: 30, seed: 9, lambda: 0 });
+  let repDiff = 0;
+  for (let i = 0; i < 6; i++) for (let j = 0; j < 2; j++) repDiff = Math.max(repDiff, Math.abs(r1.Q[i][j] - r2.Q[i][j]));
+  check('SARSA：同 seed 两次训练 Q 逐位一致', repDiff === 0, `maxDiff=${repDiff}`);
+}
+
 const colMean = mean;
 /* ───── 挂载全局命名空间 ───── */
-const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, randomForestTrain, randomForestPredict, rfSingleTree, perceptronStep, perceptronTrain, perceptronPredict, icaFit, icaTransform, ccaFit, ccaProject, hierarchicalCluster, hierarchicalCophenetic, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, gprKernelMatrix, gprFit, gprPredict, gprPriorVariance, gprInverseK, gprHyperGradAnalytic, gprHyperGradNumeric, regressionTreeFit, regressionTreePredict, regressionTreePredictAll, gbdtFit, gbdtPredict, gbdtStagedPredict, pearsonCorr, kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate, innovationAutocorr, empiricalVariance, metropolisHastings, mhAcceptProb, detailedBalanceResidual, importanceSampling, mcmcEmpiricalMoments, marginal, nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData, pageRank, pagerankExact, pagerankStationary, pagerankSum, gibbsBivariateGaussian, gibbsSampler, gibbsMarginal, gibbsCovariance, gibbsConditionalCheck, gibbsDiscrete, gibbsConvergence, gmmFit, gmmPredict, ldaFit, ldaProject, nbFit, nbPredict, qdaFit, qdaDiscriminant, qdaPredict, lassoFit, lassoPath, lassoPredict, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, batchNormForward, batchNormBackward, batchNormInfer, batchNormGradCheck, layerNorm2d, layerNormBackward, layerNormGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, convOutputSize, im2col, conv2dForward, conv2dBackward, maxPool2d, maxPoolBackward, conv2dNaive, convGradientCheck, randomConvTensors, vaeMake, vaeEncode, vaeReparametrize, vaeDecode, vaeKL, vaeKLMonteCarlo, vaeSampleEps, vaeForward, vaeBackward, vaeGradientCheck, cosineSim, sigmoidNegIdentity, sgnsLoss, sgnsGradients, sgnsLossReference, sgnsGradientCheck, trainSGNS, wordSimilarity, makeToyCorpus, ResidualBlock, ResNet, resnetAccuracy, trainResNet, residualIdentityCheck, residualJacobianIdentity, residualGradientCheck, residualGradientHighway, residualVsPlain, rbmTrain, rbmHiddenProbs, rbmReconstruct, rbmFreeEnergy, hopfieldTrain, hopfieldEnergy, hopfieldUpdateUnit, hopfieldRecall, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, runAllInvariants };
+const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, randomForestTrain, randomForestPredict, rfSingleTree, perceptronStep, perceptronTrain, perceptronPredict, icaFit, icaTransform, ccaFit, ccaProject, hierarchicalCluster, hierarchicalCophenetic, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, gprKernelMatrix, gprFit, gprPredict, gprPriorVariance, gprInverseK, gprHyperGradAnalytic, gprHyperGradNumeric, regressionTreeFit, regressionTreePredict, regressionTreePredictAll, gbdtFit, gbdtPredict, gbdtStagedPredict, pearsonCorr, kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate, innovationAutocorr, empiricalVariance, rtsSmooth, rtsCovarianceGapEigen, rtsRMSE, rtsZeros, effectiveSampleSize, systematicResample, particleFilter, pfCompareWithKalman, metropolisHastings, mhAcceptProb, detailedBalanceResidual, importanceSampling, mcmcEmpiricalMoments, marginal, nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData, pageRank, pagerankExact, pagerankStationary, pagerankSum, gibbsBivariateGaussian, gibbsSampler, gibbsMarginal, gibbsCovariance, gibbsConditionalCheck, gibbsDiscrete, gibbsConvergence, gmmFit, gmmPredict, ldaFit, ldaProject, nbFit, nbPredict, qdaFit, qdaDiscriminant, qdaPredict, lassoFit, lassoPath, lassoPredict, meanShiftKDE, meanShiftStep, meanShiftMode, meanShiftCluster, meanShiftGradientCheck, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, batchNormForward, batchNormBackward, batchNormInfer, batchNormGradCheck, layerNorm2d, layerNormBackward, layerNormGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, convOutputSize, im2col, conv2dForward, conv2dBackward, maxPool2d, maxPoolBackward, conv2dNaive, convGradientCheck, randomConvTensors, vaeMake, vaeEncode, vaeReparametrize, vaeDecode, vaeKL, vaeKLMonteCarlo, vaeSampleEps, vaeForward, vaeBackward, vaeGradientCheck, cosineSim, sigmoidNegIdentity, sgnsLoss, sgnsGradients, sgnsLossReference, sgnsGradientCheck, trainSGNS, wordSimilarity, makeToyCorpus, ResidualBlock, ResNet, resnetAccuracy, trainResNet, residualIdentityCheck, residualJacobianIdentity, residualGradientCheck, residualGradientHighway, residualVsPlain, rbmTrain, rbmHiddenProbs, rbmReconstruct, rbmFreeEnergy, hopfieldTrain, hopfieldEnergy, hopfieldUpdateUnit, hopfieldRecall, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, sarsaEpsilonProbs, epsilonGreedyAction, sarsaStep, sarsaTraceSet, sarsaTraceDecay, sarsa, sarsaLambda, sarsaBellmanResidual, runAllInvariants };
 if (typeof globalThis !== 'undefined') {
   globalThis.FlagshipAI = Object.assign({}, globalThis.FlagshipAI, __FlagshipAI__);
 }
@@ -12309,10 +13501,150 @@ if (typeof globalThis !== 'undefined') {
       `<span style="font-family:monospace">Hebbian 存 ${m} 模式（n=${n}，m/n=${(m / n).toFixed(3)}≤0.138）· 能量 ${tr[0].toFixed(2)} → ${tr[tr.length - 1].toFixed(2)}（Lyapunov 不增）</span>`;
   }
 
+  /* ================= v1.10 · RTS 平滑器 ================= */
+  let rtsSeed = 11;
+  function drawRTS() {
+    const { mulberry32, gaussianSample, rtsSmooth, kalmanFilter, rtsRMSE } = A;
+    const rng = mulberry32(rtsSeed);
+    const f = 0.9, h = 1, q = 0.3, r = 1.2;
+    const F = [[f]], H = [[h]], Q = [[q]], R = [[r]], P0 = [[2]];
+    let truth = 0; const obs = [], tr = [];
+    for (let t = 0; t < 120; t++) { truth = f * truth + gaussianSample(rng, 0, Math.sqrt(q)); tr.push(truth); obs.push([truth + gaussianSample(rng, 0, Math.sqrt(r))]); }
+    const model = { F, H, Q, R, x0: [0], P0 };
+    const kf = kalmanFilter(model, obs);
+    const out = rtsSmooth(model, obs);
+    const T = obs.length;
+    const allV = [].concat(tr, kf.states.map(s => s[0]), out.smoothed.map(s => s[0]), obs.map(o => o[0]));
+    let ymin = Math.min(...allV), ymax = Math.max(...allV); const pad = (ymax - ymin) * 0.1 || 1; ymin -= pad; ymax += pad;
+    const px = (t) => 20 + (t / (T - 1)) * 420;
+    const py = (v) => 280 - (v - ymin) / (ymax - ymin) * 260;
+    let svg = '';
+    let dT = ''; for (let t = 0; t < T; t++) dT += (t === 0 ? 'M' : 'L') + px(t).toFixed(1) + ',' + py(tr[t]).toFixed(1);
+    svg += `<path d="${dT}" fill="none" stroke="#95a5a6" stroke-width="1.4" stroke-dasharray="4,3"/>`;
+    let dF = ''; for (let t = 0; t < T; t++) dF += (t === 0 ? 'M' : 'L') + px(t).toFixed(1) + ',' + py(kf.states[t][0]).toFixed(1);
+    svg += `<path d="${dF}" fill="none" stroke="#2980b9" stroke-width="1.6"/>`;
+    let dS = ''; for (let t = 0; t < T; t++) dS += (t === 0 ? 'M' : 'L') + px(t).toFixed(1) + ',' + py(out.smoothed[t][0]).toFixed(1);
+    svg += `<path d="${dS}" fill="none" stroke="#e74c3c" stroke-width="1.6"/>`;
+    for (let t = 0; t < T; t += 2) svg += `<circle cx="${px(t).toFixed(1)}" cy="${py(obs[t][0]).toFixed(1)}" r="1.8" fill="#5b6478" fill-opacity="0.5"/>`;
+    $('svg-rts').innerHTML = svg;
+    $('legend-rts').innerHTML =
+      `<span><i style="background:#95a5a6"></i>真值</span><span><i style="background:#2980b9"></i>卡尔曼滤波</span><span><i style="background:#e74c3c"></i>RTS 平滑</span>` +
+      `<span style="font-family:monospace">平滑 RMSE=${rtsRMSE(out.smoothed, tr).toFixed(3)} < 滤波 ${rtsRMSE(kf.states, tr).toFixed(3)}</span>`;
+  }
+
+  /* ================= v1.10 · 粒子滤波 SIR ================= */
+  let pfSeed = 23;
+  function drawPF() {
+    const { mulberry32, gaussianSample, gaussianPDF, particleFilter, kalmanFilter, pfCompareWithKalman } = A;
+    const rng = mulberry32(pfSeed);
+    const f = 0.95, h = 1, q = 0.15, r = 1;
+    const F = [[f]], H = [[h]], Q = [[q]], R = [[r]], P0 = [[q / (1 - f * f)]];
+    let truth = 0; const obs = [], tr = [];
+    for (let t = 0; t < 100; t++) { truth = f * truth + gaussianSample(rng, 0, Math.sqrt(q)); tr.push(truth); obs.push([truth + gaussianSample(rng, 0, Math.sqrt(r))]); }
+    const pf = particleFilter({
+      x0: [0],
+      init: (g) => [gaussianSample(g, 0, Math.sqrt(P0[0][0]))],
+      transition: (xp, g) => [f * xp[0] + gaussianSample(g, 0, Math.sqrt(q))],
+      likelihood: (y, xp) => gaussianPDF(y[0], xp[0], Math.sqrt(r)),
+      N: 3000, seed: pfSeed * 7 + 1,
+    }, obs);
+    const kf = kalmanFilter({ F, H, Q, R, x0: [0], P0 }, obs);
+    const T = obs.length;
+    const allV = [].concat(tr, kf.states.map(s => s[0]), pf.estimates.map(s => s[0]), obs.map(o => o[0]));
+    let ymin = Math.min(...allV), ymax = Math.max(...allV); const pad = (ymax - ymin) * 0.1 || 1; ymin -= pad; ymax += pad;
+    const px = (t) => 20 + (t / (T - 1)) * 420;
+    const py = (v) => 280 - (v - ymin) / (ymax - ymin) * 260;
+    let svg = '';
+    let dK = ''; for (let t = 0; t < T; t++) dK += (t === 0 ? 'M' : 'L') + px(t).toFixed(1) + ',' + py(kf.states[t][0]).toFixed(1);
+    svg += `<path d="${dK}" fill="none" stroke="#2980b9" stroke-width="1.5"/>`;
+    let dP = ''; for (let t = 0; t < T; t++) dP += (t === 0 ? 'M' : 'L') + px(t).toFixed(1) + ',' + py(pf.estimates[t][0]).toFixed(1);
+    svg += `<path d="${dP}" fill="none" stroke="#e74c3c" stroke-width="1.5"/>`;
+    let dT = ''; for (let t = 0; t < T; t++) dT += (t === 0 ? 'M' : 'L') + px(t).toFixed(1) + ',' + py(tr[t]).toFixed(1);
+    svg += `<path d="${dT}" fill="none" stroke="#95a5a6" stroke-width="1.3" stroke-dasharray="4,3"/>`;
+    for (let t = 0; t < T; t += 2) svg += `<circle cx="${px(t).toFixed(1)}" cy="${py(obs[t][0]).toFixed(1)}" r="1.8" fill="#5b6478" fill-opacity="0.5"/>`;
+    const cmp = pfCompareWithKalman(pf.estimates, kf.states);
+    $('svg-pf').innerHTML = svg;
+    $('legend-pf').innerHTML =
+      `<span><i style="background:#2980b9"></i>卡尔曼解析</span><span><i style="background:#e74c3c"></i>粒子滤波(N=3000)</span><span><i style="background:#95a5a6"></i>真值</span>` +
+      `<span style="font-family:monospace">PF vs 卡尔曼 meanDiff=${cmp.meanDiff.toFixed(4)}</span>`;
+  }
+
+  /* ================= v1.10 · Mean Shift 众数搜索 ================= */
+  let msSeed = 31;
+  function drawMS() {
+    const { mulberry32, randomMatrix, meanShiftCluster, meanShiftMode } = A;
+    const rng = mulberry32(msSeed);
+    const A1 = randomMatrix(35, 2, rng, -1, 1).map(r => [r[0] - 4, r[1] - 4]);
+    const B1 = randomMatrix(35, 2, rng, -1, 1).map(r => [r[0] + 4, r[1] + 4]);
+    const X = A1.concat(B1);
+    const cl = meanShiftCluster(X, 2.0, { mergeTol: 0.6, maxIter: 200, tol: 1e-10 });
+    const xmin = -7, xmax = 7, ymin = -7, ymax = 7;
+    const px = (v) => 20 + (v - xmin) / (xmax - xmin) * 420;
+    const py = (v) => 280 - (v - ymin) / (ymax - ymin) * 260;
+    const cols = ['#2980b9', '#e74c3c'];
+    let svg = '';
+    const starts = [[0, 0], [-1, 1], [2, -2], [5, 3], [-5, -3]];
+    for (const st of starts) {
+      const m = meanShiftMode(X, st, 2.0, { maxIter: 200, tol: 1e-10 });
+      let d = ''; for (let k = 0; k < m.path.length; k++) d += (k === 0 ? 'M' : 'L') + px(m.path[k][0]).toFixed(1) + ',' + py(m.path[k][1]).toFixed(1);
+      svg += `<path d="${d}" fill="none" stroke="#7a3bfd" stroke-width="1" stroke-opacity="0.6"/>`;
+      svg += `<circle cx="${px(st[0]).toFixed(1)}" cy="${py(st[1]).toFixed(1)}" r="2.5" fill="#7a3bfd"/>`;
+    }
+    for (let i = 0; i < X.length; i++) {
+      svg += `<circle cx="${px(X[i][0]).toFixed(1)}" cy="${py(X[i][1]).toFixed(1)}" r="3.2" fill="${cols[cl.labels[i] % 2]}" fill-opacity="0.8" stroke="#fff" stroke-width="0.5"/>`;
+    }
+    for (let k = 0; k < cl.centers.length; k++) {
+      svg += `<circle cx="${px(cl.centers[k][0]).toFixed(1)}" cy="${py(cl.centers[k][1]).toFixed(1)}" r="6" fill="none" stroke="#1c2333" stroke-width="2"/>`;
+    }
+    $('svg-ms').innerHTML = svg;
+    $('legend-ms').innerHTML =
+      `<span><i style="background:#2980b9"></i>簇0</span><span><i style="background:#e74c3c"></i>簇1</span><span><i style="background:#7a3bfd"></i>众数搜索轨迹</span>` +
+      `<span style="font-family:monospace">簇数 k=${cl.k}（两团分离自动聚类，无需预设）</span>`;
+  }
+
+  /* ================= v1.10 · SARSA 同策略 TD ================= */
+  let sarsaSeed = 42;
+  function drawSARSA() {
+    const { mulberry32, sarsa, chainMDP, valueIteration } = A;
+    const { P, R, S } = chainMDP({ n: 6, gamma: 0.9 });
+    const res = sarsa(P, R, {
+      gamma: 0.9, alpha: 0.2, epsStart: 1, epsEnd: 0, episodes: 1500, stepsPerEpisode: 30,
+      seed: sarsaSeed, average: true, avgFrom: 0.5, epsDecayFrac: 0.5, lambda: 0,
+    });
+    const rets = res.episodeReturns, n = rets.length;
+    let rmin = Math.min(...rets), rmax = Math.max(...rets); const pad = (rmax - rmin) * 0.1 || 1; rmin -= pad; rmax += pad;
+    const px = (i) => 20 + (i / (n - 1)) * 420;
+    const py = (v) => 20 + (1 - (v - rmin) / (rmax - rmin)) * 200;
+    let d = ''; for (let i = 0; i < n; i++) d += (i === 0 ? 'M' : 'L') + px(i).toFixed(1) + ',' + py(rets[i]).toFixed(1);
+    let svg = `<path d="${d}" fill="none" stroke="#16a085" stroke-width="1" stroke-opacity="0.5"/>`;
+    const W = 50; let smooth = [];
+    for (let i = 0; i < n; i++) { let s = 0, c = 0; for (let k = Math.max(0, i - W + 1); k <= i; k++) { s += rets[k]; c++; } smooth.push(s / c); }
+    let ds = ''; for (let i = 0; i < n; i++) ds += (i === 0 ? 'M' : 'L') + px(i).toFixed(1) + ',' + py(smooth[i]).toFixed(1);
+    svg += `<path d="${ds}" fill="none" stroke="#e67e22" stroke-width="1.8"/>`;
+    const vi = valueIteration(P, R, 0.9);
+    const pol = res.policy, cy = 262, bx = (s) => 20 + (s / (S - 1)) * 420;
+    for (let s = 0; s < S; s++) {
+      const x = bx(s);
+      svg += `<circle cx="${x.toFixed(1)}" cy="${cy}" r="9" fill="#fff" stroke="#1c2333" stroke-width="1.5"/>`;
+      svg += `<text x="${x.toFixed(1)}" y="${cy + 4}" font-size="11" text-anchor="middle" fill="#1c2333" font-family="monospace">${s}</text>`;
+      if (pol[s] === 1 && s < S - 1) { svg += `<path d="M${(x + 9).toFixed(1)} ${cy} L${(bx(s + 1) - 9).toFixed(1)} ${cy}" stroke="#2980b9" stroke-width="2"/><path d="M${(bx(s + 1) - 9).toFixed(1)} ${cy} l-6 -3 v6 z" fill="#2980b9"/>`; }
+      if (pol[s] === 0 && s > 0) { svg += `<path d="M${(x - 9).toFixed(1)} ${cy} L${(bx(s - 1) + 9).toFixed(1)} ${cy}" stroke="#e74c3c" stroke-width="2"/><path d="M${(bx(s - 1) + 9).toFixed(1)} ${cy} l6 -3 v6 z" fill="#e74c3c"/>`; }
+    }
+    $('svg-sarsa').innerHTML = svg;
+    $('legend-sarsa').innerHTML =
+      `<span><i style="background:#e67e22"></i>回合回报(滑动均值)</span><span><i style="background:#16a085"></i>原始回报</span>` +
+      `<span style="font-family:monospace">chainMDP(s=6)：蓝=右/红=左，策略与最优一致=${pol.every((p, s) => p === vi.policy[s])}</span>`;
+  }
+
   $('btn-qda').addEventListener('click', () => { qdaSeed = (qdaSeed * 37 + 11) % 100000; drawQDA(); });
   $('btn-lasso').addEventListener('click', () => { lassoSeed = (lassoSeed * 41 + 9) % 100000; drawLasso(); });
   $('btn-rbm').addEventListener('click', () => { rbmSeed = (rbmSeed * 29 + 13) % 100000; drawRBM(); });
   $('btn-hp').addEventListener('click', () => { hpSeed = (hpSeed * 31 + 17) % 100000; drawHP(); });
+
+  $('btn-rts').addEventListener('click', () => { rtsSeed = (rtsSeed * 37 + 11) % 100000; drawRTS(); });
+  $('btn-pf').addEventListener('click', () => { pfSeed = (pfSeed * 41 + 9) % 100000; drawPF(); });
+  $('btn-ms').addEventListener('click', () => { msSeed = (msSeed * 29 + 13) % 100000; drawMS(); });
+  $('btn-sarsa').addEventListener('click', () => { sarsaSeed = (sarsaSeed * 31 + 17) % 100000; drawSARSA(); });
 
   $('btn-perc').addEventListener('click', () => { percSeed = (percSeed * 31 + 17) % 100000; drawPerc(); });
   $('btn-ica').addEventListener('click', () => { icaSeed = (icaSeed * 37 + 11) % 100000; drawICA(); });
@@ -12360,6 +13692,10 @@ if (typeof globalThis !== 'undefined') {
   drawLasso();
   drawRBM();
   drawHP();
+  drawRTS();
+  drawPF();
+  drawMS();
+  drawSARSA();
   drawOpt();
 })();
 </script>

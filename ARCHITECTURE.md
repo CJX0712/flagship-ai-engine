@@ -54,6 +54,9 @@ flagship-ai-engine/
 │   │   ├── hierarchical.js      # 凝聚式层次聚类（single/complete/average，Lance-Williams）
 │   │   ├── qda.js               # 二次判别分析 QDA（各类完整协方差 + Cholesky logDet）
 │   │   └── lasso.js             # Lasso 稀疏回归（坐标下降 + 软阈值，截距不惩罚）
+│   │   ├── kalmanSmoother.js    # 卡尔曼平滑 RTS（Rauch-Tung-Striebel 1965 反向递推增益）
+│   │   ├── particleFilter.js    # 粒子滤波 SIR（Gordon 1993，log 权重 + 系统重采样 + ESS）
+│   │   └── meanShift.js         # Mean Shift 核密度爬山（Fukunaga 1975 / Cheng 1995）
 │   ├── nn/
 │   │   ├── dense.js             # 全连接网络(前向/反向/梯度检验)
 │   │   ├── attention.js         # 缩放点积注意力(前向/反向/梯度检验)/多头
@@ -73,11 +76,12 @@ flagship-ai-engine/
 │   ├── rl/
 │   │   ├── valueIteration.js    # 值迭代/策略评估/网格世界/链式 MDP 暴力枚举
 │   │   └── qLearning.js         # Q-learning(免模型TD) + Bellman 残差 + qFromV
+│   │   └── sarsa.js             # SARSA / SARSA(λ) 同策略 TD 控制 + 替换迹
 │   └── verify/
-│       └── invariants.js        # 46 组不变量自检套件（Node 与浏览器共用同一份）
-├── test/run.mjs                 # 无头自检入口 → PASS 46/46
+│       └── invariants.js        # 50 组不变量自检套件（Node 与浏览器共用同一份）
+├── test/run.mjs                 # 无头自检入口 → PASS 50/50
 ├── showcase/
-│   ├── template.html            # 旗舰展示页模板（31 个实时演示）
+│   ├── template.html            # 旗舰展示页模板（35 个实时演示）
 │   └── index.html               # 生成物：单文件、内联引擎、双击即用
 ├── scripts/
 │   ├── serve.mjs                # 零依赖静态服务器（可选）
@@ -144,8 +148,8 @@ graph LR
 | T4 | ml/classification + clustering + dimreduction + tree | T1,T2 |
 | T5 | nn/dense（反向传播 + 梯度检验） | T1,T2 |
 | T6 | nn/attention + transformer | T1,T2,T5 |
-| T7 | verify/invariants（46 组套件） | T1–T6 |
-| T8 | test/run.mjs 跑通 46/46 | T7 |
+| T7 | verify/invariants（50 组套件） | T1–T6 |
+| T8 | test/run.mjs 跑通 50/50 | T7 |
 | T9 | bundle + showcase 单文件页 | T7 |
 | T10 | 文档 + GitHub 推送 + CI 绿 | T8,T9 |
 

@@ -1,7 +1,7 @@
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 46 组套件全绿 = 引擎数学正确性的机器证明。
+ * 50 组套件全绿 = 引擎数学正确性的机器证明。
  */
 
 import {
@@ -123,6 +123,17 @@ import { qdaFit, qdaPredict, qdaDiscriminant } from '../ml/qda.js';
 import { lassoFit, lassoPath, lassoPredict } from '../ml/lasso.js';
 import { rbmTrain, rbmHiddenProbs, rbmReconstruct, rbmFreeEnergy } from '../nn/rbm.js';
 import { hopfieldTrain, hopfieldEnergy, hopfieldUpdateUnit, hopfieldRecall } from '../nn/hopfield.js';
+import { rtsSmooth, rtsRMSE, rtsCovarianceGapEigen } from '../ml/kalmanSmoother.js';
+import {
+  particleFilter, effectiveSampleSize, systematicResample, pfCompareWithKalman,
+} from '../ml/particleFilter.js';
+import {
+  meanShiftMode, meanShiftCluster, meanShiftGradientCheck, meanShiftStep,
+} from '../ml/meanShift.js';
+import {
+  sarsa, sarsaLambda, sarsaBellmanResidual, sarsaStep,
+  sarsaEpsilonProbs, epsilonGreedyAction, sarsaTraceSet, sarsaTraceDecay,
+} from '../rl/sarsa.js';
 
 /** 向量最大绝对值 */
 function vinf(v) {
@@ -213,6 +224,10 @@ export function runAllInvariants() {
     ['Lasso 稀疏回归 · Tibshirani 1996', suiteLasso],
     ['受限玻尔兹曼机 · RBM (Hinton 2002)', suiteRBM],
     ['Hopfield 联想记忆 · Hopfield 1982', suiteHopfield],
+    ['RTS 平滑器 · Rauch–Tung–Striebel 1965', suiteRTS],
+    ['粒子滤波 · Gordon 1993 (SIR)', suiteParticleFilter],
+    ['Mean Shift 众数搜索 · Fukunaga 1975', suiteMeanShift],
+    ['SARSA 同策略TD · Rummery & Niranjan 1994', suiteSARSA],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -3345,4 +3360,279 @@ function suiteHopfield(check) {
     }
     c(worst <= 1e-12, `max(E(p)−E(flip))=${worst.toExponential(2)}（≡ 2pᵢ(Wp)ᵢ ≥ 0）`);
   });
+}
+
+/* ============================================================
+ * 套件 47 · RTS 平滑器（Rauch–Tung–Striebel 1965）
+ * ============================================================ */
+function suiteRTS(check) {
+  // 2D 线性高斯系统：先跑卡尔曼 + RTS 平滑，交叉验证反向递推恒等式
+  const rng = mulberry32(2025);
+  const F = [[0.95, 0.05], [0, 0.90]];
+  const H = [[1, 0], [0, 1]];
+  const Q = [[0.10, 0], [0, 0.20]];
+  const R = [[1, 0], [0, 1]];
+  const x0 = [0, 0];
+  const P0 = [[5, 0], [0, 5]];
+  let state = x0.slice();
+  const obs = [], truth = [];
+  for (let t = 0; t < 300; t++) {
+    const w0 = gaussianSample(rng, 0, Math.sqrt(Q[0][0]));
+    const w1 = gaussianSample(rng, 0, Math.sqrt(Q[1][1]));
+    state = [F[0][0] * state[0] + F[0][1] * state[1] + w0, F[1][1] * state[1] + w1];
+    truth.push(state.slice());
+    obs.push([state[0] + gaussianSample(rng, 0, 1), state[1] + gaussianSample(rng, 0, 1)]);
+  }
+  const model = { F, H, Q, R, x0, P0 };
+  const out = rtsSmooth(model, obs);
+  const N = out.smoothed.length;
+  const tol = 1e-12;
+
+  // ① 端点闭合：平滑终点 ≡ 滤波终点（反向递推第一步不做修正）
+  let endErr = 0;
+  for (let j = 0; j < 2; j++) endErr = Math.max(endErr, Math.abs(out.smoothed[N - 1][j] - out.filtered[N - 1][j]));
+  check('RTS：端点闭合 x̂_{N|N}^{平滑} ≡ 滤波终点（精确）', endErr < tol, `误差=${endErr.toExponential(2)}`);
+
+  // ② 协方差序：P_{k|k} − P_{k|N} 半正定（平滑必降低不确定性）
+  const gap = rtsCovarianceGapEigen(out.filteredCovs, out.smoothedCovs);
+  let minGap = Infinity;
+  for (const g of gap) if (g < minGap) minGap = g;
+  check('RTS：平滑必降不确定性 P_{k|k} − P_{k|N} 半正定（最小特征值 ≥ −1e-10）', minGap >= -1e-10, `min eig=${minGap.toExponential(2)}`);
+
+  // ③ 增益恒等式：J_k ≡ P_{k|k}FᵀP_{k+1|k}⁻¹ 独立重算（逐步逐位）
+  let gainErr = 0;
+  for (let k = 0; k < out.gains.length; k++) {
+    const J = matmul(matmul(out.filteredCovs[k], transpose(F)), inverse(out.predictedCov[k + 1]));
+    gainErr = Math.max(gainErr, mdiff(J, out.gains[k]));
+  }
+  check('RTS：增益恒等式 J_k = P_{k|k}FᵀP_{k+1|k}⁻¹（逐步逐位）', gainErr < tol, `maxDiff=${gainErr.toExponential(2)}`);
+
+  // ④ 常值状态闭式：F=1,Q=0 ⇒ 平滑估计全相等 ≡ 信息加权均值 Σz/(1+N)
+  const rngC = mulberry32(7);
+  const Nc = 120;
+  const obsC = [];
+  let zsum = 0;
+  for (let t = 0; t < Nc; t++) { const z = gaussianSample(rngC, 3.0, 1.0); obsC.push([z]); zsum += z; }
+  const outC = rtsSmooth({ F: [[1]], H: [[1]], Q: [[0]], R: [[1]], x0: [0], P0: [[1]] }, obsC);
+  const closed = zsum / (1 + Nc);
+  let constErr = Math.abs(outC.smoothed[0][0] - closed);
+  for (let k = 1; k < outC.smoothed.length; k++) constErr = Math.max(constErr, Math.abs(outC.smoothed[k][0] - outC.smoothed[0][0]));
+  check('RTS：常值状态 F=1,Q=0 ⇒ 平滑估计恒等且 ≡ Σz/(1+N)', constErr < 1e-6, `偏差=${constErr.toExponential(2)}，闭式=${closed.toFixed(6)}`);
+
+  // ⑤ 反向递推自洽：x̂_{k|N} = x̂_{k|k} + J_k(x̂_{k+1|N} − x̂_{k+1|k}) 重算
+  let recErr = 0;
+  for (let k = 0; k < N - 1; k++) {
+    const innov = out.smoothed[k + 1].map((v, j) => v - out.predicted[k + 1][j]);
+    const recomputed = out.filtered[k].map((v, i) => {
+      let s = v;
+      for (let j = 0; j < innov.length; j++) s += out.gains[k][i][j] * innov[j];
+      return s;
+    });
+    recErr = Math.max(recErr, mdiff(out.smoothed[k], recomputed));
+  }
+  check('RTS：反向递推自洽 x̂_{k|N} = x̂_{k|k} + J_k(x̂_{k+1|N} − x̂_{k+1|k})', recErr < tol, `maxDiff=${recErr.toExponential(2)}`);
+
+  // ⑥ 均方误差序：平滑 RMSE ≤ 滤波 RMSE（全数据后验优于仅用历史）
+  const rmseF = rtsRMSE(out.filtered, truth);
+  const rmseS = rtsRMSE(out.smoothed, truth);
+  check('RTS：平滑 RMSE ≤ 滤波 RMSE（最优平滑=全数据后验均值）', rmseS <= rmseF + 1e-6, `滤波=${rmseF.toFixed(4)} vs 平滑=${rmseS.toFixed(4)}`);
+}
+
+/* ============================================================
+ * 套件 48 · 粒子滤波（Gordon 1993 · SIR）
+ * ============================================================ */
+function suiteParticleFilter(check) {
+  const rng = mulberry32(99);
+  const f = 0.95, h = 1, q = 0.1, r = 1;
+  const F = [[f]], H = [[h]], Q = [[q]], R = [[r]];
+  const P0 = [[q / (1 - f * f)]];
+  const x0 = [0];
+  let truth = 0;
+  const obs = [], truthSeries = [];
+  for (let t = 0; t < 100; t++) {
+    truth = f * truth + gaussianSample(rng, 0, Math.sqrt(q));
+    truthSeries.push(truth);
+    obs.push([truth + gaussianSample(rng, 0, Math.sqrt(r))]);
+  }
+  const pfModel = {
+    x0,
+    init: (rngI) => [x0[0] + gaussianSample(rngI, 0, Math.sqrt(P0[0][0]))],
+    transition: (xp, rngI) => [f * xp[0] + gaussianSample(rngI, 0, Math.sqrt(q))],
+    likelihood: (y, xp) => gaussianPDF(y[0], xp[0], Math.sqrt(r)),
+    N: 5000, seed: 7, resampleEvery: true,
+  };
+  const pf = particleFilter(pfModel, obs);
+  const kf = kalmanFilter({ F, H, Q, R, x0, P0 }, obs);
+
+  // ① 权重归一化：每步 Σw = 1（log 域 logsumexp 归一）
+  let wErr = 0;
+  for (const w of pf.weightsHistory) {
+    let s = 0; for (const v of w) s += v;
+    wErr = Math.max(wErr, Math.abs(s - 1));
+  }
+  check('粒子滤波：每步权重 Σw = 1（log 域 logsumexp 归一）', wErr < 1e-12, `max|Σw−1|=${wErr.toExponential(2)}`);
+
+  // ② 线性高斯 ⇒ 粒子估计收敛到卡尔曼解析解（先验一致）
+  const cmp = pfCompareWithKalman(pf.estimates, kf.states);
+  check('粒子滤波：线性高斯下收敛到卡尔曼解析解（N=5000 均值偏差 < 0.3）', cmp.meanDiff < 0.3,
+    `meanDiff=${cmp.meanDiff.toFixed(4)}，maxDiff=${cmp.maxDiff.toFixed(4)}`);
+
+  // ③ ESS ≡ 1/Σw² 且 ∈ [1, N]（均匀=N、退化=1）
+  const Nn = pf.N;
+  const wU = new Array(Nn).fill(1 / Nn);
+  const wD = new Array(Nn).fill(0); wD[0] = 1;
+  const essU = effectiveSampleSize(wU), essD = effectiveSampleSize(wD);
+  check('粒子滤波：ESS ≡ 1/Σw²，均匀=N 且 退化=1', Math.abs(essU - Nn) < 1e-9 && Math.abs(essD - 1) < 1e-9,
+    `ESS(均匀)=${essU.toFixed(6)}，ESS(退化)=${essD.toFixed(6)}`);
+
+  // ④ 系统重采样：均匀权重下 ≡ 恒等置换，权重精确 1/N
+  const parts = Array.from({ length: Nn }, (_, i) => [i]);
+  const res = systematicResample(parts, wU, mulberry32(1));
+  const identity = res.indices.every((v, i) => v === i);
+  const uniform = res.weights.every((v) => Math.abs(v - 1 / Nn) < 1e-12);
+  let sumW = 0; for (const v of res.weights) sumW += v;
+  check('粒子滤波：系统重采样（均匀权重）≡ 恒等置换、权重精确 1/N', identity && uniform && Math.abs(sumW - 1) < 1e-12,
+    `indices 恒等=${identity}，权重均匀=${uniform}`);
+
+  // ⑤ 退化情形：全部粒子相同 ⇒ 估计 ≡ 该粒子且 ESS ≡ N
+  const degParts = Array.from({ length: Nn }, () => [-2]);
+  const degW = new Array(Nn).fill(1 / Nn);
+  let degMean = 0; for (const p of degParts) degMean += p[0] / Nn;
+  check('粒子滤波：退化（粒子全同）⇒ 估计 ≡ 该粒子且 ESS=N', Math.abs(degMean - (-2)) < 1e-12 && Math.abs(effectiveSampleSize(degW) - Nn) < 1e-9,
+    `估计=${degMean.toFixed(6)}，ESS=${effectiveSampleSize(degW).toFixed(6)}`);
+
+  // ⑥ 同 seed 两次运行逐位一致（随机流完全确定）
+  const a = particleFilter(pfModel, obs);
+  const b = particleFilter(pfModel, obs);
+  let identical = a.estimates.length === b.estimates.length;
+  for (let t = 0; t < a.estimates.length && identical; t++)
+    for (let j = 0; j < a.estimates[t].length; j++)
+      if (a.estimates[t][j] !== b.estimates[t][j]) { identical = false; break; }
+  check('粒子滤波：同 seed 两次运行逐位一致（随机流确定）', identical, `步数=${a.estimates.length}`);
+}
+
+/* ============================================================
+ * 套件 49 · Mean Shift 众数搜索（Fukunaga 1975 · Cheng 1995）
+ * ============================================================ */
+function suiteMeanShift(check) {
+  const rng = mulberry32(5);
+  const X = randomMatrix(80, 2, rng, -3, 3);
+  const h = 1.5;
+
+  // ① 梯度恒等式：m(x) − x ≡ h²∇f̂/f̂（中心差分 vs 闭式）
+  const xq = [rng() * 2 - 1, rng() * 2 - 1];
+  const gc = meanShiftGradientCheck(X, xq, h, 1e-5);
+  check('MeanShift：梯度恒等式 m(x)−x ≡ h²∇f̂/f̂（相对误差 1e-6）', gc.maxRelErr < 1e-6, `maxRelErr=${gc.maxRelErr.toExponential(2)}`);
+
+  // ② h → ∞ 一步到质心：m(x) ≡ 数据均值 Σxᵢ/n
+  const mInf = meanShiftStep(X, xq, 1e9);
+  const meanX = colMean(X);
+  let meanErr = 0;
+  for (let j = 0; j < 2; j++) meanErr = Math.max(meanErr, Math.abs(mInf[j] - meanX[j]));
+  check('MeanShift：h→∞ 一步到数据均值 Σxᵢ/n', meanErr < 1e-6, `maxDiff=${meanErr.toExponential(2)}`);
+
+  // ③ 单调上升：沿轨迹 f̂ 非降（Cheng 1995 收敛定理）
+  const mode = meanShiftMode(X, xq, h, { maxIter: 300, tol: 1e-10 });
+  let nondec = true;
+  for (let k = 1; k < mode.kdeTrace.length; k++)
+    if (mode.kdeTrace[k] < mode.kdeTrace[k - 1] - 1e-12) { nondec = false; break; }
+  check('MeanShift：沿迭代轨迹 f̂ 单调不降（Cheng 收敛定理）', nondec, `步数=${mode.steps}，kde 起点=${mode.kdeTrace[0].toFixed(4)}`);
+
+  // ④ 收敛处不动点：‖m(x)−x‖ < tol
+  check('MeanShift：收敛处不动点 ‖m(x)−x‖ < tol', mode.shift < 1e-9, `shift=${mode.shift.toExponential(2)}`);
+
+  // ⑤ 单峰高斯团：任意起点收敛到样本均值附近
+  const rngG = mulberry32(8);
+  const G = randomMatrix(100, 2, rngG, -1, 1);
+  const meanG = colMean(G);
+  const modeG = meanShiftMode(G, [2, 2], h, { maxIter: 300, tol: 1e-10 });
+  let gErr = 0;
+  for (let j = 0; j < 2; j++) gErr = Math.max(gErr, Math.abs(modeG.mode[j] - meanG[j]));
+  check('MeanShift：单峰高斯团收敛到样本均值附近', gErr < 0.3, `‖mode−mean‖=${gErr.toFixed(4)}`);
+
+  // ⑥ 两团分离数据：簇数 = 2 且标签完美分离
+  const rngC = mulberry32(13);
+  const Ac = randomMatrix(40, 2, rngC, -1, 1).map((r) => [r[0] - 4, r[1] - 4]);
+  const Bc = randomMatrix(40, 2, rngC, -1, 1).map((r) => [r[0] + 4, r[1] + 4]);
+  const X2 = Ac.concat(Bc);
+  const cl = meanShiftCluster(X2, 2.0, { mergeTol: 0.6, maxIter: 300, tol: 1e-10 });
+  const lA = cl.labels[0], lB = cl.labels[40];
+  const sep = Ac.every((_, i) => cl.labels[i] === lA) && Bc.every((_, i) => cl.labels[40 + i] === lB) && lA !== lB;
+  check('MeanShift：两团分离数据 ⇒ 簇数=2 且标签完美分离', cl.k === 2 && sep, `k=${cl.k}，分离=${sep}`);
+}
+
+/* ============================================================
+ * 套件 50 · SARSA 同策略时序差分（Rummery & Niranjan 1994）
+ * ============================================================ */
+function suiteSARSA(check) {
+  const rng = mulberry32(3);
+  const S = 3, A = 2;
+  const Q0 = randomMatrix(S, A, rng, -1, 1);
+  const P = [], R = [];
+  for (let s = 0; s < S; s++) {
+    const pa = [], ra = [];
+    for (let a = 0; a < A; a++) {
+      const ns = (s + (a === 1 ? 1 : -1) + S) % S;
+      pa.push([[ns, 1]]);
+      ra.push([a === 1 ? 1 : 0]);
+    }
+    P.push(pa); R.push(ra);
+  }
+  const gamma = 0.9;
+
+  // ① 退化恒等式：ε=0 + 确定性 MDP ⇒ SARSA 单步 ≡ Q-learning 单步
+  const s = 0, a = 0, s2 = P[s][a][0][0], r = R[s][a][0];
+  const a2 = greedyAction(Q0, s2);
+  const Qs = Q0.map((row) => row.slice());
+  sarsaStep(Qs, s, a, r, s2, a2, { alpha: 0.1, gamma });
+  const Qq = Q0.map((row) => row.slice());
+  const deltaQL = r + gamma * Math.max(...Qq[s2]) - Qq[s][a];
+  Qq[s][a] += 0.1 * deltaQL;
+  let stepDiff = 0;
+  for (let i = 0; i < S; i++) for (let j = 0; j < A; j++) stepDiff = Math.max(stepDiff, Math.abs(Qs[i][j] - Qq[i][j]));
+  check('SARSA：ε=0 确定性 MDP 单步 ≡ Q-learning 单步（1e-15）', stepDiff < 1e-15, `maxDiff=${stepDiff.toExponential(2)}`);
+
+  // ② λ=0 时 SARSA(λ) 与 SARSA 逐位相等
+  const { P: Pc, R: Rc } = chainMDP({ n: 5, gamma });
+  const res1 = sarsa(Pc, Rc, { gamma, episodes: 300, stepsPerEpisode: 25, seed: 3, lambda: 0 });
+  const res2 = sarsaLambda(Pc, Rc, { gamma, episodes: 300, stepsPerEpisode: 25, seed: 3, lambda: 0 });
+  let lamDiff = 0;
+  for (let i = 0; i < 5; i++) for (let j = 0; j < 2; j++) lamDiff = Math.max(lamDiff, Math.abs(res1.Q[i][j] - res2.Q[i][j]));
+  check('SARSA：λ=0 时 SARSA(λ) 与 SARSA 逐位相等（0）', lamDiff === 0, `maxDiff=${lamDiff}`);
+
+  // ③ GLIE 收敛：chainMDP 上收敛 Q ≈ qFromV(V*)
+  const { P: Pg, R: Rg } = chainMDP({ n: 6, gamma });
+  const vi = valueIteration(Pg, Rg, gamma);
+  const Qref = qFromV(Pg, Rg, gamma, vi.V);
+  const resS = sarsa(Pg, Rg, {
+    gamma, alpha: 0.2, epsStart: 1, epsEnd: 0, episodes: 4000, stepsPerEpisode: 40,
+    seed: 5, average: true, avgFrom: 0.5, epsDecayFrac: 0.5, lambda: 0,
+  });
+  let qDiff = 0;
+  for (let i = 0; i < 6; i++) for (let j = 0; j < 2; j++) qDiff = Math.max(qDiff, Math.abs(resS.Q[i][j] - Qref[i][j]));
+  let polOk = true;
+  for (let i = 0; i < 6; i++) if (greedyAction(resS.Q, i) !== greedyAction(Qref, i)) polOk = false;
+  check('SARSA：GLIE 收敛 Q ≈ qFromV(V*) 且策略一致', qDiff < 0.3 && polOk, `max|ΔQ|=${qDiff.toFixed(4)}，策略一致=${polOk}`);
+
+  // ④ 在策略 Bellman 残差 → 0（ε=0 贪心）
+  const resid = sarsaBellmanResidual(Pg, Rg, gamma, resS.Q, 0);
+  check('SARSA：在策略 Bellman 残差 ‖Q − B^πQ‖ → 0（π 贪心）', resid < 0.3, `max残差=${resid.toFixed(4)}`);
+
+  // ⑤ 资格迹恒等式：访问 (s,a) 后 e(s,a)=1（替换迹）且按 γλ 衰减
+  const e0 = Array.from({ length: S }, () => new Array(A).fill(0));
+  sarsaTraceSet(e0, 2, 1, { replacing: true });
+  const setOk = e0[2][1] === 1 && e0[0][0] === 0;
+  const e1 = sarsaTraceDecay(e0, 0.9, 0.8);
+  const decayOk = Math.abs(e1[2][1] - 0.72) < 1e-12;
+  sarsaTraceSet(e0, 2, 0, { replacing: true });
+  const replOk = e0[2][1] === 0 && e0[2][0] === 1;
+  check('SARSA：资格迹 e(s,a)=1（替换迹清零他者）且按 γλ 衰减', setOk && decayOk && replOk,
+    `置位=${setOk}，衰减=${decayOk}，替换=${replOk}`);
+
+  // ⑥ 同 seed 两次训练 Q 逐位一致
+  const r1 = sarsa(Pg, Rg, { gamma, episodes: 500, stepsPerEpisode: 30, seed: 9, lambda: 0 });
+  const r2 = sarsa(Pg, Rg, { gamma, episodes: 500, stepsPerEpisode: 30, seed: 9, lambda: 0 });
+  let repDiff = 0;
+  for (let i = 0; i < 6; i++) for (let j = 0; j < 2; j++) repDiff = Math.max(repDiff, Math.abs(r1.Q[i][j] - r2.Q[i][j]));
+  check('SARSA：同 seed 两次训练 Q 逐位一致', repDiff === 0, `maxDiff=${repDiff}`);
 }

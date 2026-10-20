@@ -36,6 +36,8 @@ const FILES = [
   'src/ml/gpr.js',
   'src/ml/gbdt.js',
   'src/ml/kalman.js',
+  'src/ml/kalmanSmoother.js',
+  'src/ml/particleFilter.js',
   'src/ml/mcmc.js',
   'src/ml/nmf.js',
   'src/ml/pagerank.js',
@@ -45,6 +47,7 @@ const FILES = [
   'src/ml/naiveBayes.js',
   'src/ml/qda.js',
   'src/ml/lasso.js',
+  'src/ml/meanShift.js',
   'src/nn/dense.js',
   'src/nn/attention.js',
   'src/nn/transformer.js',
@@ -62,6 +65,7 @@ const FILES = [
   'src/nn/hopfield.js',
   'src/rl/valueIteration.js',
   'src/rl/qLearning.js',
+  'src/rl/sarsa.js',
   'src/verify/invariants.js',
 ];
 
