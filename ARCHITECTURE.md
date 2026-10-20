@@ -23,7 +23,9 @@ flagship-ai-engine/
 │   ├── core/
 │   │   ├── linalg.js            # 线性代数：matmul/solve/inverse/cholesky/qr/jacobiEig/svd/powerIteration
 │   │   ├── numerical.js         # 数值稳定：logsumexp/softmax/sigmoid/relu
-│   │   └── stats.js             # 概率统计：gaussianPDF/entropy/KL/covarianceMatrix/随机源
+│   │   ├── stats.js             # 概率统计：gaussianPDF/entropy/KL/covarianceMatrix/随机源
+│   │   ├── fft.js               # 快速傅里叶变换（Cooley&Tukey'65 基-2 分治 FFT + 卷积定理）
+│   │   └── ode.js               # 常微分方程数值积分（Euler/中点/RK4 + Dormand-Prince RK45 自适应）
 │   ├── ml/
 │   │   ├── regression.js        # 线性回归/岭回归/逻辑回归(+解析梯度)
 │   │   ├── classification.js    # kNN / 高斯朴素贝叶斯
@@ -58,7 +60,8 @@ flagship-ai-engine/
 │   │   ├── elasticNet.js        # 弹性网络（Zou&Hastie'05，L1+L2 混合坐标下降）
 │   │   ├── kalmanSmoother.js    # 卡尔曼平滑 RTS（Rauch-Tung-Striebel 1965 反向递推增益）
 │   │   ├── particleFilter.js    # 粒子滤波 SIR（Gordon 1993，log 权重 + 系统重采样 + ESS）
-│   │   └── meanShift.js         # Mean Shift 核密度爬山（Fukunaga 1975 / Cheng 1995）
+│   │   ├── meanShift.js         # Mean Shift 核密度爬山（Fukunaga 1975 / Cheng 1995）
+│   │   └── som.js               # 自组织映射 SOM（Kohonen'82，BMU + 高斯邻域核 + 拓扑保持）
 │   ├── nn/
 │   │   ├── dense.js             # 全连接网络(前向/反向/梯度检验)
 │   │   ├── attention.js         # 缩放点积注意力(前向/反向/梯度检验)/多头
@@ -81,15 +84,16 @@ flagship-ai-engine/
 │   │   └── qLearning.js         # Q-learning(免模型TD) + Bellman 残差 + qFromV
 │   │   └── sarsa.js             # SARSA / SARSA(λ) 同策略 TD 控制 + 替换迹
 │   │   └── expectedSarsa.js     # Expected SARSA（van Seijen'09，对 π 求期望的 TD）
+│   │   └── monteCarlo.js        # 蒙特卡洛强化学习（Sutton&Barto §5，首访/每访预测 + GLIE 控制）
 │   └── verify/
-│       └── invariants.js        # 54 组不变量自检套件（Node 与浏览器共用同一份）
-├── test/run.mjs                 # 无头自检入口 → PASS 54/54
+│       └── invariants.js        # 58 组不变量自检套件（Node 与浏览器共用同一份）
+├── test/run.mjs                 # 无头自检入口 → PASS 58/58
 ├── showcase/
-│   ├── template.html            # 旗舰展示页模板（39 个实时演示）
+│   ├── template.html            # 旗舰展示页模板（43 个实时演示）
 │   └── index.html               # 生成物：单文件、内联引擎、双击即用
 ├── scripts/
 │   ├── serve.mjs                # 零依赖静态服务器（可选）
-│   └── bundle.mjs               # 把 src 打包内联进 showcase（并 node --check 语法校验）
+│   └── bundle.mjs               # 把 src 打包内联进 showcase（并 node --check 语法校验）→ 导出 311 个 API / 内联 478.0 KB
 ├── .github/workflows/ci.yml     # 3 个 Node 版本 × 不变量自检
 ├── ARCHITECTURE.md / MATH.md / README.md / LICENSE
 ```
@@ -116,6 +120,10 @@ jacobiEig(A) -> { values, vectors }// 对称阵，降序
 svd(A) -> { U, s, V }              // A = UΣVᵀ（要求行数≥列数）
 logsumexp(x) -> number             // 数值稳定
 softmax(x) -> number[]
+fftRadix2(re, im) -> { re, im }      // 基-2 分治 FFT（长度须为 2 的幂）
+convolveLinear(a, b) -> number[]     // 零填充 FFT 线性卷积
+solveODE(f, t0, y0, t1, opts) -> { t, y, steps, h }
+solveODERK45(f, t0, y0, t1, opts) -> { t, y, steps }  // Dormand–Prince 5(4) 自适应
 linearRegression(X, y) -> { w, predict }
 logisticRegression(X, y, opts) -> { w, losses, ... }
 kmeans(X, k, opts) -> { labels, centers, sseHistory }
@@ -125,6 +133,8 @@ DecisionTree.fit/predict           // CART + Gini
 DenseNet.forward/loss/backward     // 反向传播 + 梯度检验
 scaledDotProductAttention(Q,K,V) -> { A, O }
 multiHeadAttention(Q,K,V,opts)
+mcControl(P, R, opts) -> { Q, policy, episodeReturns }  // 蒙特卡洛 RL（GLIE）
+somTrain(X, opts) -> { codebook, rows, cols, bmus, quantErrors }
 runAllInvariants() -> { results, passed, total, allOk }
 ```
 
@@ -133,11 +143,14 @@ runAllInvariants() -> { results, passed, total, allOk }
 ```mermaid
 graph LR
   T[test/run.mjs / 浏览器展示页] --> V[verify/invariants.js]
-  V --> C1[core/linalg] & C2[core/numerical] & C3[core/stats]
-  V --> M1[ml/regression] & M2[ml/clustering] & M3[ml/dimreduction] & M4[ml/tree] & M5[ml/classification]
+  V --> C1[core/linalg] & C2[core/numerical] & C3[core/stats] & C4[core/fft] & C5[core/ode]
+  V --> M1[ml/regression] & M2[ml/clustering] & M3[ml/dimreduction] & M4[ml/tree] & M5[ml/classification] & M6[ml/som]
   V --> N1[nn/dense] & N2[nn/attention] & N3[nn/transformer]
+  V --> R1[rl/monteCarlo]
   C1 -.被依赖.- M1 & M2 & M3 & N1 & N2
   C2 -.被依赖.- M1 & M2 & N1
+  C3 -.被依赖.- M6 & R1
+  R1 -.复用.- RL1[rl/valueIteration + rl/qLearning]
 ```
 
 浏览器路径：`scripts/bundle.mjs` 按依赖序拼接 src → 剥离 import/export → IIFE 注入 `globalThis.FlagshipAI` → 语法校验 → 写入 `showcase/index.html`。Node 路径：`node test/run.mjs` 直接吃 ESM。两路共用同一份 `runAllInvariants()`，杜绝"测试与展示两套逻辑"漂移。
@@ -152,8 +165,8 @@ graph LR
 | T4 | ml/classification + clustering + dimreduction + tree | T1,T2 |
 | T5 | nn/dense（反向传播 + 梯度检验） | T1,T2 |
 | T6 | nn/attention + transformer | T1,T2,T5 |
-| T7 | verify/invariants（54 组套件） | T1–T6 |
-| T8 | test/run.mjs 跑通 54/54 | T7 |
+| T7 | verify/invariants（58 组套件） | T1–T6 |
+| T8 | test/run.mjs 跑通 58/58 | T7 |
 | T9 | bundle + showcase 单文件页 | T7 |
 | T10 | 文档 + GitHub 推送 + CI 绿 | T8,T9 |
 

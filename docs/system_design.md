@@ -1,7 +1,7 @@
 # 旗舰AI引擎 (Flagship AI Engine) — 系统架构设计说明书
 
 > 作者署名：晨星 (Morning Star / CJX0712) ｜ 架构师：高见远 (Bob)
-> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、54/54 全绿**。
+> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、58/58 全绿**。
 
 ---
 
@@ -11,13 +11,13 @@
 
 | 设计稿 | 最终实现 | 说明 |
 |---|---|---|
-| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 54 组套件，Node 与浏览器共用同一份 |
+| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 58 组套件，Node 与浏览器共用同一份 |
 | `src/verify/suites.js` | 并入 `src/verify/invariants.js` | 套件与检查器同文件，杜绝跨文件漂移 |
 | `src/core/rng.js` / `src/core/utils.js` | 并入 `src/core/stats.js`（mulberry32/gaussianSample）与 `src/core/linalg.js`/`numerical.js` | 随机源归概率层，工具归各自的消费者 |
 | 浏览器 `<script type="module">` 直引 src | `scripts/bundle.mjs` 按依赖序内联进 `showcase/index.html`（`globalThis.FlagshipAI`） | 兼容 `file://` 双击即用；`node --check` 兜底语法校验 |
-| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 54/54`（CI grep 校验） | 语义一致，命名对齐实现 |
+| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 58/58`（CI grep 校验） | 语义一致，命名对齐实现 |
 
-落地验证结论：`node test/run.mjs` → **PASS 54/54（324 条不变量）**，与本设计书的全部不变量承诺一致。
+落地验证结论：`node test/run.mjs` → **PASS 58/58（350 条不变量）**，与本设计书的全部不变量承诺一致。
 
 ### v1.1 增补（2026-10-19）
 
@@ -130,6 +130,19 @@
 
 > 选型纪律：v1.11 立项前经 `grep` 查重——`nn/` 已有 `rnn.js`/`lstm.js` 但无 GRU（门控循环单元独立门类，双门 r/z 与 LSTM 三门并立）、`ml/regression.js` 含 OLS/Ridge/逻辑回归但无多类 Softmax 回归（K 类 softmax + 交叉熵，K=2 退化≠多类实现）、`rl/` 已有 `qLearning`（离策略最大）/`sarsa`（在策略采样）但无对 π 求期望的 Expected SARSA（TD 目标独立门类）、`ml/lasso.js`/`regression.js` 分别含纯 L1 与纯 L2 但无 L1+L2 混合的 Elastic Net。四者均为引擎真实缺口，无重复造轮子。变异测试 4/4 有牙齿（GRU Whz 破坏 / Softmax 指标反转 / ExpSARSA γ 符号 / ElasticNet 丢软阈值 各使对应套件变红），stub-DOM 冒烟通过。
 
+### v1.12 增补（2026-10-21）
+
+| 增补模块 | 不变量（定理背书） |
+|---|---|
+| `src/core/fft.js`（快速傅里叶变换，Cooley & Tukey 1965） | 基-2 分治 ≡ 朴素 O(n²) DFT（maxAbs=2.616e-13）；ifft(fft(x))≡x（3.331e-16）；Parseval Σ_k\|X_k\|²=n·Σ_t\|x_t\|²（relErr=4.728e-16）；线性卷积定理 ≡ 朴素卷积（0）；线性性（5.329e-15）；圆周卷积定理（0） |
+| `src/core/ode.js`（常微分方程数值积分，Runge 1895 / Kutta 1901 / Dormand & Prince 1980） | RK4 单步 ≡ 线性系统 4 阶 Taylor 展开（5.551e-17）；标量 y'=λy 的 RK4 单步 ≡ 4 阶 Taylor 闭式（1.110e-16）；全局收敛阶 3.940（误差比 15.35）；谐振荡器能量漂移 RK4=1.39e-11 ≪ Euler=1.11e-1（差 10 个数量级）；DP 系数表结构恒等式 ΣB5=ΣB4=1 且 Σ_jA[s][j]=C[s]（精确）；RK45 自适应末点 relErr=7.50e-11 / 接受 28 步（尝试 32 步）；定步长网格闭式精确；步数语义自洽（steps = 接受步数 = t.length−1，attempts ≥ steps） |
+| `src/rl/monteCarlo.js`（蒙特卡洛强化学习，Sutton & Barto 第 5 章） | 回报恒等式 G_t=Σγ^k·r_{t+k} ≡ 逐项展开（0）；确定性轨迹首访 ≡ 每访（0）；随机轨迹首访 ≠ 每访（0.0086）；首访预测 ≡ policyEvaluation(P,R,γ,π)（3.775e-15）；GLIE 收敛 Q ≈ qFromV(V*) 且贪心策略 ≡ 最优（max\|ΔQ\|=0.2000）；Q* 是 ε=0 贪心 MC 更新的不动点（3.331e-15）；同 seed 一致（0） |
+| `src/ml/som.js`（自组织映射，Kohonen 1982） | BMU ≡ 展开式暴力 argmin（不一致=0）；邻域核 h=exp(−d²/2σ²)，d=0⇒1、σ→∞⇒1（精确）；批量训练 QE 0.06186 → 0.00083（包络单调）；1D 链码本按格点序单调排列（拓扑保持，升序乱序=0）；σ→∞ ⇒ 离散度单步精确收缩 (1−α) 倍（relErr=0）；同 seed 一致（0） |
+
+> 职责边界与复用关系：v1.12 的四个模块分属三层——`fft.js`/`ode.js` 落在 **core 数值层**（与 `linalg.js`/`numerical.js`/`stats.js` 同级，为上层提供无状态纯函数基元，不依赖任何 `ml/`/`nn/`/`rl/` 模块）；`som.js` 落在 **ml 层**（复用 `core/stats.js` 的 `mulberry32` 保证种子可复现，不依赖 `ml/` 内其他模块）；`monteCarlo.js` 落在 **rl 层**，**复用 `valueIteration.js` 的 `policyEvaluation`/`valueIteration` 与 `qLearning.js` 的 `greedyAction`/`qFromV`**，不另造一套 Bellman 算子——这使 MC 预测与值迭代构成两条独立路径的互证（首访预测 ≡ policyEvaluation，实测 3.775e-15），MC 控制的最优性判据也直接复用 `qFromV(V*)` 的解析基准。
+
+> 不变量设计依据（本轮沉淀的选型纪律）：优先选**精确代数恒等式**而非统计阈值类断言——FFT≡朴素 DFT（分治与暴力两条独立实现互证）、Dormand–Prince 系数表的阶条件 `ΣB5=ΣB4=1` 与 `Σ_j A[s][j]=C[s]`（浮点下**精确**成立，非近似）、Q* 是 ε=0 贪心 MC 更新的**不动点**（3.331e-15）、SOM 在 σ→∞ 时离散度**精确**收缩为 (1−α) 倍（relErr=0）。这类断言不随随机种子漂移、可在 CI 上稳定复现；相对地，GLIE 收敛这类**随机性收敛**断言只作为辅助判据（max\|ΔQ\|=0.2000 < 0.3），不作为主证据。四模块均为引擎真实缺口（`core/` 无变换与积分基元、`ml/` 无无监督拓扑映射、`rl/` 已有 TD 家族但无免 bootstrap 的完整回合方法），无重复造轮子。
+
 ---
 
 ## 0. 设计总览
@@ -139,7 +152,7 @@
 | 运行形态 | 原生 **ES Module**（源码 `.js` + `package.json` 声明 `type:module`，测试入口 `.mjs`），浏览器 `<script type="module">` 与 Node `node test/run.mjs` 双跑 |
 | 依赖 | **零第三方依赖**；测试/服务仅用 Node 内置模块（`node:assert`、`node:process`、`node:http`、`node:fs`、`node:path`） |
 | 可复现 | 全确定性：核心不使用 `Math.random()` / `Date.now()`，统一经 `mulberry32(seed)` 种子随机数 |
-| 验证 | **54 组不变量套件**（v1.0 的 8 组起步，逐版本累积至 v1.11 的 54 组、324 条），每组聚合若干「不变量自检」，全部通过即为 54/54 全绿；CI 中以退出码 0/1 反映 |
+| 验证 | **58 组不变量套件**（v1.0 的 8 组起步，逐版本累积至 v1.12 的 58 组、350 条），每组聚合若干「不变量自检」，全部通过即为 58/58 全绿；CI 中以退出码 0/1 反映 |
 | 展示 | 单文件 `showcase/index.html`，内联 CSS/JS，零外部依赖，实时渲染自检报告 + 算法演示 |
 | 文档 | `README.md` / `ARCHITECTURE.md` / `MATH.md`（数学证明与不变量）/ `LICENSE`(MIT) / `.github/workflows/ci.yml` |
 

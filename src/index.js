@@ -6,6 +6,8 @@
 
 export * from './core/linalg.js';
 export * from './core/numerical.js';
+export * from './core/fft.js';
+export * from './core/ode.js';
 export * from './core/stats.js';
 export * from './ml/regression.js';
 export * from './ml/classification.js';
@@ -41,6 +43,7 @@ export * from './ml/lasso.js';
 export * from './ml/meanShift.js';
 export * from './ml/softmaxRegression.js';
 export * from './ml/elasticNet.js';
+export * from './ml/som.js';
 export * from './nn/dense.js';
 export * from './nn/attention.js';
 export * from './nn/transformer.js';
@@ -61,4 +64,5 @@ export * from './rl/valueIteration.js';
 export * from './rl/qLearning.js';
 export * from './rl/sarsa.js';
 export * from './rl/expectedSarsa.js';
+export * from './rl/monteCarlo.js';
 export * from './verify/invariants.js';

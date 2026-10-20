@@ -6,15 +6,15 @@
 [![CI](https://github.com/CJX0712/flagship-ai-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/CJX0712/flagship-ai-engine/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Zero Dependency](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](package.json)
-[![Self-Test](https://img.shields.io/badge/self--test-54%2F54%20green-success.svg)](test/run.mjs)
-[![Release](https://img.shields.io/badge/release-v1.11.0-blue.svg)](https://github.com/CJX0712/flagship-ai-engine/releases)
+[![Self-Test](https://img.shields.io/badge/self--test-58%2F58%20green-success.svg)](test/run.mjs)
+[![Release](https://img.shields.io/badge/release-v1.12.0-blue.svg)](https://github.com/CJX0712/flagship-ai-engine/releases)
 
 ---
 
 ## 旗舰宣言
 
-- **零重写 · 集大成**：每一行代码都站在世界顶级成果之上。数学来自 Numerical Recipes / Golub & Van Loan；机器学习来自 ESL / Bishop；深度学习来自 Attention Is All You Need；循环网络来自 Werbos 1990；SVM 来自 Cortes & Vapnik 1995；集成学习来自 Freund & Schapire 1997；HMM 来自 Baum & Petrie 1966；强化学习来自 Bellman 1957；免模型控制来自 Watkins 1989；密度聚类来自 Ester et al. 1996；流形嵌入来自 van der Maaten & Hinton 2008；自适应优化来自 Kingma & Ba 2015；核主成分来自 Schölkopf et al. 1998；谱聚类来自 Shi & Malik 2000 / Ng-Jordan-Weiss 2002；现代激活来自 Hendrycks & Gimpel 2016（GELU）；学习率调度来自 Vaswani et al. 2017（Noam）与 Loshchilov & Hutter 2016（SGDR）；归一化来自 Ioffe & Szegedy 2015（BatchNorm）/ Ba 2016（LayerNorm）；残差网络来自 He et al. 2015；网页排名来自 Page & Brin 1998；吉布斯采样来自 Geman & Geman 1984 / Casella & George 1992；二次判别来自 Fisher 1936 / Bishop §4.3；稀疏回归来自 Tibshirani 1996 / glmnet 2010；受限玻尔兹曼机来自 Smolensky 1986 / Hinton 2002；联想记忆来自 Hopfield 1982 / Amit-Gutfreund-Sompolinsky 1985；状态估计平滑来自 Rauch-Tung-Striebel 1965（RTS 平滑）/ Gordon 1993（粒子滤波 SIR）；同策略强化学习来自 Rummery & Niranjan 1994（SARSA）；核密度爬山来自 Fukunaga 1975 / Cheng 1995（Mean Shift 梯度上升 + 单调收敛）；门控循环单元来自 Cho et al. 2014（GRU）；多类逻辑回归来自 Bishop §4.3.4；期望 SARSA 来自 van Seijen et al. 2009；弹性网络来自 Zou & Hastie 2005 / Friedman 2010（glmnet）。凡有更强现成方案，立即替换自写。
-- **可验证 · 不变量驱动**：每条算法至少带 1 条"可验证不变量"——解析解 vs 数值解、梯度检验、责任度和 1、KL≥0、EM 单调性、Bellman 残差→0、KKT 互补松弛、ARI=1、困惑度达成、Adam 首步闭式、线性核 KPCA ≡ 经典 PCA、谱聚类两月亮 ARI=1.000000、GELU/SiLU/Mish 导数 ≡ 中心差分、Noam 两支在 warmup 顶点精确连续、QDA 同协方差边界退化为线性、Lasso KKT 最优性证书、RBM 自由能 ≡ 配分函数枚举、Hopfield 能量每步不增、GRU BPTT 梯度双判据、Softmax K=2≡logistic、Expected SARSA ε=0≡Q-learning、Elastic Net 退化≡Ridge/Lasso/OLS…… 浏览器一键自检 + 无头 Node `54/54` 全绿。
+- **零重写 · 集大成**：每一行代码都站在世界顶级成果之上。数学来自 Numerical Recipes / Golub & Van Loan；机器学习来自 ESL / Bishop；深度学习来自 Attention Is All You Need；循环网络来自 Werbos 1990；SVM 来自 Cortes & Vapnik 1995；集成学习来自 Freund & Schapire 1997；HMM 来自 Baum & Petrie 1966；强化学习来自 Bellman 1957；免模型控制来自 Watkins 1989；密度聚类来自 Ester et al. 1996；流形嵌入来自 van der Maaten & Hinton 2008；自适应优化来自 Kingma & Ba 2015；核主成分来自 Schölkopf et al. 1998；谱聚类来自 Shi & Malik 2000 / Ng-Jordan-Weiss 2002；现代激活来自 Hendrycks & Gimpel 2016（GELU）；学习率调度来自 Vaswani et al. 2017（Noam）与 Loshchilov & Hutter 2016（SGDR）；归一化来自 Ioffe & Szegedy 2015（BatchNorm）/ Ba 2016（LayerNorm）；残差网络来自 He et al. 2015；网页排名来自 Page & Brin 1998；吉布斯采样来自 Geman & Geman 1984 / Casella & George 1992；二次判别来自 Fisher 1936 / Bishop §4.3；稀疏回归来自 Tibshirani 1996 / glmnet 2010；受限玻尔兹曼机来自 Smolensky 1986 / Hinton 2002；联想记忆来自 Hopfield 1982 / Amit-Gutfreund-Sompolinsky 1985；状态估计平滑来自 Rauch-Tung-Striebel 1965（RTS 平滑）/ Gordon 1993（粒子滤波 SIR）；同策略强化学习来自 Rummery & Niranjan 1994（SARSA）；核密度爬山来自 Fukunaga 1975 / Cheng 1995（Mean Shift 梯度上升 + 单调收敛）；门控循环单元来自 Cho et al. 2014（GRU）；多类逻辑回归来自 Bishop §4.3.4；期望 SARSA 来自 van Seijen et al. 2009；弹性网络来自 Zou & Hastie 2005 / Friedman 2010（glmnet）；快速傅里叶变换来自 Cooley & Tukey 1965（基-2 分治 O(n log n)）；常微分方程数值积分来自 Runge 1895 / Kutta 1901 与 Dormand & Prince 1980（RK4 + 嵌入式 RK5(4)）；蒙特卡洛强化学习来自 Sutton & Barto 第 5 章（首访/每访估计量 + GLIE 控制）；自组织映射来自 Kohonen 1982（BMU + 邻域核自组织拓扑）。凡有更强现成方案，立即替换自写。
+- **可验证 · 不变量驱动**：每条算法至少带 1 条"可验证不变量"——解析解 vs 数值解、梯度检验、责任度和 1、KL≥0、EM 单调性、Bellman 残差→0、KKT 互补松弛、ARI=1、困惑度达成、Adam 首步闭式、线性核 KPCA ≡ 经典 PCA、谱聚类两月亮 ARI=1.000000、GELU/SiLU/Mish 导数 ≡ 中心差分、Noam 两支在 warmup 顶点精确连续、QDA 同协方差边界退化为线性、Lasso KKT 最优性证书、RBM 自由能 ≡ 配分函数枚举、Hopfield 能量每步不增、GRU BPTT 梯度双判据、Softmax K=2≡logistic、Expected SARSA ε=0≡Q-learning、Elastic Net 退化≡Ridge/Lasso/OLS、FFT≡朴素 DFT、Parseval 能量守恒、Dormand–Prince 系数表阶条件精确成立、MC 回报恒等式、Q* 不动点、SOM 拓扑保持…… 浏览器一键自检 + 无头 Node `58/58` 全绿。
 - **闭环交付**：完整开源、可运行、可复现、可验证。
 
 ## 快速开始
@@ -26,23 +26,23 @@ cd flagship-ai-engine
 
 # 运行不变量自检（无需安装任何依赖）
 node test/run.mjs
-# 期望输出：PASS 54/54 — 全部不变量自检通过
+# 期望输出：PASS 58/58 — 全部不变量自检通过
 ```
 
 **旗舰展示页**：直接双击 `showcase/index.html`（引擎已内联，零服务器、零网络），
 或 `node scripts/serve.mjs` 后访问 http://localhost:8080 。
-修改 `src/` 后用 `node scripts/bundle.mjs` 重新内联打包（自动 `node --check` 语法校验）。
+修改 `src/` 后用 `node scripts/bundle.mjs` 重新内联打包（自动 `node --check` 语法校验）——当前引擎导出 **311 个** API，单文件内联 **478.0 KB**。
 
 ## 架构总览
 
 （架构师高见远的设计文档见 `ARCHITECTURE.md`，数学证明与不变量见 `MATH.md`。）
 
 ```
-数学基础层   core/  linalg · numerical · stats(twoMoons)
-经典机器学习层 ml/    regression · classification · clustering · dimreduction · dbscan · tsne · kpca · spectral · svm · boosting · hmm · tree · kalmanSmoother · particleFilter · meanShift
+数学基础层   core/  linalg · numerical · stats(twoMoons) · fft · ode
+经典机器学习层 ml/    regression · classification · clustering · dimreduction · dbscan · tsne · kpca · spectral · svm · boosting · hmm · tree · kalmanSmoother · particleFilter · meanShift · som
 深度学习层   nn/    denseNet · attention · transformerBlock · rnn · lstm · optimizers · activations · schedulers
-强化学习层   rl/    valueIteration · policyEvaluation · qLearning · sarsa · gridworld
-验证层       verify/ 每条算法的不变量自检（54 组套件）
+强化学习层   rl/    valueIteration · policyEvaluation · qLearning · sarsa · gridworld · monteCarlo
+验证层       verify/ 每条算法的不变量自检（58 组套件）
 展示层       showcase/ 单文件 HTML 旗舰页
 ```
 
@@ -98,8 +98,12 @@ node test/run.mjs
 | 多类分类 | Softmax Regression（Bishop §4.3.4，softmax + 交叉熵） | 解析梯度 ≡ 中心差分；K=2≡logisticRegression；Σ_k p=1；交叉熵≥0 且单调不增；同 seed 一致 |
 | 离策略期望 TD | Expected SARSA（van Seijen et al. 2009，对 π 求期望） | ε=0 单步≡Q-learning（1e-15）；期望≡dot(π,Q)；GLIE 收敛到 Q*；同策略期望 Bellman 残差→0；后期回报>前期；同 seed 一致 |
 | 弹性正则 | Elastic Net（Zou & Hastie 2005，L1+L2 坐标下降） | λ1=0≡Ridge；λ2=0≡Lasso；皆0≡OLS；不动点 w_j=S(ρ_j,λ1)/(z_j+λ2)；KKT 证书；目标单调不增 |
+| 信号变换 | FFT（Cooley & Tukey 1965，基-2 分治 O(n log n)） | FFT≡朴素DFT（2.6e-13）；ifft(fft(x))≡x；Parseval Σ_k\|X_k\|²=n·Σ_t\|x_t\|²；线性/圆周卷积定理；线性性 |
+| 数值积分 | ODE 数值积分（Runge 1895 / Kutta 1901 / Dormand & Prince 1980，RK4 + 自适应 RK5(4)） | RK4 单步≡线性系统 4 阶 Taylor（5.6e-17）；标量 y'=λy 闭式（1.1e-16）；收敛阶 3.940；能量漂移 RK4=1.39e-11 ≪ Euler=1.11e-1；DP 阶条件精确成立 |
+| 蒙特卡洛强化学习 | MC RL（Sutton & Barto 第 5 章，首访/每访预测 + GLIE 控制） | 回报恒等式 G_t=R_{t+1}+γG_{t+1}；确定性轨迹首访≡每访；首访预测≡policyEvaluation（3.775e-15）；GLIE 收敛到最优；Q* 不动点；同 seed 一致 |
+| 自组织映射 | SOM（Kohonen 1982，BMU + 高斯邻域核 + 指数衰减） | BMU≡展开式 argmin；邻域核 h=exp(−d²/2σ²)；批量 QE 单调下降（0.06186→0.00083）；1D 链拓扑保持；σ→∞ 离散度精确收缩 (1−α) 倍；同 seed 一致 |
 
-## 展示页实时演示（39 个）
+## 展示页实时演示（43 个）
 
 k-means 聚类 · 注意力热力图 · 核 SVM 决策边界 · AdaBoost 集成边界 · RL 网格世界（值迭代）
 · LSTM 序列回归 · t-SNE 嵌入 · DBSCAN 含噪声识别 · 优化器等势面轨迹
@@ -122,16 +126,20 @@ k-means 聚类 · 注意力热力图 · 核 SVM 决策边界 · AdaBoost 集成�
 · **Softmax 多类逻辑回归（三团分类决策面 + 准确率）**
 · **Expected SARSA（chainMDP 回合回报 + 策略收敛）**
 · **Elastic Net 稀疏回归（估计系数 vs 真实系数 + 非零计数）**
+· **快速傅里叶变换 FFT（时域信号 + 线性卷积 + 幅度谱主峰 + FFT≡DFT 校验）**
+· **常微分方程数值积分（Euler vs RK4 vs 自适应 RK45 轨迹 + 对数相对误差对照）**
+· **蒙特卡洛强化学习（链式 MDP 回合回报 + Q 值热力图 + 贪心动作）**
+· **自组织映射 SOM（环形流形上的 1×12 码本链 + 量化误差收敛）**
 ——全部由本页内联引擎实时计算，种子化随机可复现。
 
 ## 验证
 
 ```bash
 node test/run.mjs
-# 期望输出：PASS 54/54 — 全部不变量自检通过
+# 期望输出：PASS 58/58 — 全部不变量自检通过
 ```
 
-54 组套件覆盖 324 条硬不变量。CI 在 Node 16/18/20 三个版本上运行同一自检（精确校验 `PASS 54/54`）。
+58 组套件覆盖 350 条硬不变量。CI 在 Node 16/18/20 三个版本上运行同一自检（精确校验 `PASS 58/58`）。
 
 ## 许可证
 

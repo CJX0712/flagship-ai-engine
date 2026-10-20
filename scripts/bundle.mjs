@@ -15,6 +15,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FILES = [
   'src/core/linalg.js',
   'src/core/numerical.js',
+  'src/core/fft.js',
+  'src/core/ode.js',
   'src/core/stats.js',
   'src/ml/regression.js',
   'src/ml/classification.js',
@@ -50,6 +52,7 @@ const FILES = [
   'src/ml/meanShift.js',
   'src/ml/softmaxRegression.js',
   'src/ml/elasticNet.js',
+  'src/ml/som.js',
   'src/nn/dense.js',
   'src/nn/attention.js',
   'src/nn/transformer.js',
@@ -70,6 +73,7 @@ const FILES = [
   'src/rl/qLearning.js',
   'src/rl/sarsa.js',
   'src/rl/expectedSarsa.js',
+  'src/rl/monteCarlo.js',
   'src/verify/invariants.js',
 ];
 

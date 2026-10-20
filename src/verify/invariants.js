@@ -1,7 +1,7 @@
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 54 组套件全绿 = 引擎数学正确性的机器证明。
+ * 58 组套件全绿 = 引擎数学正确性的机器证明。
  */
 
 import {
@@ -9,6 +9,11 @@ import {
   solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix,
 } from '../core/linalg.js';
 import { logsumexp, softmax, sigmoid, relErr } from '../core/numerical.js';
+import {
+  nextPow2, fftRadix2, fft, ifftRadix2, dftNaive,
+  circularConvolve, convolveLinear, convolveNaive,
+} from '../core/fft.js';
+import { eulerStep, midpointStep, rk4Step, solveODE, solveODERK45, dpTableau } from '../core/ode.js';
 import {
   gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence,
   mean as colMean, mulberry32, gaussianSample, covarianceMatrix, twoMoons,
@@ -18,6 +23,7 @@ import {
   logisticRegression, logisticGradientCheck,
 } from '../ml/regression.js';
 import { knnPredict, naiveBayesFit, naiveBayesPredict } from '../ml/classification.js';
+import { somNeighborhood, somBMU, somQuantError, somStep, somTrain, somBatchTrain, somLabels } from '../ml/som.js';
 import { kmeans, gmm } from '../ml/clustering.js';
 import { pca } from '../ml/dimreduction.js';
 import { DecisionTree, giniImpurity } from '../ml/tree.js';
@@ -39,6 +45,7 @@ import {
   valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld,
 } from '../rl/valueIteration.js';
 import { qLearning, greedyAction, qFromV, bellmanResidualQ } from '../rl/qLearning.js';
+import { mcReturn, mcEpisode, mcPredictionFirstVisit, mcPredictionEveryVisit, mcControl } from '../rl/monteCarlo.js';
 import { dbscan, adjustedRandIndex } from '../ml/dbscan.js';
 import { tsne, knnOverlap, searchBetas } from '../ml/tsne.js';
 import {
@@ -184,7 +191,7 @@ function blobs(rng, centers, nPer, sigma) {
 }
 
 /**
- * 运行全部 54 组不变量自检。
+ * 运行全部 58 组不变量自检。
  * @returns {{results:Array, passed:number, total:number, allOk:boolean}}
  */
 export function runAllInvariants() {
@@ -244,6 +251,10 @@ export function runAllInvariants() {
     ['多类逻辑回归 · Softmax Regression (Bishop §4.3.4)', suiteSoftmaxRegression],
     ['期望SARSA · Expected SARSA (van Seijen et al. 2009)', suiteExpectedSarsa],
     ['弹性网络 · Elastic Net (Zou & Hastie 2005)', suiteElasticNet],
+    ['快速傅里叶变换 · FFT (Cooley & Tukey 1965)', suiteFFT],
+    ['常微分方程求解 · ODE (RK4 / Dormand–Prince RK45)', suiteODE],
+    ['蒙特卡洛强化学习 · Monte Carlo RL (Sutton & Barto §5)', suiteMonteCarlo],
+    ['自组织映射 · SOM (Kohonen 1982)', suiteSOM],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -3925,4 +3936,309 @@ function suiteElasticNet(check) {
   let monoObj = true;
   for (let i = 1; i < obj.length; i++) if (obj[i] > obj[i - 1] + 1e-9) monoObj = false;
   check('ElasticNet：坐标下降目标单调不增', monoObj, `单调=${monoObj}`);
+}
+
+/* ============================================================
+ * 套件 55 · 快速傅里叶变换 FFT（Cooley & Tukey 1965）
+ * ============================================================ */
+function suiteFFT(check) {
+  const rng = mulberry32(7);
+  const n = 64;
+  const xr = Array.from({ length: n }, () => (rng() - 0.5) * 2);
+  const xi = Array.from({ length: n }, () => (rng() - 0.5) * 2);
+
+  // ① FFT ≡ 朴素 DFT
+  const F = fftRadix2(xr, xi);
+  const D = dftNaive(xr, xi);
+  let d1 = 0;
+  for (let k = 0; k < n; k++) d1 = Math.max(d1, Math.abs(F.re[k] - D.re[k]), Math.abs(F.im[k] - D.im[k]));
+  check('FFT：基-2 分治 ≡ 朴素 O(n²) DFT（<1e-10）', d1 < 1e-10, `maxAbs=${d1.toExponential(3)}`);
+
+  // ② 逆变换闭合
+  const rt = ifftRadix2(F.re, F.im);
+  let d2 = 0;
+  for (let t = 0; t < n; t++) d2 = Math.max(d2, Math.abs(rt.re[t] - xr[t]), Math.abs(rt.im[t] - xi[t]));
+  check('FFT：ifft(fft(x)) ≡ x（<1e-12）', d2 < 1e-12, `maxAbs=${d2.toExponential(3)}`);
+
+  // ③ Parseval 能量守恒
+  let eF = 0, eX = 0;
+  for (let k = 0; k < n; k++) eF += F.re[k] * F.re[k] + F.im[k] * F.im[k];
+  for (let t = 0; t < n; t++) eX += xr[t] * xr[t] + xi[t] * xi[t];
+  const par = Math.abs(eF - n * eX) / (n * eX);
+  check('FFT：Parseval Σ_k|X_k|² = n·Σ_t|x_t|²（<1e-12）', par < 1e-12, `relErr=${par.toExponential(3)}`);
+
+  // ④ 线性卷积定理
+  const a = [1, 2, 3, 4], b = [5, 6, 7];
+  const cl = convolveLinear(a, b), cn = convolveNaive(a, b);
+  let d4 = 0;
+  for (let i = 0; i < cl.length; i++) d4 = Math.max(d4, Math.abs(cl[i] - cn[i]));
+  check('FFT：线性卷积（零填充）≡ 朴素卷积（<1e-10）', d4 < 1e-10, `maxAbs=${d4.toExponential(3)}`);
+
+  // ⑤ 线性性
+  const yr = Array.from({ length: n }, () => (rng() - 0.5) * 2);
+  const yi = Array.from({ length: n }, () => (rng() - 0.5) * 2);
+  const alpha = 1.7, beta = -0.6;
+  const cr = new Array(n), ci = new Array(n);
+  for (let t = 0; t < n; t++) { cr[t] = alpha * xr[t] + beta * yr[t]; ci[t] = alpha * xi[t] + beta * yi[t]; }
+  const FC = fftRadix2(cr, ci), FX = fftRadix2(xr, xi), FY = fftRadix2(yr, yi);
+  let d5 = 0;
+  for (let k = 0; k < n; k++) {
+    d5 = Math.max(d5,
+      Math.abs(FC.re[k] - (alpha * FX.re[k] + beta * FY.re[k])),
+      Math.abs(FC.im[k] - (alpha * FX.im[k] + beta * FY.im[k])));
+  }
+  check('FFT：线性性 fft(αx+βy) = α·fft(x)+β·fft(y)（<1e-12）', d5 < 1e-12, `maxAbs=${d5.toExponential(3)}`);
+
+  // ⑥ 圆周卷积定理
+  const p = [1, 0, 2, -1], q = [3, 1, 0, 0.5];
+  const cc = circularConvolve(p, q);
+  let d6 = 0;
+  for (let t = 0; t < 4; t++) {
+    let s = 0;
+    for (let k = 0; k < 4; k++) s += p[k] * q[(t - k + 4) % 4];
+    d6 = Math.max(d6, Math.abs(cc[t] - s));
+  }
+  check('FFT：圆周卷积定理 ifft(fft(a)·fft(b)) ≡ Σa_k·b_{t−k}（<1e-10）', d6 < 1e-10, `maxAbs=${d6.toExponential(3)}`);
+}
+
+/* ============================================================
+ * 套件 56 · 常微分方程求解 ODE（RK4 / Dormand–Prince RK45）
+ * ============================================================ */
+function suiteODE(check) {
+  // ① RK4 单步 ≡ 线性系统 4 阶 Taylor 展开（精确代数恒等式）
+  const A = [[0.3, -1.2], [0.8, 0.5]];
+  const f = (t, y) => [A[0][0] * y[0] + A[0][1] * y[1], A[1][0] * y[0] + A[1][1] * y[1]];
+  const h = 0.1, y0 = [1, -0.5];
+  const got = rk4Step(f, 0, y0, h);
+  const mm = (X, Y) => X.map((r) => Y[0].map((_, j) => r.reduce((s, v, k) => s + v * Y[k][j], 0)));
+  let M = [[1, 0], [0, 1]], Ak = [[1, 0], [0, 1]], fact = 1, hp = 1;
+  for (let k = 1; k <= 4; k++) {
+    Ak = mm(Ak, A); fact *= k; hp *= h;
+    M = M.map((r, i) => r.map((v, j) => v + (hp / fact) * Ak[i][j]));
+  }
+  const tay = M.map((r) => r[0] * y0[0] + r[1] * y0[1]);
+  let d1 = 0;
+  for (let i = 0; i < 2; i++) d1 = Math.max(d1, Math.abs(got[i] - tay[i]));
+  check('ODE：RK4 单步 ≡ 线性系统 4 阶 Taylor 展开（<1e-12）', d1 < 1e-12, `maxAbs=${d1.toExponential(3)}`);
+
+  // ② 标量 y'=λy 闭式
+  const lam = -1.7, hs = 0.2;
+  const sc = rk4Step((t, y) => [lam * y[0]], 0, [1], hs)[0];
+  const exact = 1 + hs * lam + hs * hs * lam ** 2 / 2 + hs ** 3 * lam ** 3 / 6 + hs ** 4 * lam ** 4 / 24;
+  const d2 = Math.abs(sc - exact);
+  check('ODE：标量 y’=λy 的 RK4 单步 ≡ 4 阶 Taylor 闭式（<1e-14）', d2 < 1e-14, `maxAbs=${d2.toExponential(3)}`);
+
+  // ③ 全局收敛阶 4（误差比 → 16）
+  const g1 = solveODE((t, y) => [y[0]], 0, [1], 1, { h: 0.1 });
+  const g2 = solveODE((t, y) => [y[0]], 0, [1], 1, { h: 0.05 });
+  const e1 = Math.abs(g1.y[g1.y.length - 1][0] - Math.E);
+  const e2 = Math.abs(g2.y[g2.y.length - 1][0] - Math.E);
+  const order = Math.log2(e1 / e2);
+  check('ODE：全局收敛阶 4（步长折半 ⇒ 误差比→16，观测阶∈[3.5,4.5]）',
+    order > 3.5 && order < 4.5, `观测阶=${order.toFixed(3)}，误差比=${(e1 / e2).toFixed(2)}`);
+
+  // ④ 谐振荡器能量漂移：RK4 ≪ Euler
+  const ho = (t, y) => [y[1], -y[0]];
+  const energy = (y) => 0.5 * (y[0] * y[0] + y[1] * y[1]);
+  const rk = solveODE(ho, 0, [1, 0], 20, { h: 0.01 });
+  const eu = solveODE(ho, 0, [1, 0], 20, { h: 0.01, method: 'euler' });
+  const dRk = Math.abs(energy(rk.y[rk.y.length - 1]) - 0.5);
+  const dEu = Math.abs(energy(eu.y[eu.y.length - 1]) - 0.5);
+  check('ODE：谐振荡器 RK4 能量漂移 ≪ Euler（四阶 vs 一阶稳定性）',
+    dRk < 1e-6 && dRk * 1000 < dEu, `RK4=${dRk.toExponential(2)}，Euler=${dEu.toExponential(2)}`);
+
+  // ⑤a RK45 系数表结构恒等式（精确代数，钉住嵌入式对）
+  const T = dpTableau();
+  const sumB5 = T.B5.reduce((a, b) => a + b, 0);
+  const sumB4 = T.B4.reduce((a, b) => a + b, 0);
+  let rowOk = true;
+  for (let s = 0; s < T.C.length; s++) {
+    const rowSum = T.A[s].reduce((a, b) => a + b, 0);
+    if (Math.abs(rowSum - T.C[s]) > 1e-14) rowOk = false;
+  }
+  check('ODE：RK45 系数表结构恒等式 ΣB5=ΣB4=1 且 Σ_jA[s][j]=C[s]（精确）',
+    Math.abs(sumB5 - 1) < 1e-14 && Math.abs(sumB4 - 1) < 1e-14 && rowOk,
+    `ΣB5=${sumB5.toFixed(12)}，ΣB4=${sumB4.toFixed(12)}，阶段一致=${rowOk}`);
+
+  // ⑤b RK45 自适应：非自治 ODE y'=t·y（y=e^{t²/2}）末点精度 + 步数效率
+  const r45 = solveODERK45((t, y) => [t * y[0]], 0, [1], 2, { tol: 1e-8, h0: 0.1 });
+  const err45 = Math.abs(r45.y[r45.y.length - 1][0] - Math.exp(2)) / Math.exp(2);
+  check('ODE：RK45 自适应（非自治）末点相对误差 ≤ tol 且步数 ≪ 固定细步（2000）',
+    err45 < 1e-8 && r45.steps < 2000, `relErr=${err45.toExponential(2)}，步数=${r45.steps}`);
+
+  // ⑥ 定步长网格闭式
+  const s6 = solveODE((t, y) => [y[0]], 0.3, [1], 1.0, { h: 0.1 });
+  const gridOk = s6.steps === Math.round((1.0 - 0.3) / 0.1)
+    && s6.t.length === s6.steps + 1
+    && Math.abs(s6.t[s6.t.length - 1] - 1.0) < 1e-12;
+  check('ODE：定步长网格闭式 t_i = t0+i·h（步数与末点精确）', gridOk,
+    `步数=${s6.steps}，长度=${s6.t.length}，末点=${s6.t[s6.t.length - 1]}`);
+
+  // ⑦ 步数语义自洽（跨 solveODE / solveODERK45 同族 API 口径统一）
+  //    steps 恒等于「接受步数」= t.length − 1 ⇒ y[steps] 必然存在且是末点；
+  //    attempts 记录含被拒步的尝试次数，必 ≥ steps（拒绝步必然发生 ⇒ 严格大于）。
+  const sem = r45.steps === r45.t.length - 1
+    && r45.steps === r45.y.length - 1
+    && r45.y[r45.steps] !== undefined
+    && r45.attempts >= r45.steps
+    && s6.steps === s6.t.length - 1
+    && s6.steps === s6.y.length - 1;
+  check('ODE：步数语义自洽（steps = 接受步数 = t.length−1，attempts ≥ steps）', sem,
+    `RK45: steps=${r45.steps}/t.len=${r45.t.length}/attempts=${r45.attempts}；定步长: steps=${s6.steps}/t.len=${s6.t.length}`);
+}
+
+/* ============================================================
+ * 套件 57 · 蒙特卡洛强化学习（Sutton & Barto 第 5 章）
+ * ============================================================ */
+function suiteMonteCarlo(check) {
+  const { P, R } = chainMDP({ n: 6, gamma: 0.9 });
+  const viR = valueIteration(P, R, 0.9);
+  const Qref = qFromV(P, R, 0.9, viR.V);
+
+  // ① 回报恒等式：G_t = Σ γ^k·r_{t+k}
+  const rew = [1, 0.5, -0.25, 2, 0];
+  let d1 = 0;
+  for (let t = 0; t < rew.length; t++) {
+    let g = 0, disc = 1;
+    for (let k = t; k < rew.length; k++) { g += disc * rew[k]; disc *= 0.9; }
+    d1 = Math.max(d1, Math.abs(mcReturn(rew, 0.9, t) - g));
+  }
+  check('MC：回报恒等式 G_t=Σγ^k·r_{t+k} ≡ 逐项展开（0）', d1 === 0, `maxDiff=${d1}`);
+
+  // ② 确定性轨迹：首访 ≡ 每访
+  const rng2 = mulberry32(5);
+  const pi = new Array(6).fill(1); // 固定策略：恒向右
+  const eps2 = [];
+  for (let i = 0; i < 400; i++) {
+    eps2.push(mcEpisode(P, R, { gamma: 0.9, policy: pi, rng: rng2, maxSteps: 50, startState: Math.floor(rng2() * 6) }));
+  }
+  const Vf = mcPredictionFirstVisit(eps2, 0.9, { nStates: 6 });
+  const Ve = mcPredictionEveryVisit(eps2, 0.9, { nStates: 6 });
+  let d2 = 0;
+  for (let s = 0; s < 6; s++) d2 = Math.max(d2, Math.abs(Vf[s] - Ve[s]));
+  check('MC：确定性轨迹首访 ≡ 每访（0）', d2 === 0, `maxDiff=${d2}`);
+
+  // ②b 随机策略轨迹（π=[0.7,0.3]）：首访 ≠ 每访——首访过滤器必须真实生效
+  const rngB = mulberry32(11);
+  const probs = Array.from({ length: 6 }, () => [0.7, 0.3]);
+  const epsB = [];
+  for (let i = 0; i < 2000; i++) {
+    epsB.push(mcEpisode(P, R, { gamma: 0.9, probs, rng: rngB, maxSteps: 60 }));
+  }
+  const VfB = mcPredictionFirstVisit(epsB, 0.9, { nStates: 6 });
+  const VeB = mcPredictionEveryVisit(epsB, 0.9, { nStates: 6 });
+  let d2b = 0;
+  for (let s = 0; s < 6; s++) d2b = Math.max(d2b, Math.abs(VfB[s] - VeB[s]));
+  check('MC：随机策略轨迹首访 ≠ 每访（首访过滤器真实生效）', d2b > 1e-3,
+    `max|首访−每访|=${d2b.toFixed(4)}`);
+
+  // ③ MC 预测 ≡ 策略评估（两算法互证）
+  const pe = policyEvaluation(P, R, 0.9, pi);
+  let d3 = 0;
+  for (let s = 0; s < 6; s++) d3 = Math.max(d3, Math.abs(Vf[s] - pe.V[s]));
+  check('MC：首访预测 ≡ policyEvaluation(P,R,γ,π)（<1e-9）', d3 < 1e-9, `maxDiff=${d3.toExponential(3)}`);
+
+  // ④ GLIE 控制收敛
+  const res4 = mcControl(P, R, {
+    gamma: 0.9, epsStart: 1, epsEnd: 0, epsDecayFrac: 0.5, episodes: 8000, maxSteps: 100, seed: 3,
+  });
+  let qd = 0;
+  for (let s = 0; s < 6; s++) for (let a = 0; a < 2; a++) qd = Math.max(qd, Math.abs(res4.Q[s][a] - Qref[s][a]));
+  const polOk = res4.policy.every((p, s) => p === viR.policy[s]);
+  check('MC：GLIE 控制 Q ≈ qFromV(V*) 且贪心策略 ≡ 最优（<0.3）', qd < 0.3 && polOk,
+    `max|ΔQ|=${qd.toFixed(4)}，策略一致=${polOk}`);
+
+  // ⑤ Q* 是 ε=0 贪心更新的不动点（精确）
+  const res5 = mcControl(P, R, { gamma: 0.9, eps: 0, episodes: 300, maxSteps: 100, seed: 3, Q0: Qref });
+  let d5 = 0;
+  for (let s = 0; s < 6; s++) for (let a = 0; a < 2; a++) d5 = Math.max(d5, Math.abs(res5.Q[s][a] - Qref[s][a]));
+  check('MC：Q* 是 ε=0 贪心 MC 更新的不动点（<1e-12）', d5 < 1e-12, `max|ΔQ|=${d5.toExponential(3)}`);
+
+  // ⑥ 同 seed 一致
+  const r1 = mcControl(P, R, { episodes: 500, seed: 9 });
+  const r2 = mcControl(P, R, { episodes: 500, seed: 9 });
+  let d6 = 0;
+  for (let s = 0; s < 6; s++) for (let a = 0; a < 2; a++) d6 = Math.max(d6, Math.abs(r1.Q[s][a] - r2.Q[s][a]));
+  check('MC：同 seed 两次训练 Q 逐位一致', d6 === 0, `maxDiff=${d6}`);
+}
+
+/* ============================================================
+ * 套件 58 · 自组织映射 SOM（Kohonen 1982）
+ * ============================================================ */
+function suiteSOM(check) {
+  const rng = mulberry32(3);
+  const X1 = Array.from({ length: 80 }, (_, i) => [i / 79]);
+
+  // ① BMU 恒等式：直接距离 vs 展开式 ‖x‖²−2x·m+‖m‖²
+  const m1 = somBatchTrain(X1, { rows: 1, cols: 12, sigma0: 6, iters: 60, seed: 4 });
+  let mism = 0;
+  for (const x of X1) {
+    const b = somBMU(m1.codebook, x);
+    let bx = Infinity, br = 0, bc = 0;
+    for (let r = 0; r < m1.codebook.length; r++) {
+      for (let c = 0; c < m1.codebook[0].length; c++) {
+        let d2 = 0;
+        for (let k = 0; k < x.length; k++) {
+          d2 += x[k] * x[k] - 2 * x[k] * m1.codebook[r][c][k] + m1.codebook[r][c][k] * m1.codebook[r][c][k];
+        }
+        if (d2 < bx) { bx = d2; br = r; bc = c; }
+      }
+    }
+    if (br !== b.r || bc !== b.c) mism++;
+  }
+  check('SOM：BMU ≡ 展开式暴力 argmin（‖x‖²−2x·m+‖m‖² 口径）', mism === 0, `不一致=${mism}`);
+
+  // ② 邻域核闭式
+  const h0 = somNeighborhood(0, 2);
+  const h4 = somNeighborhood(4, 2);
+  const hBig = somNeighborhood(4, 1e10);
+  check('SOM：邻域核 h=exp(−d²/2σ²)，d=0⇒1、σ→∞⇒1（精确）',
+    h0 === 1 && Math.abs(h4 - Math.exp(-0.5)) < 1e-15 && Math.abs(hBig - 1) < 1e-15,
+    `h(0)=${h0}，h(4,2)=${h4.toFixed(12)}，h(4,1e10)=${hBig}`);
+
+  // ③ 批量 SOM 量化误差下降（包络口径）
+  const qes = m1.quantErrors;
+  let envelope = true;
+  for (let i = 1; i < qes.length; i++) if (qes[i] > qes[i - 1] * 1.1 + 1e-15) envelope = false;
+  const improved = qes[qes.length - 1] < qes[0] * 0.05;
+  check('SOM：批量训练量化误差逐扫描下降（包络，末值<初值 5%）', envelope && improved,
+    `QE ${qes[0].toFixed(5)} → ${qes[qes.length - 1].toFixed(5)}，包络=${envelope}`);
+
+  // ④ 拓扑保持：1D 链码本单调排列（方向不限）
+  const vals = m1.codebook[0].map((v) => v[0]);
+  let vu = 0, vd = 0;
+  for (let c = 1; c < vals.length; c++) {
+    if (vals[c] < vals[c - 1] - 1e-9) vu++;
+    if (vals[c] > vals[c - 1] + 1e-9) vd++;
+  }
+  check('SOM：1D 链码本按格点序单调排列（拓扑保持）', Math.min(vu, vd) === 0,
+    `升序乱序=${vu}，降序乱序=${vd}`);
+
+  // ⑤ σ→∞ 极限：h≡1 ⇒ 码本离散度单步精确收缩为 (1−α) 倍
+  const cb = Array.from({ length: 2 }, () => Array.from({ length: 3 }, () => [rng() * 2 - 1, rng() * 2 - 1]));
+  const spread = (c) => {
+    let m = 0;
+    for (let i = 0; i < c.length; i++) {
+      for (let j = 0; j < c[0].length; j++) {
+        for (let k = 0; k < c[0][0].length; k++) m = Math.max(m, Math.abs(c[i][j][k] - c[0][0][k]));
+      }
+    }
+    return m;
+  };
+  const before = spread(cb);
+  const after = spread(somStep(cb, [0.7, -0.3], { r: 0, c: 1 }, 0.3, 1e10));
+  const d5 = Math.abs(after - 0.7 * before) / before;
+  check('SOM：σ→∞ ⇒ 码本离散度单步精确收缩为 (1−α) 倍（<1e-12）', d5 < 1e-12,
+    `relErr=${d5.toExponential(3)}`);
+
+  // ⑥ 同 seed 一致
+  const s1 = somTrain(X1, { rows: 2, cols: 5, iters: 400, seed: 8 });
+  const s2 = somTrain(X1, { rows: 2, cols: 5, iters: 400, seed: 8 });
+  let d6 = 0;
+  for (let r = 0; r < 2; r++) {
+    for (let c = 0; c < 5; c++) {
+      for (let k = 0; k < 1; k++) d6 = Math.max(d6, Math.abs(s1.codebook[r][c][k] - s2.codebook[r][c][k]));
+    }
+  }
+  check('SOM：同 seed 两次训练码本逐位一致', d6 === 0, `maxDiff=${d6}`);
 }

@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">54 组套件 · 324 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">58 组套件 · 350 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -477,6 +477,46 @@
     </div>
   </div>
 
+  <h2>v1.12 新增算法 <span class="tag">FFT · ODE 数值积分 · Monte Carlo RL · 自组织映射 SOM · 均由本页引擎实时求解</span></h2>
+  <div class="demos">
+    <div class="card">
+      <div class="demo-head">
+        <strong>快速傅里叶变换 FFT</strong>
+        <button id="btn-fft">重新生成</button>
+      </div>
+      <div class="desc">Cooley &amp; Tukey 1965 · 基-2 分治 O(n log n) 击败 O(n²) DFT：X_k=Σ_t x_t·e^{−2πikt/n}；解析 DFT 与 FFT 逐分量一致</div>
+      <svg id="svg-fft" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-fft"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>常微分方程数值积分</strong>
+        <button id="btn-ode">重新积分</button>
+      </div>
+      <div class="desc">Runge–Kutta 4 · Euler · Dormand–Prince RK5(4) 自适应；y′=−y 指数衰减：RK4 全程相对误差比 Euler 小 6 个数量级</div>
+      <svg id="svg-ode" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-ode"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>蒙特卡洛强化学习</strong>
+        <button id="btn-mc">重新训练</button>
+      </div>
+      <div class="desc">Sutton &amp; Barto §5 · 首访/每访预测 + MC 控制（GLIE 递减 ε）：Q̂ 为回报均值估计，与最优值迭代策略一致</div>
+      <svg id="svg-mc" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-mc"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>自组织映射 SOM</strong>
+        <button id="btn-som">重新训练</button>
+      </div>
+      <div class="desc">Kohonen 1982 · 最佳匹配单元 + 指数衰减邻域核：码本把高维流形自组织为拓扑有序的低维格点</div>
+      <svg id="svg-som" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-som"></div>
+    </div>
+  </div>
+
   <div class="refs">
     站在巨人肩上：<code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
     <code>Bishop · PRML</code><code>Hastie et al. · ESL</code><code>Vaswani et al. 2017 · Attention Is All You Need</code>
@@ -508,6 +548,8 @@
     <code>Hopfield 1982 · 联想记忆</code><code>Amit et al. 1985 · 容量 0.138n</code>
     <code>Cho et al. 2014 · GRU</code><code>Bishop 2006 · Softmax 回归</code>
     <code>van Seijen et al. 2009 · Expected SARSA</code><code>Zou &amp; Hastie 2005 · Elastic Net</code>
+    <code>Cooley &amp; Tukey 1965 · FFT</code><code>Dormand &amp; Prince 1980 · RK5(4)</code>
+    <code>Sutton &amp; Barto §5 · Monte Carlo RL</code><code>Kohonen 1982 · SOM</code>
   </div>
 
   <footer>
@@ -896,6 +938,285 @@ function relu(x) {
 /** 相对误差：|a − b| / max(1e-8, |a| + |b|)，梯度检验的标尺 */
 function relErr(a, b) {
   return Math.abs(a - b) / Math.max(1e-8, Math.abs(a) + Math.abs(b));
+}
+
+/* ═══════════ src/core/fft.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 快速傅里叶变换（FFT, Cooley & Tukey 1965）
+ * 站在：Cooley & Tukey 1965《An Algorithm for the Machine Calculation of
+ *       Complex Fourier Series》（基-2 分治 FFT，O(n log n) 击败 O(n²) DFT）·
+ *       Numerical Recipes in C §12.2–12.3（复数变换与卷积定理）·
+ *       Oppenheim & Schafer《Discrete-Time Signal Processing》§8–9（DFT/圆周卷积）。
+ *
+ * 约定：实部/虚部分别用等长 number[] 表示；长度须为 2 的幂；返回新数组不修改入参。
+ *   前向：X_k = Σ_t x_t·e^{−2πi·tk/n}（工程符号，与 NumPy/NR 一致）
+ *   逆向：x_t = (1/n)·Σ_k X_k·e^{+2πi·tk/n}
+ *
+ * 不变量（全部为可独立交叉验证的硬恒等式）：
+ *   ① FFT ≡ 朴素 DFT：分治结果与 O(n²) 参照逐分量一致（maxRelErr < 1e-10）；
+ *   ② 逆变换闭合：ifft(fft(x)) ≡ x（maxAbs < 1e-12）；
+ *   ③ Parseval 能量守恒：Σ_k|X_k|² = n·Σ_t|x_t|²（相对误差 < 1e-12）；
+ *   ④ 线性卷积定理：FFT 卷积（零填充）≡ 朴素线性卷积（maxAbs < 1e-10）；
+ *   ⑤ 线性性：fft(αx+βy) = α·fft(x)+β·fft(y)（maxAbs < 1e-12）；
+ *   ⑥ 圆周卷积定理：ifft(fft(a)·fft(b)) ≡ 圆周卷积（maxAbs < 1e-10）。
+ */
+
+/** 不小于 n 的最小 2 的幂 */
+function nextPow2(n) {
+  let p = 1;
+  while (p < n) p *= 2;
+  return p;
+}
+
+function isPow2(n) {
+  return n >= 1 && (n & (n - 1)) === 0;
+}
+
+/** 基-2 Cooley–Tukey 蝶形（原地递归，re/im 同步分裂偶奇子序列） */
+function fftRec(re, im) {
+  const n = re.length;
+  if (n <= 1) return;
+  const half = n >> 1;
+  const reE = new Array(half), imE = new Array(half), reO = new Array(half), imO = new Array(half);
+  for (let i = 0; i < half; i++) {
+    reE[i] = re[2 * i]; imE[i] = im[2 * i];
+    reO[i] = re[2 * i + 1]; imO[i] = im[2 * i + 1];
+  }
+  fftRec(reE, imE);
+  fftRec(reO, imO);
+  for (let k = 0; k < half; k++) {
+    const ang = -2 * Math.PI * k / n;
+    const wr = Math.cos(ang), wi = Math.sin(ang);
+    const ur = reE[k], ui = imE[k];
+    const vr = reO[k] * wr - imO[k] * wi;
+    const vi = reO[k] * wi + imO[k] * wr;
+    re[k] = ur + vr; im[k] = ui + vi;
+    re[k + half] = ur - vr; im[k + half] = ui - vi;
+  }
+}
+
+/**
+ * 基-2 FFT（前向）。长度须为 2 的幂。
+ * @param {number[]} re 实部
+ * @param {number[]} im 虚部
+ * @returns {{re:number[], im:number[]}}
+ */
+function fftRadix2(re, im) {
+  const n = re.length;
+  if (im.length !== n) throw new Error('fftRadix2: 实部/虚部长度不一致');
+  if (!isPow2(n)) throw new Error('fftRadix2: 长度须为 2 的幂，得到 ' + n);
+  const R = re.slice();
+  const I = im.length === n ? im.slice() : new Array(n).fill(0);
+  fftRec(R, I);
+  return { re: R, im: I };
+}
+
+/** 实数信号前向 FFT（虚部置零） */
+function fft(x) {
+  return fftRadix2(x.slice(), new Array(x.length).fill(0));
+}
+
+/**
+ * 逆 FFT：共轭 → 前向 → 共轭 → 除 n。
+ * @returns {{re:number[], im:number[]}}
+ */
+function ifftRadix2(re, im) {
+  const n = re.length;
+  if (im.length !== n) throw new Error('ifftRadix2: 实部/虚部长度不一致');
+  if (!isPow2(n)) throw new Error('ifftRadix2: 长度须为 2 的幂，得到 ' + n);
+  const cr = re.slice(), ci = im.map((v) => -v);
+  fftRec(cr, ci);
+  return { re: cr.map((v) => v / n), im: ci.map((v) => -v / n) };
+}
+
+/** 朴素 DFT（O(n²) 参照实现，不变量①的黄金标准） */
+function dftNaive(re, im) {
+  const n = re.length;
+  const R = new Array(n), I = new Array(n);
+  for (let k = 0; k < n; k++) {
+    let sr = 0, si = 0;
+    for (let t = 0; t < n; t++) {
+      const ang = -2 * Math.PI * k * t / n;
+      const c = Math.cos(ang), s = Math.sin(ang);
+      sr += re[t] * c - im[t] * s;
+      si += re[t] * s + im[t] * c;
+    }
+    R[k] = sr; I[k] = si;
+  }
+  return { re: R, im: I };
+}
+
+/** 复数逐点相乘（长度须一致） */
+function spectrumMultiply(fa, fb) {
+  const n = fa.re.length;
+  const pr = new Array(n), pi = new Array(n);
+  for (let k = 0; k < n; k++) {
+    pr[k] = fa.re[k] * fb.re[k] - fa.im[k] * fb.im[k];
+    pi[k] = fa.re[k] * fb.im[k] + fa.im[k] * fb.re[k];
+  }
+  return { re: pr, im: pi };
+}
+
+/** 圆周卷积（周期边界，等长序列；FFT 实现） */
+function circularConvolve(a, b) {
+  const n = a.length;
+  if (b.length !== n) throw new Error('circularConvolve: 两序列长度须一致');
+  const prod = spectrumMultiply(fftRadix2(a.slice(), new Array(n).fill(0)), fftRadix2(b.slice(), new Array(n).fill(0)));
+  return ifftRadix2(prod.re, prod.im).re;
+}
+
+/** 线性卷积（零填充至 2 的幂），结果长度 a.length + b.length − 1 */
+function convolveLinear(a, b) {
+  const n = nextPow2(a.length + b.length - 1);
+  const pa = new Array(n).fill(0), pb = new Array(n).fill(0);
+  for (let i = 0; i < a.length; i++) pa[i] = a[i];
+  for (let i = 0; i < b.length; i++) pb[i] = b[i];
+  const prod = spectrumMultiply(fft(pa), fft(pb));
+  return ifftRadix2(prod.re, prod.im).re.slice(0, a.length + b.length - 1);
+}
+
+/** 朴素线性卷积（O(n·m) 参照实现） */
+function convolveNaive(a, b) {
+  const out = new Array(a.length + b.length - 1).fill(0);
+  for (let i = 0; i < a.length; i++) {
+    for (let j = 0; j < b.length; j++) out[i + j] += a[i] * b[j];
+  }
+  return out;
+}
+
+/* ═══════════ src/core/ode.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 常微分方程数值求解（ODE Integrators）
+ * 站在：Runge 1895 / Kutta 1901（经典四级四阶 RK4）·
+ *       Fehlberg 1969 与 Dormand & Prince 1980（嵌入式 RK5(4) 系数、自适应步长）·
+ *       Hairer, Nørsett & Wanner《Solving ODEs I》（阶条件、局部/全局误差、稳定性理论）。
+ *
+ * 约定：状态统一为向量 y(t) ∈ R^d（标量用长度 1 的数组）；右端 f(t, y) 同型返回。
+ * 步进器纯函数：返回新数组，不修改入参（供梯度/不变量安全复用）。
+ *
+ * 不变量（精确代数恒等式 + 定理背书的阶条件）：
+ *   ① RK4 单步 ≡ 线性系统 4 阶 Taylor：‖rk4Step − Σ_{k=0..4} h^kA^k/k!‖ < 1e-12；
+ *   ② 标量 y'=λy：RK4 单步 ≡ 1+hλ+h²λ²/2+h³λ³/6+h⁴λ⁴/24（< 1e-15）；
+ *   ③ 全局收敛阶 4：步长折半 ⇒ 误差比 → 16（对 y'=y 闭式解 e^t，观测阶 ∈ [3.5, 4.5]）；
+ *   ④ 谐振荡器 y''=−y：RK4 能量漂移远小于 Euler（四阶 vs 一阶稳定性对照）；
+ *   ⑤ RK45 自适应：末点误差 ≤ tol 且所用步数 < 固定细步（效率 + 精度双约束）；
+ *   ⑥ 定步长网格闭式：t_i = t0 + i·h，步数 = round((t1−t0)/h)+1，长度精确一致。
+ */
+
+/** 前向 Euler（一阶，仅作对照） */
+function eulerStep(f, t, y, h) {
+  const k1 = f(t, y);
+  return y.map((v, i) => v + h * k1[i]);
+}
+
+/** 显式中点法（二阶） */
+function midpointStep(f, t, y, h) {
+  const k1 = f(t, y);
+  const ym = y.map((v, i) => v + 0.5 * h * k1[i]);
+  const k2 = f(t + 0.5 * h, ym);
+  return y.map((v, i) => v + h * k2[i]);
+}
+
+/** 经典四级四阶 Runge–Kutta（局部误差 O(h^5)，全局 O(h^4)） */
+function rk4Step(f, t, y, h) {
+  const k1 = f(t, y);
+  const y2 = y.map((v, i) => v + 0.5 * h * k1[i]);
+  const k2 = f(t + 0.5 * h, y2);
+  const y3 = y.map((v, i) => v + 0.5 * h * k2[i]);
+  const k3 = f(t + 0.5 * h, y3);
+  const y4 = y.map((v, i) => v + h * k3[i]);
+  const k4 = f(t + h, y4);
+  return y.map((v, i) => v + (h / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]));
+}
+
+const STEPPERS = { euler: eulerStep, midpoint: midpointStep, rk4: rk4Step };
+
+/**
+ * 定步长求解 y' = f(t, y)，t: t0 → t1。
+ * @returns {{t:number[], y:number[][], steps:number, h:number}}
+ */
+function solveODE(f, t0, y0, t1, { h, method = 'rk4' } = {}) {
+  const step = STEPPERS[method];
+  if (!step) throw new Error('solveODE: 未知方法 ' + method);
+  const steps = Math.round((t1 - t0) / h);
+  const t = new Array(steps + 1), y = new Array(steps + 1);
+  let cur = y0.slice();
+  t[0] = t0; y[0] = cur.slice();
+  for (let i = 0; i < steps; i++) {
+    cur = step(f, t0 + i * h, cur, h);
+    t[i + 1] = t0 + (i + 1) * h; y[i + 1] = cur;
+  }
+  return { t, y, steps, h };
+}
+
+/* ── Dormand–Prince 5(4) 嵌入式系数（DP1980 表，CFL 友好的 FSAL 首列） ── */
+const DP_C = [0, 1 / 5, 3 / 10, 4 / 5, 8 / 9, 1, 1];
+const DP_A = [
+  [],
+  [1 / 5],
+  [3 / 40, 9 / 40],
+  [44 / 45, -56 / 15, 32 / 9],
+  [19372 / 6561, -25360 / 2187, 64448 / 6561, -212 / 729],
+  [9017 / 3168, -355 / 33, 46732 / 5247, 49 / 176, -5103 / 18656],
+  [35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84],
+];
+const DP_B5 = [35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0];
+const DP_B4 = [5179 / 57600, 0, 7571 / 16695, 393 / 640, -92097 / 339200, 187 / 2100, 1 / 40];
+
+/**
+ * Dormand–Prince 5(4) 系数表（供不变量校验结构恒等式）。
+ * 正确性恒等式：ΣB5=ΣB4=1（一致性）、Σ_j A[s][j] = C[s]（阶段一致性）。
+ * @returns {{C:number[], A:number[][], B5:number[], B4:number[]}}
+ */
+function dpTableau() {
+  return { C: DP_C.slice(), A: DP_A.map((r) => r.slice()), B5: DP_B5.slice(), B4: DP_B4.slice() };
+}
+
+/**
+ * 自适应 RK5(4)（Dormand–Prince）：5 阶推进、4 阶估计误差，按 tol 调节步长。
+ *
+ * 语义约定（与 solveODE 对齐）：`steps` = **接受步数**（= t.length − 1），
+ * `attempts` = 尝试步数（含被误差判据拒绝的步，≥ steps）。
+ * 两者分开，避免 `y[steps]` 越界与"步数"口径漂移。
+ * @returns {{t:number[], y:number[][], steps:number, attempts:number}}
+ */
+function solveODERK45(f, t0, y0, t1, { tol = 1e-8, h0 = 0.1, safety = 0.9 } = {}) {
+  let t = t0;
+  let y = y0.slice();
+  let h = Math.min(h0, t1 - t0);
+  const ts = [t], ys = [y.slice()];
+  let attempts = 0;
+  while (t < t1 - 1e-12) {
+    if (t + h > t1) h = t1 - t;
+    const k = [];
+    for (let s = 0; s < 7; s++) {
+      const yi = y.map((v, i) => {
+        let acc = v;
+        for (let j = 0; j < s; j++) acc += h * DP_A[s][j] * k[j][i];
+        return acc;
+      });
+      k.push(f(t + DP_C[s] * h, yi));
+    }
+    const y5 = y.map((v, i) => {
+      let a = v;
+      for (let s = 0; s < 7; s++) a += h * DP_B5[s] * k[s][i];
+      return a;
+    });
+    const y4 = y.map((v, i) => {
+      let a = v;
+      for (let s = 0; s < 7; s++) a += h * DP_B4[s] * k[s][i];
+      return a;
+    });
+    let err = 0;
+    for (let i = 0; i < y.length; i++) err = Math.max(err, Math.abs(y5[i] - y4[i]));
+    if (err <= tol || h <= 1e-14) {
+      t += h; y = y5; ts.push(t); ys.push(y.slice());
+    }
+    const fac = err === 0 ? 5 : safety * Math.pow(tol / Math.max(err, 1e-300), 0.2);
+    h *= Math.max(0.2, Math.min(5, fac));
+    if (++attempts > 1000000) throw new Error('solveODERK45: 超过步数上限');
+  }
+  return { t: ts, y: ys, steps: ts.length - 1, attempts };
 }
 
 /* ═══════════ src/core/stats.js ═══════════ */
@@ -5818,6 +6139,151 @@ function elasticNetPredict(X, model) {
   return X.map((xi) => b + dot(xi, w));
 }
 
+/* ═══════════ src/ml/som.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 自组织映射（Self-Organizing Map, Kohonen 1982）
+ * 站在：Kohonen 1982《Self-Organized Formation of Topologically Correct
+ *       Feature Maps》（SOM 原始论文）· Kohonen 1990/2001《Self-Organizing Maps》
+ *       （邻域核 + 衰减律的标准训练框架）· Ultsch & Siemon 1990（SOM 与 CCA 对照）。
+ *
+ * 训练（在线 somTrain：随机样本序；批量 somBatchTrain：全数据同步邻域加权质心）：
+ *   BMU b(x) = argmin_c ‖x − m_c‖₂（最近码本）；
+ *   邻域核 h_{cb} = exp(−‖r_c − r_b‖² / (2σ²))（r 为格点坐标，链/网统一）；
+ *   在线：m_c ← m_c + α·h_{cb}·(x − m_c)，σ、α 按 Kohonen 指数律同步衰减；
+ *   批量：m_c = Σ_x h_{c,b(x)}·x / Σ_x h_{c,b(x)}（确定性，无采样噪声）。
+ *
+ * 不变量：
+ *   ① BMU 恒等式：somBMU ≡ 展开式暴力 argmin（‖x‖²−2x·m+‖m‖² 口径，逐位一致）；
+ *   ② 邻域核闭式：h = exp(−d²/(2σ²))，d=0 ⇒ h=1（精确），σ→∞ ⇒ h→1（<1e-15）；
+ *   ③ 批量 SOM 量化误差逐扫描下降（包络口径：每轮 ≤ 前轮×1.1，末值 < 初值 5%）；
+ *   ④ 拓扑保持：1D 链在 1D 数据上码本按格点序单调排列（升/降其一零乱序）；
+ *   ⑤ σ→∞ 极限：h≡1 ⇒ 在线单步后码本离散度精确收缩为 (1−α) 倍（relErr<1e-12）；
+ *   ⑥ 同 seed 两次训练码本逐位一致（maxDiff=0）。
+ */
+
+
+
+/** 高斯邻域核：h = exp(−d²/(2σ²))；d=0 ⇒ 1 */
+function somNeighborhood(dist2, sigma) {
+  return Math.exp(-dist2 / (2 * sigma * sigma));
+}
+
+/**
+ * 最佳匹配单元（BMU）：欧氏距离最小的码本格点（行主序确定性决胜）。
+ * @returns {{r:number, c:number, dist2:number}}
+ */
+function somBMU(codebook, x) {
+  const rows = codebook.length, cols = codebook[0].length;
+  let best = Infinity, br = 0, bc = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      let d2 = 0;
+      for (let k = 0; k < x.length; k++) {
+        const dv = x[k] - codebook[r][c][k];
+        d2 += dv * dv;
+      }
+      if (d2 < best) { best = d2; br = r; bc = c; }
+    }
+  }
+  return { r: br, c: bc, dist2: best };
+}
+
+/** 量化误差：全样本到各自 BMU 的平均平方距离 */
+function somQuantError(codebook, X) {
+  let s = 0;
+  for (const x of X) s += somBMU(codebook, x).dist2;
+  return s / X.length;
+}
+
+/**
+ * 单步在线更新（纯函数：返回新码本，不修改入参）。
+ * @param {number[][][]} codebook rows×cols×d
+ * @param {number[]} x 输入样本
+ * @param {{r:number,c:number}} bmu 最佳匹配单元
+ */
+function somStep(codebook, x, bmu, alpha, sigma) {
+  const rows = codebook.length, cols = codebook[0].length;
+  return codebook.map((row, r) => row.map((m, c) => {
+    const dist2 = (r - bmu.r) * (r - bmu.r) + (c - bmu.c) * (c - bmu.c);
+    const h = somNeighborhood(dist2, sigma);
+    return m.map((v, k) => v + alpha * h * (x[k] - v));
+  }));
+}
+
+/**
+ * SOM 训练（在线、随机样本序、码本由数据样本随机初始化）。
+ * @returns {{codebook:number[][][], rows:number, cols:number, bmus:Array, quantErrors:number[]}}
+ */
+function somTrain(X, {
+  rows = 1, cols = 10, sigma0 = null, alpha0 = 0.5, iters = 2000, seed = 42,
+} = {}) {
+  const rng = mulberry32(seed);
+  const d = X[0].length;
+  const codebook = Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => X[Math.floor(rng() * X.length)].slice()));
+  const s0 = sigma0 == null ? Math.max(rows, cols) / 2 : sigma0;
+  const tau = Math.max(1, iters / 3); // Kohonen 指数衰减时间常数：末端衰减至 e^{−3}
+  const every = Math.max(1, Math.floor(iters / 40));
+  const quantErrors = [];
+  let cur = codebook;
+  for (let it = 0; it < iters; it++) {
+    const decay = Math.exp(-it / tau);
+    const sigma = s0 * decay;
+    const alpha = alpha0 * decay;
+    const x = X[Math.floor(rng() * X.length)];
+    const bmu = somBMU(cur, x);
+    cur = somStep(cur, x, bmu, alpha, sigma);
+    if ((it + 1) % every === 0) quantErrors.push(somQuantError(cur, X));
+  }
+  const bmus = X.map((x) => somBMU(cur, x));
+  return { codebook: cur, rows, cols, bmus, quantErrors };
+}
+
+/** 逐样本 BMU 扁平索引（行主序：r·cols + c） */
+function somLabels(X, model) {
+  return model.bmus.map((b) => b.r * model.cols + b.c);
+}
+
+/**
+ * 批量 SOM（Kohonen 批处理 MAP）：每轮用全数据同步更新码本
+ *   m_c = Σ_x h_{c,b(x)}·x / Σ_x h_{c,b(x)}（邻域加权质心，确定性、无采样噪声）
+ * @returns {{codebook:number[][][], rows:number, cols:number, bmus:Array, quantErrors:number[]}}
+ */
+function somBatchTrain(X, {
+  rows = 6, cols = 6, sigma0 = null, iters = 80, seed = 42,
+} = {}) {
+  const rng = mulberry32(seed);
+  const d = X[0].length;
+  const codebook = Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => X[Math.floor(rng() * X.length)].slice()));
+  const s0 = sigma0 == null ? Math.max(rows, cols) / 2 : sigma0;
+  const tau = Math.max(1, iters / 2); // σ 末端衰减至 e^{−2}
+  const quantErrors = [];
+  let cur = codebook;
+  for (let it = 0; it < iters; it++) {
+    const sigma = s0 * Math.exp(-it / tau);
+    const bmus = X.map((x) => somBMU(cur, x));
+    const num = Array.from({ length: rows }, () => Array.from({ length: cols }, () => new Array(d).fill(0)));
+    const den = Array.from({ length: rows }, () => new Array(cols).fill(0));
+    for (let i = 0; i < X.length; i++) {
+      const b = bmus[i];
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const d2 = (r - b.r) * (r - b.r) + (c - b.c) * (c - b.c);
+          const h = somNeighborhood(d2, sigma);
+          den[r][c] += h;
+          for (let k = 0; k < d; k++) num[r][c][k] += h * X[i][k];
+        }
+      }
+    }
+    cur = cur.map((row, r) => row.map((m, c) =>
+      (den[r][c] > 0 ? m.map((_, k) => num[r][c][k] / den[r][c]) : m.slice())));
+    quantErrors.push(somQuantError(cur, X));
+  }
+  const bmus = X.map((x) => somBMU(cur, x));
+  return { codebook: cur, rows, cols, bmus, quantErrors };
+}
+
 /* ═══════════ src/nn/dense.js ═══════════ */
 /**
  * 旗舰AI引擎 · 全连接神经网络
@@ -9426,12 +9892,189 @@ function expectedBellmanResidual(P, R, gamma, Q, eps) {
   return worst;
 }
 
+/* ═══════════ src/rl/monteCarlo.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 蒙特卡洛强化学习（Monte Carlo RL）
+ * 站在：Sutton & Barto《Reinforcement Learning: An Introduction》第 5 章
+ *       （免模型 MC 预测 / ε-软 MC 控制，探索起点）·
+ *       Singh & Sutton 1996《Reinforcement Learning with Replacing Eligibility Traces》
+ *       （MC vs TD 偏差-方差权衡的奠基对照）·
+ *       本模块只用完整回合回报、绝不 bootstrap——这是与 TD 家族（Q-learning/SARSA）的分水岭。
+ *
+ * 回合表示：{ states:[s_0…s_T], actions:[a_0…a_T], rewards:[r_1…r_{T+1}] }，
+ * rewards[t] 为离开 states[t] 后得到的即时奖励；回报 G_t = Σ_{k≥0} γ^k·rewards[t+k]。
+ *
+ * 复用：valueIteration.policyEvaluation / valueIteration / chainMDP；
+ *       qLearning.greedyAction / qFromV。P/R 约定 P[s][a] = [[ns,p],…] 与 rl 层一致。
+ *
+ * 不变量：
+ *   ① 回报恒等式：G_t = Σ γ^k r_{t+k} 与逐项展开手算逐位一致（精确）；
+ *   ② 确定性轨迹：first-visit ≡ every-visit（每状态每回合仅一次访问，maxDiff=0）；
+ *   ③ MC 预测收敛：固定策略采样 ⇒ 首访均值 ≡ policyEvaluation(P,R,γ,π)（<1e-9，两算法互证）；
+ *   ④ MC 控制 GLIE：ε-软 + 探索起点 ⇒ 贪心策略 ≡ valueIteration 最优策略且 Q ≈ qFromV(V*)；
+ *   ⑤ ε=0 + 探索起点：Q̂(s,a) ≡ qFromV(V*)（贪心 MC-ES 收敛到最优动作值）；
+ *   ⑥ 同 seed 两次训练 Q 逐位一致（maxDiff=0）。
+ */
+
+
+
+
+
+/**
+ * 从 t 起的折扣回报：G_t = Σ_{k=0}^{T−t} γ^k·rewards[t+k]。
+ * @param {number[]} rewards rewards[t] 为离开 states[t] 后的即时奖励
+ * @param {number} gamma 折扣因子
+ * @param {number} t 起始时刻
+ */
+function mcReturn(rewards, gamma, t) {
+  let g = 0, disc = 1;
+  for (let k = t; k < rewards.length; k++) {
+    g += disc * rewards[k];
+    disc *= gamma;
+  }
+  return g;
+}
+
+/** 依 P[s][a] 采样下一状态与即时奖励（与 sarsa.js 同一采样序，保证 rng 流一致） */
+function mcSampleTransition(P, R, s, a, rng) {
+  const list = P[s][a];
+  const u = rng();
+  let acc = 0, k = 0;
+  for (; k < list.length; k++) {
+    acc += list[k][1];
+    if (u <= acc) break;
+  }
+  if (k >= list.length) k = list.length - 1;
+  return { ns: list[k][0], r: R[s][a][k] };
+}
+
+/**
+ * 采集一个回合（至多 maxSteps 步）。
+ * 行为策略四选一（优先级递减）：probs（S×A 概率矩阵）> policy（固定动作数组）> Q（ε-贪心）> 均匀随机；
+ * startState 为探索起点。
+ * @returns {{states:number[], actions:number[], rewards:number[]}}
+ */
+function mcEpisode(P, R, {
+  gamma = 0.9, eps = 0, rng, policy = null, probs = null, Q = null, startState = null, maxSteps = 200,
+} = {}) {
+  const S = P.length, A = P[0].length;
+  const gen = rng || mulberry32(42);
+  const states = [], actions = [], rewards = [];
+  let s = startState == null ? Math.floor(gen() * S) : startState;
+  for (let step = 0; step < maxSteps; step++) {
+    let a;
+    if (probs) {
+      const u = gen();
+      let acc = 0;
+      a = A - 1;
+      for (let k = 0; k < A; k++) { acc += probs[s][k]; if (u <= acc) { a = k; break; } }
+    } else if (policy) a = policy[s];
+    else if (gen() < eps) a = Math.floor(gen() * A);
+    else if (Q) a = greedyAction(Q, s);
+    else a = Math.floor(gen() * A);
+    const { ns, r } = mcSampleTransition(P, R, s, a, gen);
+    states.push(s); actions.push(a); rewards.push(r);
+    s = ns;
+  }
+  return { states, actions, rewards };
+}
+
+/** 从回合集合推断状态数 */
+function inferStates(episodes) {
+  let S = 0;
+  for (const ep of episodes) for (const s of ep.states) if (s + 1 > S) S = s + 1;
+  return S;
+}
+
+/**
+ * 首访蒙特卡洛预测：每回合中每状态仅首次访问计入回报均值。
+ * @returns {number[]} V̂
+ */
+function mcPredictionFirstVisit(episodes, gamma, { nStates = 0 } = {}) {
+  const S = nStates || inferStates(episodes);
+  const sums = new Array(S).fill(0), cnts = new Array(S).fill(0);
+  for (const ep of episodes) {
+    const seen = new Set();
+    for (let t = 0; t < ep.states.length; t++) {
+      const s = ep.states[t];
+      if (seen.has(s)) continue;
+      seen.add(s);
+      sums[s] += mcReturn(ep.rewards, gamma, t);
+      cnts[s]++;
+    }
+  }
+  return sums.map((v, i) => (cnts[i] ? v / cnts[i] : 0));
+}
+
+/**
+ * 每访蒙特卡洛预测：每次访问都计入（有偏但方差更小）。
+ * @returns {number[]} V̂
+ */
+function mcPredictionEveryVisit(episodes, gamma, { nStates = 0 } = {}) {
+  const S = nStates || inferStates(episodes);
+  const sums = new Array(S).fill(0), cnts = new Array(S).fill(0);
+  for (const ep of episodes) {
+    for (let t = 0; t < ep.states.length; t++) {
+      const s = ep.states[t];
+      sums[s] += mcReturn(ep.rewards, gamma, t);
+      cnts[s]++;
+    }
+  }
+  return sums.map((v, i) => (cnts[i] ? v / cnts[i] : 0));
+}
+
+/**
+ * 在策略蒙特卡洛控制（ε-软 + 探索起点 + 首访回报均值）。
+ * GLIE：epsStart→epsEnd 线性衰减（epsDecayFrac 控制衰减窗口），末端留纯利用阶段。
+ * @param {number[][]} [opts.Q0] 初始动作值（默认全零）；灌入 Q* 可验证不动点性质
+ * @returns {{Q:number[][], policy:number[], episodeReturns:number[]}}
+ */
+function mcControl(P, R, {
+  gamma = 0.9, eps = 0.1, epsStart = null, epsEnd = null, epsDecayFrac = 1,
+  episodes = 4000, maxSteps = 200, seed = 42, Q0 = null,
+} = {}) {
+  const S = P.length, A = P[0].length;
+  const rng = mulberry32(seed);
+  const Q = Q0 ? Q0.map((row) => row.slice()) : Array.from({ length: S }, () => new Array(A).fill(0));
+  const sums = Array.from({ length: S }, () => new Array(A).fill(0));
+  const cnts = Array.from({ length: S }, () => new Array(A).fill(0));
+  const episodeReturns = [];
+  const span = Math.max(1, Math.floor(episodes * epsDecayFrac) - 1);
+  for (let ep = 0; ep < episodes; ep++) {
+    const epsNow = (epsStart == null)
+      ? eps
+      : epsStart + ((epsEnd == null ? eps : epsEnd) - epsStart) * Math.min(1, ep / span);
+    const { states, actions, rewards } = mcEpisode(P, R, {
+      gamma, eps: epsNow, rng, Q, maxSteps, startState: Math.floor(rng() * S),
+    });
+    episodeReturns.push(rewards.reduce((a, b) => a + b, 0));
+    let g = 0;
+    const seen = new Set();
+    for (let t = states.length - 1; t >= 0; t--) {
+      g = gamma * g + rewards[t];
+      const s = states[t], a = actions[t];
+      const key = s * A + a;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      sums[s][a] += g;
+      cnts[s][a]++;
+      Q[s][a] = sums[s][a] / cnts[s][a];
+    }
+  }
+  const policy = Array.from({ length: S }, (_, s) => greedyAction(Q, s));
+  return { Q, policy, episodeReturns };
+}
+
 /* ═══════════ src/verify/invariants.js ═══════════ */
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 54 组套件全绿 = 引擎数学正确性的机器证明。
+ * 58 组套件全绿 = 引擎数学正确性的机器证明。
  */
+
+
+
+
 
 
 
@@ -9528,7 +10171,7 @@ function blobs(rng, centers, nPer, sigma) {
 }
 
 /**
- * 运行全部 54 组不变量自检。
+ * 运行全部 58 组不变量自检。
  * @returns {{results:Array, passed:number, total:number, allOk:boolean}}
  */
 function runAllInvariants() {
@@ -9588,6 +10231,10 @@ function runAllInvariants() {
     ['多类逻辑回归 · Softmax Regression (Bishop §4.3.4)', suiteSoftmaxRegression],
     ['期望SARSA · Expected SARSA (van Seijen et al. 2009)', suiteExpectedSarsa],
     ['弹性网络 · Elastic Net (Zou & Hastie 2005)', suiteElasticNet],
+    ['快速傅里叶变换 · FFT (Cooley & Tukey 1965)', suiteFFT],
+    ['常微分方程求解 · ODE (RK4 / Dormand–Prince RK45)', suiteODE],
+    ['蒙特卡洛强化学习 · Monte Carlo RL (Sutton & Barto §5)', suiteMonteCarlo],
+    ['自组织映射 · SOM (Kohonen 1982)', suiteSOM],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -13271,9 +13918,314 @@ function suiteElasticNet(check) {
   check('ElasticNet：坐标下降目标单调不增', monoObj, `单调=${monoObj}`);
 }
 
+/* ============================================================
+ * 套件 55 · 快速傅里叶变换 FFT（Cooley & Tukey 1965）
+ * ============================================================ */
+function suiteFFT(check) {
+  const rng = mulberry32(7);
+  const n = 64;
+  const xr = Array.from({ length: n }, () => (rng() - 0.5) * 2);
+  const xi = Array.from({ length: n }, () => (rng() - 0.5) * 2);
+
+  // ① FFT ≡ 朴素 DFT
+  const F = fftRadix2(xr, xi);
+  const D = dftNaive(xr, xi);
+  let d1 = 0;
+  for (let k = 0; k < n; k++) d1 = Math.max(d1, Math.abs(F.re[k] - D.re[k]), Math.abs(F.im[k] - D.im[k]));
+  check('FFT：基-2 分治 ≡ 朴素 O(n²) DFT（<1e-10）', d1 < 1e-10, `maxAbs=${d1.toExponential(3)}`);
+
+  // ② 逆变换闭合
+  const rt = ifftRadix2(F.re, F.im);
+  let d2 = 0;
+  for (let t = 0; t < n; t++) d2 = Math.max(d2, Math.abs(rt.re[t] - xr[t]), Math.abs(rt.im[t] - xi[t]));
+  check('FFT：ifft(fft(x)) ≡ x（<1e-12）', d2 < 1e-12, `maxAbs=${d2.toExponential(3)}`);
+
+  // ③ Parseval 能量守恒
+  let eF = 0, eX = 0;
+  for (let k = 0; k < n; k++) eF += F.re[k] * F.re[k] + F.im[k] * F.im[k];
+  for (let t = 0; t < n; t++) eX += xr[t] * xr[t] + xi[t] * xi[t];
+  const par = Math.abs(eF - n * eX) / (n * eX);
+  check('FFT：Parseval Σ_k|X_k|² = n·Σ_t|x_t|²（<1e-12）', par < 1e-12, `relErr=${par.toExponential(3)}`);
+
+  // ④ 线性卷积定理
+  const a = [1, 2, 3, 4], b = [5, 6, 7];
+  const cl = convolveLinear(a, b), cn = convolveNaive(a, b);
+  let d4 = 0;
+  for (let i = 0; i < cl.length; i++) d4 = Math.max(d4, Math.abs(cl[i] - cn[i]));
+  check('FFT：线性卷积（零填充）≡ 朴素卷积（<1e-10）', d4 < 1e-10, `maxAbs=${d4.toExponential(3)}`);
+
+  // ⑤ 线性性
+  const yr = Array.from({ length: n }, () => (rng() - 0.5) * 2);
+  const yi = Array.from({ length: n }, () => (rng() - 0.5) * 2);
+  const alpha = 1.7, beta = -0.6;
+  const cr = new Array(n), ci = new Array(n);
+  for (let t = 0; t < n; t++) { cr[t] = alpha * xr[t] + beta * yr[t]; ci[t] = alpha * xi[t] + beta * yi[t]; }
+  const FC = fftRadix2(cr, ci), FX = fftRadix2(xr, xi), FY = fftRadix2(yr, yi);
+  let d5 = 0;
+  for (let k = 0; k < n; k++) {
+    d5 = Math.max(d5,
+      Math.abs(FC.re[k] - (alpha * FX.re[k] + beta * FY.re[k])),
+      Math.abs(FC.im[k] - (alpha * FX.im[k] + beta * FY.im[k])));
+  }
+  check('FFT：线性性 fft(αx+βy) = α·fft(x)+β·fft(y)（<1e-12）', d5 < 1e-12, `maxAbs=${d5.toExponential(3)}`);
+
+  // ⑥ 圆周卷积定理
+  const p = [1, 0, 2, -1], q = [3, 1, 0, 0.5];
+  const cc = circularConvolve(p, q);
+  let d6 = 0;
+  for (let t = 0; t < 4; t++) {
+    let s = 0;
+    for (let k = 0; k < 4; k++) s += p[k] * q[(t - k + 4) % 4];
+    d6 = Math.max(d6, Math.abs(cc[t] - s));
+  }
+  check('FFT：圆周卷积定理 ifft(fft(a)·fft(b)) ≡ Σa_k·b_{t−k}（<1e-10）', d6 < 1e-10, `maxAbs=${d6.toExponential(3)}`);
+}
+
+/* ============================================================
+ * 套件 56 · 常微分方程求解 ODE（RK4 / Dormand–Prince RK45）
+ * ============================================================ */
+function suiteODE(check) {
+  // ① RK4 单步 ≡ 线性系统 4 阶 Taylor 展开（精确代数恒等式）
+  const A = [[0.3, -1.2], [0.8, 0.5]];
+  const f = (t, y) => [A[0][0] * y[0] + A[0][1] * y[1], A[1][0] * y[0] + A[1][1] * y[1]];
+  const h = 0.1, y0 = [1, -0.5];
+  const got = rk4Step(f, 0, y0, h);
+  const mm = (X, Y) => X.map((r) => Y[0].map((_, j) => r.reduce((s, v, k) => s + v * Y[k][j], 0)));
+  let M = [[1, 0], [0, 1]], Ak = [[1, 0], [0, 1]], fact = 1, hp = 1;
+  for (let k = 1; k <= 4; k++) {
+    Ak = mm(Ak, A); fact *= k; hp *= h;
+    M = M.map((r, i) => r.map((v, j) => v + (hp / fact) * Ak[i][j]));
+  }
+  const tay = M.map((r) => r[0] * y0[0] + r[1] * y0[1]);
+  let d1 = 0;
+  for (let i = 0; i < 2; i++) d1 = Math.max(d1, Math.abs(got[i] - tay[i]));
+  check('ODE：RK4 单步 ≡ 线性系统 4 阶 Taylor 展开（<1e-12）', d1 < 1e-12, `maxAbs=${d1.toExponential(3)}`);
+
+  // ② 标量 y'=λy 闭式
+  const lam = -1.7, hs = 0.2;
+  const sc = rk4Step((t, y) => [lam * y[0]], 0, [1], hs)[0];
+  const exact = 1 + hs * lam + hs * hs * lam ** 2 / 2 + hs ** 3 * lam ** 3 / 6 + hs ** 4 * lam ** 4 / 24;
+  const d2 = Math.abs(sc - exact);
+  check('ODE：标量 y’=λy 的 RK4 单步 ≡ 4 阶 Taylor 闭式（<1e-14）', d2 < 1e-14, `maxAbs=${d2.toExponential(3)}`);
+
+  // ③ 全局收敛阶 4（误差比 → 16）
+  const g1 = solveODE((t, y) => [y[0]], 0, [1], 1, { h: 0.1 });
+  const g2 = solveODE((t, y) => [y[0]], 0, [1], 1, { h: 0.05 });
+  const e1 = Math.abs(g1.y[g1.y.length - 1][0] - Math.E);
+  const e2 = Math.abs(g2.y[g2.y.length - 1][0] - Math.E);
+  const order = Math.log2(e1 / e2);
+  check('ODE：全局收敛阶 4（步长折半 ⇒ 误差比→16，观测阶∈[3.5,4.5]）',
+    order > 3.5 && order < 4.5, `观测阶=${order.toFixed(3)}，误差比=${(e1 / e2).toFixed(2)}`);
+
+  // ④ 谐振荡器能量漂移：RK4 ≪ Euler
+  const ho = (t, y) => [y[1], -y[0]];
+  const energy = (y) => 0.5 * (y[0] * y[0] + y[1] * y[1]);
+  const rk = solveODE(ho, 0, [1, 0], 20, { h: 0.01 });
+  const eu = solveODE(ho, 0, [1, 0], 20, { h: 0.01, method: 'euler' });
+  const dRk = Math.abs(energy(rk.y[rk.y.length - 1]) - 0.5);
+  const dEu = Math.abs(energy(eu.y[eu.y.length - 1]) - 0.5);
+  check('ODE：谐振荡器 RK4 能量漂移 ≪ Euler（四阶 vs 一阶稳定性）',
+    dRk < 1e-6 && dRk * 1000 < dEu, `RK4=${dRk.toExponential(2)}，Euler=${dEu.toExponential(2)}`);
+
+  // ⑤a RK45 系数表结构恒等式（精确代数，钉住嵌入式对）
+  const T = dpTableau();
+  const sumB5 = T.B5.reduce((a, b) => a + b, 0);
+  const sumB4 = T.B4.reduce((a, b) => a + b, 0);
+  let rowOk = true;
+  for (let s = 0; s < T.C.length; s++) {
+    const rowSum = T.A[s].reduce((a, b) => a + b, 0);
+    if (Math.abs(rowSum - T.C[s]) > 1e-14) rowOk = false;
+  }
+  check('ODE：RK45 系数表结构恒等式 ΣB5=ΣB4=1 且 Σ_jA[s][j]=C[s]（精确）',
+    Math.abs(sumB5 - 1) < 1e-14 && Math.abs(sumB4 - 1) < 1e-14 && rowOk,
+    `ΣB5=${sumB5.toFixed(12)}，ΣB4=${sumB4.toFixed(12)}，阶段一致=${rowOk}`);
+
+  // ⑤b RK45 自适应：非自治 ODE y'=t·y（y=e^{t²/2}）末点精度 + 步数效率
+  const r45 = solveODERK45((t, y) => [t * y[0]], 0, [1], 2, { tol: 1e-8, h0: 0.1 });
+  const err45 = Math.abs(r45.y[r45.y.length - 1][0] - Math.exp(2)) / Math.exp(2);
+  check('ODE：RK45 自适应（非自治）末点相对误差 ≤ tol 且步数 ≪ 固定细步（2000）',
+    err45 < 1e-8 && r45.steps < 2000, `relErr=${err45.toExponential(2)}，步数=${r45.steps}`);
+
+  // ⑥ 定步长网格闭式
+  const s6 = solveODE((t, y) => [y[0]], 0.3, [1], 1.0, { h: 0.1 });
+  const gridOk = s6.steps === Math.round((1.0 - 0.3) / 0.1)
+    && s6.t.length === s6.steps + 1
+    && Math.abs(s6.t[s6.t.length - 1] - 1.0) < 1e-12;
+  check('ODE：定步长网格闭式 t_i = t0+i·h（步数与末点精确）', gridOk,
+    `步数=${s6.steps}，长度=${s6.t.length}，末点=${s6.t[s6.t.length - 1]}`);
+
+  // ⑦ 步数语义自洽（跨 solveODE / solveODERK45 同族 API 口径统一）
+  //    steps 恒等于「接受步数」= t.length − 1 ⇒ y[steps] 必然存在且是末点；
+  //    attempts 记录含被拒步的尝试次数，必 ≥ steps（拒绝步必然发生 ⇒ 严格大于）。
+  const sem = r45.steps === r45.t.length - 1
+    && r45.steps === r45.y.length - 1
+    && r45.y[r45.steps] !== undefined
+    && r45.attempts >= r45.steps
+    && s6.steps === s6.t.length - 1
+    && s6.steps === s6.y.length - 1;
+  check('ODE：步数语义自洽（steps = 接受步数 = t.length−1，attempts ≥ steps）', sem,
+    `RK45: steps=${r45.steps}/t.len=${r45.t.length}/attempts=${r45.attempts}；定步长: steps=${s6.steps}/t.len=${s6.t.length}`);
+}
+
+/* ============================================================
+ * 套件 57 · 蒙特卡洛强化学习（Sutton & Barto 第 5 章）
+ * ============================================================ */
+function suiteMonteCarlo(check) {
+  const { P, R } = chainMDP({ n: 6, gamma: 0.9 });
+  const viR = valueIteration(P, R, 0.9);
+  const Qref = qFromV(P, R, 0.9, viR.V);
+
+  // ① 回报恒等式：G_t = Σ γ^k·r_{t+k}
+  const rew = [1, 0.5, -0.25, 2, 0];
+  let d1 = 0;
+  for (let t = 0; t < rew.length; t++) {
+    let g = 0, disc = 1;
+    for (let k = t; k < rew.length; k++) { g += disc * rew[k]; disc *= 0.9; }
+    d1 = Math.max(d1, Math.abs(mcReturn(rew, 0.9, t) - g));
+  }
+  check('MC：回报恒等式 G_t=Σγ^k·r_{t+k} ≡ 逐项展开（0）', d1 === 0, `maxDiff=${d1}`);
+
+  // ② 确定性轨迹：首访 ≡ 每访
+  const rng2 = mulberry32(5);
+  const pi = new Array(6).fill(1); // 固定策略：恒向右
+  const eps2 = [];
+  for (let i = 0; i < 400; i++) {
+    eps2.push(mcEpisode(P, R, { gamma: 0.9, policy: pi, rng: rng2, maxSteps: 50, startState: Math.floor(rng2() * 6) }));
+  }
+  const Vf = mcPredictionFirstVisit(eps2, 0.9, { nStates: 6 });
+  const Ve = mcPredictionEveryVisit(eps2, 0.9, { nStates: 6 });
+  let d2 = 0;
+  for (let s = 0; s < 6; s++) d2 = Math.max(d2, Math.abs(Vf[s] - Ve[s]));
+  check('MC：确定性轨迹首访 ≡ 每访（0）', d2 === 0, `maxDiff=${d2}`);
+
+  // ②b 随机策略轨迹（π=[0.7,0.3]）：首访 ≠ 每访——首访过滤器必须真实生效
+  const rngB = mulberry32(11);
+  const probs = Array.from({ length: 6 }, () => [0.7, 0.3]);
+  const epsB = [];
+  for (let i = 0; i < 2000; i++) {
+    epsB.push(mcEpisode(P, R, { gamma: 0.9, probs, rng: rngB, maxSteps: 60 }));
+  }
+  const VfB = mcPredictionFirstVisit(epsB, 0.9, { nStates: 6 });
+  const VeB = mcPredictionEveryVisit(epsB, 0.9, { nStates: 6 });
+  let d2b = 0;
+  for (let s = 0; s < 6; s++) d2b = Math.max(d2b, Math.abs(VfB[s] - VeB[s]));
+  check('MC：随机策略轨迹首访 ≠ 每访（首访过滤器真实生效）', d2b > 1e-3,
+    `max|首访−每访|=${d2b.toFixed(4)}`);
+
+  // ③ MC 预测 ≡ 策略评估（两算法互证）
+  const pe = policyEvaluation(P, R, 0.9, pi);
+  let d3 = 0;
+  for (let s = 0; s < 6; s++) d3 = Math.max(d3, Math.abs(Vf[s] - pe.V[s]));
+  check('MC：首访预测 ≡ policyEvaluation(P,R,γ,π)（<1e-9）', d3 < 1e-9, `maxDiff=${d3.toExponential(3)}`);
+
+  // ④ GLIE 控制收敛
+  const res4 = mcControl(P, R, {
+    gamma: 0.9, epsStart: 1, epsEnd: 0, epsDecayFrac: 0.5, episodes: 8000, maxSteps: 100, seed: 3,
+  });
+  let qd = 0;
+  for (let s = 0; s < 6; s++) for (let a = 0; a < 2; a++) qd = Math.max(qd, Math.abs(res4.Q[s][a] - Qref[s][a]));
+  const polOk = res4.policy.every((p, s) => p === viR.policy[s]);
+  check('MC：GLIE 控制 Q ≈ qFromV(V*) 且贪心策略 ≡ 最优（<0.3）', qd < 0.3 && polOk,
+    `max|ΔQ|=${qd.toFixed(4)}，策略一致=${polOk}`);
+
+  // ⑤ Q* 是 ε=0 贪心更新的不动点（精确）
+  const res5 = mcControl(P, R, { gamma: 0.9, eps: 0, episodes: 300, maxSteps: 100, seed: 3, Q0: Qref });
+  let d5 = 0;
+  for (let s = 0; s < 6; s++) for (let a = 0; a < 2; a++) d5 = Math.max(d5, Math.abs(res5.Q[s][a] - Qref[s][a]));
+  check('MC：Q* 是 ε=0 贪心 MC 更新的不动点（<1e-12）', d5 < 1e-12, `max|ΔQ|=${d5.toExponential(3)}`);
+
+  // ⑥ 同 seed 一致
+  const r1 = mcControl(P, R, { episodes: 500, seed: 9 });
+  const r2 = mcControl(P, R, { episodes: 500, seed: 9 });
+  let d6 = 0;
+  for (let s = 0; s < 6; s++) for (let a = 0; a < 2; a++) d6 = Math.max(d6, Math.abs(r1.Q[s][a] - r2.Q[s][a]));
+  check('MC：同 seed 两次训练 Q 逐位一致', d6 === 0, `maxDiff=${d6}`);
+}
+
+/* ============================================================
+ * 套件 58 · 自组织映射 SOM（Kohonen 1982）
+ * ============================================================ */
+function suiteSOM(check) {
+  const rng = mulberry32(3);
+  const X1 = Array.from({ length: 80 }, (_, i) => [i / 79]);
+
+  // ① BMU 恒等式：直接距离 vs 展开式 ‖x‖²−2x·m+‖m‖²
+  const m1 = somBatchTrain(X1, { rows: 1, cols: 12, sigma0: 6, iters: 60, seed: 4 });
+  let mism = 0;
+  for (const x of X1) {
+    const b = somBMU(m1.codebook, x);
+    let bx = Infinity, br = 0, bc = 0;
+    for (let r = 0; r < m1.codebook.length; r++) {
+      for (let c = 0; c < m1.codebook[0].length; c++) {
+        let d2 = 0;
+        for (let k = 0; k < x.length; k++) {
+          d2 += x[k] * x[k] - 2 * x[k] * m1.codebook[r][c][k] + m1.codebook[r][c][k] * m1.codebook[r][c][k];
+        }
+        if (d2 < bx) { bx = d2; br = r; bc = c; }
+      }
+    }
+    if (br !== b.r || bc !== b.c) mism++;
+  }
+  check('SOM：BMU ≡ 展开式暴力 argmin（‖x‖²−2x·m+‖m‖² 口径）', mism === 0, `不一致=${mism}`);
+
+  // ② 邻域核闭式
+  const h0 = somNeighborhood(0, 2);
+  const h4 = somNeighborhood(4, 2);
+  const hBig = somNeighborhood(4, 1e10);
+  check('SOM：邻域核 h=exp(−d²/2σ²)，d=0⇒1、σ→∞⇒1（精确）',
+    h0 === 1 && Math.abs(h4 - Math.exp(-0.5)) < 1e-15 && Math.abs(hBig - 1) < 1e-15,
+    `h(0)=${h0}，h(4,2)=${h4.toFixed(12)}，h(4,1e10)=${hBig}`);
+
+  // ③ 批量 SOM 量化误差下降（包络口径）
+  const qes = m1.quantErrors;
+  let envelope = true;
+  for (let i = 1; i < qes.length; i++) if (qes[i] > qes[i - 1] * 1.1 + 1e-15) envelope = false;
+  const improved = qes[qes.length - 1] < qes[0] * 0.05;
+  check('SOM：批量训练量化误差逐扫描下降（包络，末值<初值 5%）', envelope && improved,
+    `QE ${qes[0].toFixed(5)} → ${qes[qes.length - 1].toFixed(5)}，包络=${envelope}`);
+
+  // ④ 拓扑保持：1D 链码本单调排列（方向不限）
+  const vals = m1.codebook[0].map((v) => v[0]);
+  let vu = 0, vd = 0;
+  for (let c = 1; c < vals.length; c++) {
+    if (vals[c] < vals[c - 1] - 1e-9) vu++;
+    if (vals[c] > vals[c - 1] + 1e-9) vd++;
+  }
+  check('SOM：1D 链码本按格点序单调排列（拓扑保持）', Math.min(vu, vd) === 0,
+    `升序乱序=${vu}，降序乱序=${vd}`);
+
+  // ⑤ σ→∞ 极限：h≡1 ⇒ 码本离散度单步精确收缩为 (1−α) 倍
+  const cb = Array.from({ length: 2 }, () => Array.from({ length: 3 }, () => [rng() * 2 - 1, rng() * 2 - 1]));
+  const spread = (c) => {
+    let m = 0;
+    for (let i = 0; i < c.length; i++) {
+      for (let j = 0; j < c[0].length; j++) {
+        for (let k = 0; k < c[0][0].length; k++) m = Math.max(m, Math.abs(c[i][j][k] - c[0][0][k]));
+      }
+    }
+    return m;
+  };
+  const before = spread(cb);
+  const after = spread(somStep(cb, [0.7, -0.3], { r: 0, c: 1 }, 0.3, 1e10));
+  const d5 = Math.abs(after - 0.7 * before) / before;
+  check('SOM：σ→∞ ⇒ 码本离散度单步精确收缩为 (1−α) 倍（<1e-12）', d5 < 1e-12,
+    `relErr=${d5.toExponential(3)}`);
+
+  // ⑥ 同 seed 一致
+  const s1 = somTrain(X1, { rows: 2, cols: 5, iters: 400, seed: 8 });
+  const s2 = somTrain(X1, { rows: 2, cols: 5, iters: 400, seed: 8 });
+  let d6 = 0;
+  for (let r = 0; r < 2; r++) {
+    for (let c = 0; c < 5; c++) {
+      for (let k = 0; k < 1; k++) d6 = Math.max(d6, Math.abs(s1.codebook[r][c][k] - s2.codebook[r][c][k]));
+    }
+  }
+  check('SOM：同 seed 两次训练码本逐位一致', d6 === 0, `maxDiff=${d6}`);
+}
+
 const colMean = mean;
 /* ───── 挂载全局命名空间 ───── */
-const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, randomForestTrain, randomForestPredict, rfSingleTree, perceptronStep, perceptronTrain, perceptronPredict, icaFit, icaTransform, ccaFit, ccaProject, hierarchicalCluster, hierarchicalCophenetic, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, gprKernelMatrix, gprFit, gprPredict, gprPriorVariance, gprInverseK, gprHyperGradAnalytic, gprHyperGradNumeric, regressionTreeFit, regressionTreePredict, regressionTreePredictAll, gbdtFit, gbdtPredict, gbdtStagedPredict, pearsonCorr, kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate, innovationAutocorr, empiricalVariance, rtsSmooth, rtsCovarianceGapEigen, rtsRMSE, rtsZeros, effectiveSampleSize, systematicResample, particleFilter, pfCompareWithKalman, metropolisHastings, mhAcceptProb, detailedBalanceResidual, importanceSampling, mcmcEmpiricalMoments, marginal, nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData, pageRank, pagerankExact, pagerankStationary, pagerankSum, gibbsBivariateGaussian, gibbsSampler, gibbsMarginal, gibbsCovariance, gibbsConditionalCheck, gibbsDiscrete, gibbsConvergence, gmmFit, gmmPredict, ldaFit, ldaProject, nbFit, nbPredict, qdaFit, qdaDiscriminant, qdaPredict, lassoFit, lassoPath, lassoPredict, meanShiftKDE, meanShiftStep, meanShiftMode, meanShiftCluster, meanShiftGradientCheck, softmaxForward, softmaxGrad, softmaxGradientCheck, softmaxRegression, elasticNetFit, elasticNetPredict, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, GRU, gruGradientCheck, trainGRU, gruStepClosed, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, batchNormForward, batchNormBackward, batchNormInfer, batchNormGradCheck, layerNorm2d, layerNormBackward, layerNormGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, convOutputSize, im2col, conv2dForward, conv2dBackward, maxPool2d, maxPoolBackward, conv2dNaive, convGradientCheck, randomConvTensors, vaeMake, vaeEncode, vaeReparametrize, vaeDecode, vaeKL, vaeKLMonteCarlo, vaeSampleEps, vaeForward, vaeBackward, vaeGradientCheck, cosineSim, sigmoidNegIdentity, sgnsLoss, sgnsGradients, sgnsLossReference, sgnsGradientCheck, trainSGNS, wordSimilarity, makeToyCorpus, ResidualBlock, ResNet, resnetAccuracy, trainResNet, residualIdentityCheck, residualJacobianIdentity, residualGradientCheck, residualGradientHighway, residualVsPlain, rbmTrain, rbmHiddenProbs, rbmReconstruct, rbmFreeEnergy, hopfieldTrain, hopfieldEnergy, hopfieldUpdateUnit, hopfieldRecall, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, sarsaEpsilonProbs, epsilonGreedyAction, sarsaStep, sarsaTraceSet, sarsaTraceDecay, sarsa, sarsaLambda, sarsaBellmanResidual, expectedValue, expectedSarsaStep, expectedSarsa, expectedBellmanResidual, runAllInvariants };
+const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, nextPow2, fftRadix2, fft, ifftRadix2, dftNaive, circularConvolve, convolveLinear, convolveNaive, eulerStep, midpointStep, rk4Step, solveODE, dpTableau, solveODERK45, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, randomForestTrain, randomForestPredict, rfSingleTree, perceptronStep, perceptronTrain, perceptronPredict, icaFit, icaTransform, ccaFit, ccaProject, hierarchicalCluster, hierarchicalCophenetic, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, gprKernelMatrix, gprFit, gprPredict, gprPriorVariance, gprInverseK, gprHyperGradAnalytic, gprHyperGradNumeric, regressionTreeFit, regressionTreePredict, regressionTreePredictAll, gbdtFit, gbdtPredict, gbdtStagedPredict, pearsonCorr, kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate, innovationAutocorr, empiricalVariance, rtsSmooth, rtsCovarianceGapEigen, rtsRMSE, rtsZeros, effectiveSampleSize, systematicResample, particleFilter, pfCompareWithKalman, metropolisHastings, mhAcceptProb, detailedBalanceResidual, importanceSampling, mcmcEmpiricalMoments, marginal, nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData, pageRank, pagerankExact, pagerankStationary, pagerankSum, gibbsBivariateGaussian, gibbsSampler, gibbsMarginal, gibbsCovariance, gibbsConditionalCheck, gibbsDiscrete, gibbsConvergence, gmmFit, gmmPredict, ldaFit, ldaProject, nbFit, nbPredict, qdaFit, qdaDiscriminant, qdaPredict, lassoFit, lassoPath, lassoPredict, meanShiftKDE, meanShiftStep, meanShiftMode, meanShiftCluster, meanShiftGradientCheck, softmaxForward, softmaxGrad, softmaxGradientCheck, softmaxRegression, elasticNetFit, elasticNetPredict, somNeighborhood, somBMU, somQuantError, somStep, somTrain, somLabels, somBatchTrain, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, GRU, gruGradientCheck, trainGRU, gruStepClosed, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, batchNormForward, batchNormBackward, batchNormInfer, batchNormGradCheck, layerNorm2d, layerNormBackward, layerNormGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, convOutputSize, im2col, conv2dForward, conv2dBackward, maxPool2d, maxPoolBackward, conv2dNaive, convGradientCheck, randomConvTensors, vaeMake, vaeEncode, vaeReparametrize, vaeDecode, vaeKL, vaeKLMonteCarlo, vaeSampleEps, vaeForward, vaeBackward, vaeGradientCheck, cosineSim, sigmoidNegIdentity, sgnsLoss, sgnsGradients, sgnsLossReference, sgnsGradientCheck, trainSGNS, wordSimilarity, makeToyCorpus, ResidualBlock, ResNet, resnetAccuracy, trainResNet, residualIdentityCheck, residualJacobianIdentity, residualGradientCheck, residualGradientHighway, residualVsPlain, rbmTrain, rbmHiddenProbs, rbmReconstruct, rbmFreeEnergy, hopfieldTrain, hopfieldEnergy, hopfieldUpdateUnit, hopfieldRecall, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, sarsaEpsilonProbs, epsilonGreedyAction, sarsaStep, sarsaTraceSet, sarsaTraceDecay, sarsa, sarsaLambda, sarsaBellmanResidual, expectedValue, expectedSarsaStep, expectedSarsa, expectedBellmanResidual, mcReturn, mcEpisode, mcPredictionFirstVisit, mcPredictionEveryVisit, mcControl, runAllInvariants };
 if (typeof globalThis !== 'undefined') {
   globalThis.FlagshipAI = Object.assign({}, globalThis.FlagshipAI, __FlagshipAI__);
 }
@@ -14717,6 +15669,215 @@ if (typeof globalThis !== 'undefined') {
       `<span style="font-family:monospace">非零 ${model.activeSet.length}/${d} · RMSE=${Math.sqrt(sse / y.length).toFixed(3)} · 黑虚线=真实系数</span>`;
   }
 
+  /* ───────── v1.12 新增演示 ───────── */
+  let fftSeed = 42;
+  function drawFFT() {
+    const { mulberry32, gaussianSample, fft, dftNaive, convolveLinear, convolveNaive } = A;
+    const rng = mulberry32(fftSeed);
+    const n = 128;
+    const sig = [];
+    for (let t = 0; t < n; t++) {
+      const u = t / n;
+      sig.push(0.70 * Math.sin(2 * Math.PI * 5 * u)
+        + 0.45 * Math.sin(2 * Math.PI * 13 * u + 0.6)
+        + 0.25 * Math.sin(2 * Math.PI * 29 * u + 1.2)
+        + 0.05 * gaussianSample(rng, 0, 1));
+    }
+    const F = fft(sig);
+    const mag = F.re.map((r, k) => Math.hypot(r, F.im[k]));
+    const naive = dftNaive(sig, new Array(n).fill(0));
+    let dftErr = 0;
+    for (let k = 0; k < n; k++) dftErr = Math.max(dftErr, Math.abs(mag[k] - Math.hypot(naive.re[k], naive.im[k])));
+    const ker = [0.10, 0.15, 0.20, 0.20, 0.20, 0.15, 0.10];
+    const conv = convolveLinear(sig, ker);
+    const convN = convolveNaive(sig, ker);
+    let convErr = 0;
+    for (let i = 0; i < conv.length; i++) convErr = Math.max(convErr, Math.abs(conv[i] - convN[i]));
+
+    let amp = 0; for (let i = 0; i < sig.length; i++) amp = Math.max(amp, Math.abs(sig[i]));
+    amp = (amp * 1.15) || 1;
+    const half = n >> 1;
+    let magMax = 0; for (let k = 0; k <= half; k++) magMax = Math.max(magMax, mag[k]);
+    magMax = magMax || 1;
+    const px = (i, len) => 30 + (i / (len - 1)) * 410;
+    const py = (v) => 62 - (v / amp) * 38;
+    const pyB = (v) => 285 - (v / magMax) * 118;
+
+    let svg = `<line x1="30" y1="62" x2="440" y2="62" stroke="#e6e9f2"/>`;
+    svg += `<polyline fill="none" stroke="#b0b8cc" stroke-width="1.4" points="`
+      + sig.map((v, i) => `${px(i, n).toFixed(1)},${py(v).toFixed(1)}`).join(' ') + '"/>';
+    svg += `<polyline fill="none" stroke="#2980b9" stroke-width="2" points="`
+      + conv.map((v, i) => `${px(i, conv.length).toFixed(1)},${py(v).toFixed(1)}`).join(' ') + '"/>';
+    // 频谱柱
+    const bw = 410 / (half + 1);
+    for (let k = 0; k <= half; k++) {
+      const h = magMax > 0 ? (mag[k] / magMax) * 118 : 0;
+      svg += `<rect x="${(30 + k * bw).toFixed(1)}" y="${(285 - h).toFixed(1)}" width="${(bw - 0.6).toFixed(1)}" height="${h.toFixed(1)}" fill="#7a3bfd" fill-opacity="0.75"/>`;
+    }
+    // 峰值标注
+    const peaks = [];
+    for (let k = 1; k < half; k++) if (mag[k] > mag[k - 1] && mag[k] > mag[k + 1] && mag[k] > magMax * 0.12) peaks.push(k);
+    peaks.sort((a, b) => mag[b] - mag[a]);
+    const topPeaks = peaks.slice(0, 3).sort((a, b) => a - b);
+    for (const k of topPeaks) {
+      svg += `<circle cx="${(30 + k * bw + bw / 2).toFixed(1)}" cy="${(285 - (mag[k] / magMax) * 118).toFixed(1)}" r="3" fill="#e67e22"/>`;
+      svg += `<text x="${(30 + k * bw + bw / 2).toFixed(1)}" y="178" font-size="9" text-anchor="middle" fill="#e67e22" font-family="monospace">k=${k}</text>`;
+    }
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">时域 x[t] / 与卷积核卷积后</text>`;
+    svg += `<text x="30" y="168" font-size="10" fill="#5b6478" font-family="monospace">幅度谱 |X_k|</text>`;
+    $('svg-fft').innerHTML = svg;
+    $('legend-fft').innerHTML =
+      `<span><i style="background:#b0b8cc"></i>原信号</span><span><i style="background:#2980b9"></i>线性卷积</span><span><i style="background:#7a3bfd"></i>|X_k|</span><span><i style="background:#e67e22"></i>主峰</span>` +
+      `<span style="font-family:monospace">n=${n} · FFT≡DFT err=${dftErr.toExponential(2)} · 卷积 err=${convErr.toExponential(2)}</span>`;
+  }
+
+  let odeSeed = 42;
+  function drawODE() {
+    const { solveODE, solveODERK45 } = A;
+    const f = (t, y) => [-y[0]];
+    const t0 = 0, t1 = 6, y0 = [1];
+    const h = 0.04 + (odeSeed % 7) * 0.005;
+    const eul = solveODE(f, t0, y0, t1, { h, method: 'euler' });
+    const rk4 = solveODE(f, t0, y0, t1, { h, method: 'rk4' });
+    const dp = solveODERK45(f, t0, y0, t1, { tol: 1e-10, h0: 0.1 });
+    const exact = (t) => Math.exp(-t);
+    const px = (t) => 30 + (t / t1) * 410;
+    const py = (v) => 118 - (v / 1.08) * 96;
+    const LO = -12, HI = 3;
+    const pyE = (e) => 285 - ((Math.max(LO, Math.min(HI, e)) - LO) / (HI - LO)) * 118;
+    const logRel = (arr, t) => {
+      let e = 0;
+      for (let i = 0; i < arr.t.length; i++) {
+        const ex = exact(arr.t[i]);
+        e = Math.max(e, Math.abs(arr.y[i][0] - ex) / ex);
+      }
+      return Math.log10(Math.max(e, 1e-16));
+    };
+    const eEul = logRel(eul), eRk4 = logRel(rk4), eDp = logRel(dp);
+    let svg = `<line x1="30" y1="118" x2="440" y2="118" stroke="#e6e9f2"/><line x1="30" y1="22" x2="30" y2="118" stroke="#e6e9f2"/>`;
+    svg += `<polyline fill="none" stroke="#b0b8cc" stroke-width="1.6" stroke-dasharray="5,4" points="`
+      + eul.t.map((t) => `${px(t).toFixed(1)},${py(exact(t)).toFixed(1)}`).join(' ') + '"/>';
+    svg += `<polyline fill="none" stroke="#e67e22" stroke-width="1.8" points="`
+      + eul.t.map((t, i) => `${px(t).toFixed(1)},${py(eul.y[i][0]).toFixed(1)}`).join(' ') + '"/>';
+    svg += `<polyline fill="none" stroke="#7a3bfd" stroke-width="2" points="`
+      + rk4.t.map((t, i) => `${px(t).toFixed(1)},${py(rk4.y[i][0]).toFixed(1)}`).join(' ') + '"/>';
+    svg += `<polyline fill="none" stroke="#16a085" stroke-width="2" points="`
+      + dp.t.map((t, i) => `${px(t).toFixed(1)},${py(dp.y[i][0]).toFixed(1)}`).join(' ') + '"/>';
+    // 误差面板
+    svg += `<line x1="30" y1="285" x2="440" y2="285" stroke="#e6e9f2"/>`;
+    for (const e of [0, -4, -8, -12]) {
+      const yy = pyE(e);
+      svg += `<line x1="30" y1="${yy.toFixed(1)}" x2="440" y2="${yy.toFixed(1)}" stroke="#f0f2f7"/>`;
+      svg += `<text x="28" y="${(yy + 3).toFixed(1)}" font-size="8" text-anchor="end" fill="#5b6478" font-family="monospace">1e${e}</text>`;
+    }
+    const curve = (arr, logv, col) => `<polyline fill="none" stroke="${col}" stroke-width="1.8" points="`
+      + arr.t.map((t, i) => `${px(t).toFixed(1)},${pyE(logv[i]).toFixed(1)}`).join(' ') + '"/>';
+    const lg = (arr) => arr.t.map((t, i) => Math.log10(Math.max(Math.abs(arr.y[i][0] - exact(t)) / exact(t), 1e-16)));
+    svg += curve(eul, lg(eul), '#e67e22');
+    svg += curve(rk4, lg(rk4), '#7a3bfd');
+    svg += curve(dp, lg(dp), '#16a085');
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">解 y′=−y（精确 e^{−t}）</text>`;
+    svg += `<text x="30" y="164" font-size="10" fill="#5b6478" font-family="monospace">相对误差（对数）</text>`;
+    $('svg-ode').innerHTML = svg;
+    $('legend-ode').innerHTML =
+      `<span><i style="background:#b0b8cc"></i>精确解</span><span><i style="background:#e67e22"></i>Euler</span>` +
+      `<span><i style="background:#7a3bfd"></i>RK4</span><span><i style="background:#16a085"></i>RK45</span>` +
+      `<span style="font-family:monospace">全程最大相对误差 log₁₀：Euler=${eEul.toFixed(2)} / RK4=${eRk4.toFixed(2)} / RK45=${eDp.toFixed(2)} · RK45 接受${dp.steps}步/尝试${dp.attempts}步</span>`;
+  }
+
+  let mcSeed = 42;
+  function drawMC() {
+    const { chainMDP, mcControl, valueIteration } = A;
+    const { P, R, S } = chainMDP({ n: 6, gamma: 0.9 });
+    const res = mcControl(P, R, {
+      gamma: 0.9, epsStart: 1, epsEnd: 0, epsDecayFrac: 0.5,
+      episodes: 1200, maxSteps: 30, seed: mcSeed,
+    });
+    const rets = res.episodeReturns, n = rets.length;
+    let rmin = Infinity, rmax = -Infinity;
+    for (const v of rets) { if (v < rmin) rmin = v; if (v > rmax) rmax = v; }
+    const pad = (rmax - rmin) * 0.1 || 1; rmin -= pad; rmax += pad;
+    const px = (i) => 30 + (i / (n - 1)) * 410;
+    const py = (v) => 20 + (1 - (v - rmin) / (rmax - rmin)) * 148;
+    let svg = `<line x1="30" y1="168" x2="440" y2="168" stroke="#e6e9f2"/>`;
+    let d = ''; for (let i = 0; i < n; i++) d += (i === 0 ? 'M' : 'L') + px(i).toFixed(1) + ',' + py(rets[i]).toFixed(1);
+    svg += `<path d="${d}" fill="none" stroke="#16a085" stroke-width="1" stroke-opacity="0.45"/>`;
+    const W = 60, sm = [];
+    for (let i = 0; i < n; i++) { let s = 0, c = 0; for (let k = Math.max(0, i - W + 1); k <= i; k++) { s += rets[k]; c++; } sm.push(s / c); }
+    let ds = ''; for (let i = 0; i < n; i++) ds += (i === 0 ? 'M' : 'L') + px(i).toFixed(1) + ',' + py(sm[i]).toFixed(1);
+    svg += `<path d="${ds}" fill="none" stroke="#e67e22" stroke-width="2"/>`;
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">回合回报（MC 高方差）</text>`;
+    // Q 表热力图
+    let qmin = Infinity, qmax = -Infinity;
+    for (let s = 0; s < S; s++) for (let a = 0; a < 2; a++) {
+      if (res.Q[s][a] < qmin) qmin = res.Q[s][a];
+      if (res.Q[s][a] > qmax) qmax = res.Q[s][a];
+    }
+    const cw = 78, ch = 13, x0 = 96, y0 = 196;
+    for (let s = 0; s < S; s++) {
+      svg += `<text x="86" y="${(y0 + s * ch + 10).toFixed(1)}" font-size="9" text-anchor="end" fill="#5b6478" font-family="monospace">s${s}</text>`;
+      for (let a = 0; a < 2; a++) {
+        const u = qmax > qmin ? (res.Q[s][a] - qmin) / (qmax - qmin) : 0;
+        const g = Math.round(230 - u * 175);
+        const col = `rgb(${g},${Math.round(90 + u * 60)},${Math.round(200 - u * 130)})`;
+        const x = x0 + a * cw;
+        svg += `<rect x="${x}" y="${(y0 + s * ch).toFixed(1)}" width="${cw - 3}" height="${ch - 2}" fill="${col}" rx="2"/>`;
+        svg += `<text x="${(x + (cw - 3) / 2).toFixed(1)}" y="${(y0 + s * ch + 9).toFixed(1)}" font-size="8" text-anchor="middle" fill="#fff" font-family="monospace">${res.Q[s][a].toFixed(3)}</text>`;
+        if (res.policy[s] === a) svg += `<rect x="${x}" y="${(y0 + s * ch).toFixed(1)}" width="${cw - 3}" height="${ch - 2}" fill="none" stroke="#1c2333" stroke-width="1.6" rx="2"/>`;
+      }
+    }
+    svg += `<text x="86" y="188" font-size="9" text-anchor="end" fill="#5b6478" font-family="monospace">a←</text>`;
+    svg += `<text x="${(x0 + cw / 2).toFixed(1)}" y="188" font-size="9" text-anchor="middle" fill="#5b6478" font-family="monospace">a=0</text>`;
+    svg += `<text x="${(x0 + cw * 1.5).toFixed(1)}" y="188" font-size="9" text-anchor="middle" fill="#5b6478" font-family="monospace">a=1</text>`;
+    const vi = valueIteration(P, R, 0.9);
+    const same = res.policy.every((p, s) => p === vi.policy[s]);
+    $('svg-mc').innerHTML = svg;
+    $('legend-mc').innerHTML =
+      `<span><i style="background:#16a085"></i>原始回报</span><span><i style="background:#e67e22"></i>滑动均值(60)</span>` +
+      `<span style="font-family:monospace">chainMDP(s=6) · GLIE ε:1→0 · 与最优策略一致=${same} · 黑框=贪心动作</span>`;
+  }
+
+  let somSeed = 42;
+  function drawSOM() {
+    const { mulberry32, gaussianSample, somBatchTrain, somBMU } = A;
+    const rng = mulberry32(somSeed);
+    const X = [];
+    for (let i = 0; i < 120; i++) {
+      const th = (2 * Math.PI * i) / 120;
+      const r = 80 + gaussianSample(rng, 0, 7);
+      X.push([230 + r * Math.cos(th), 100 + r * Math.sin(th)]);
+    }
+    const model = somBatchTrain(X, { rows: 1, cols: 12, iters: 150, seed: somSeed });
+    const cb = model.codebook[0];
+    const px = (v) => 30 + (v / 460) * 410;
+    const py = (v) => 12 + (v / 210) * 168;
+    let svg = '';
+    for (const p of X) svg += `<circle cx="${px(p[0]).toFixed(1)}" cy="${py(p[1]).toFixed(1)}" r="2.2" fill="#b0b8cc" fill-opacity="0.55"/>`;
+    for (let c = 0; c + 1 < cb.length; c++) {
+      svg += `<line x1="${px(cb[c][0]).toFixed(1)}" y1="${py(cb[c][1]).toFixed(1)}" x2="${px(cb[c + 1][0]).toFixed(1)}" y2="${py(cb[c + 1][1]).toFixed(1)}" stroke="#7a3bfd" stroke-width="1" stroke-opacity="0.5"/>`;
+    }
+    const cols = ['#e74c3c', '#2980b9', '#27ae60', '#e67e22', '#16a085', '#7a3bfd', '#d35400', '#16a085', '#2980b9', '#8e44ad', '#c0392b', '#2c3e50'];
+    for (let c = 0; c < cb.length; c++) {
+      svg += `<circle cx="${px(cb[c][0]).toFixed(1)}" cy="${py(cb[c][1]).toFixed(1)}" r="4.5" fill="${cols[c % cols.length]}" stroke="#fff" stroke-width="1"/>`;
+    }
+    // 量化误差曲线
+    const qe = model.quantErrors;
+    let qmin = Infinity, qmax = -Infinity;
+    for (const v of qe) { if (v < qmin) qmin = v; if (v > qmax) qmax = v; }
+    const qpad = (qmax - qmin) * 0.1 || 1; qmin -= qpad; qmax += qpad;
+    const qx = (i) => 30 + (i / Math.max(1, qe.length - 1)) * 410;
+    const qy = (v) => 285 - ((v - qmin) / (qmax - qmin)) * 78;
+    svg += `<line x1="30" y1="285" x2="440" y2="285" stroke="#e6e9f2"/>`;
+    let qd = ''; for (let i = 0; i < qe.length; i++) qd += (i === 0 ? 'M' : 'L') + qx(i).toFixed(1) + ',' + qy(qe[i]).toFixed(1);
+    svg += `<path d="${qd}" fill="none" stroke="#e74c3c" stroke-width="1.8"/>`;
+    svg += `<text x="30" y="200" font-size="10" fill="#5b6478" font-family="monospace">环形流形 + SOM 码本（1×12 链）</text>`;
+    svg += `<text x="30" y="212" font-size="10" fill="#5b6478" font-family="monospace">量化误差 QE 收敛</text>`;
+    $('svg-som').innerHTML = svg;
+    $('legend-som').innerHTML =
+      `<span><i style="background:#b0b8cc"></i>样本</span><span><i style="background:#7a3bfd"></i>码本邻接</span>` +
+      `<span style="font-family:monospace">1×12 格 · QE(RMSE) ${Math.sqrt(qe[0]).toFixed(2)} → ${Math.sqrt(qe[qe.length - 1]).toFixed(2)} · 样本 120</span>`;
+  }
+
   $('btn-qda').addEventListener('click', () => { qdaSeed = (qdaSeed * 37 + 11) % 100000; drawQDA(); });
   $('btn-lasso').addEventListener('click', () => { lassoSeed = (lassoSeed * 41 + 9) % 100000; drawLasso(); });
   $('btn-rbm').addEventListener('click', () => { rbmSeed = (rbmSeed * 29 + 13) % 100000; drawRBM(); });
@@ -14730,6 +15891,10 @@ if (typeof globalThis !== 'undefined') {
   $('btn-softmax').addEventListener('click', () => { softmaxSeed = (softmaxSeed * 29 + 13) % 100000; drawSoftmax(); });
   $('btn-expsarsa').addEventListener('click', () => { expSarsaSeed = (expSarsaSeed * 31 + 17) % 100000; drawExpSarsa(); });
   $('btn-elastic').addEventListener('click', () => { enSeed = (enSeed * 41 + 9) % 100000; drawElasticNet(); });
+  $('btn-fft').addEventListener('click', () => { fftSeed = (fftSeed * 37 + 11) % 100000; drawFFT(); });
+  $('btn-ode').addEventListener('click', () => { odeSeed = (odeSeed * 41 + 9) % 100000; drawODE(); });
+  $('btn-mc').addEventListener('click', () => { mcSeed = (mcSeed * 29 + 13) % 100000; drawMC(); });
+  $('btn-som').addEventListener('click', () => { somSeed = (somSeed * 31 + 17) % 100000; drawSOM(); });
 
   $('btn-perc').addEventListener('click', () => { percSeed = (percSeed * 31 + 17) % 100000; drawPerc(); });
   $('btn-ica').addEventListener('click', () => { icaSeed = (icaSeed * 37 + 11) % 100000; drawICA(); });
@@ -14786,6 +15951,10 @@ if (typeof globalThis !== 'undefined') {
   drawSoftmax();
   drawExpSarsa();
   drawElasticNet();
+  drawFFT();
+  drawODE();
+  drawMC();
+  drawSOM();
 })();
 </script>
 </body>

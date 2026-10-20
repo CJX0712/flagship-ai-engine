@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">54 组套件 · 324 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">58 组套件 · 350 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -477,6 +477,46 @@
     </div>
   </div>
 
+  <h2>v1.12 新增算法 <span class="tag">FFT · ODE 数值积分 · Monte Carlo RL · 自组织映射 SOM · 均由本页引擎实时求解</span></h2>
+  <div class="demos">
+    <div class="card">
+      <div class="demo-head">
+        <strong>快速傅里叶变换 FFT</strong>
+        <button id="btn-fft">重新生成</button>
+      </div>
+      <div class="desc">Cooley &amp; Tukey 1965 · 基-2 分治 O(n log n) 击败 O(n²) DFT：X_k=Σ_t x_t·e^{−2πikt/n}；解析 DFT 与 FFT 逐分量一致</div>
+      <svg id="svg-fft" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-fft"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>常微分方程数值积分</strong>
+        <button id="btn-ode">重新积分</button>
+      </div>
+      <div class="desc">Runge–Kutta 4 · Euler · Dormand–Prince RK5(4) 自适应；y′=−y 指数衰减：RK4 全程相对误差比 Euler 小 6 个数量级</div>
+      <svg id="svg-ode" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-ode"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>蒙特卡洛强化学习</strong>
+        <button id="btn-mc">重新训练</button>
+      </div>
+      <div class="desc">Sutton &amp; Barto §5 · 首访/每访预测 + MC 控制（GLIE 递减 ε）：Q̂ 为回报均值估计，与最优值迭代策略一致</div>
+      <svg id="svg-mc" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-mc"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>自组织映射 SOM</strong>
+        <button id="btn-som">重新训练</button>
+      </div>
+      <div class="desc">Kohonen 1982 · 最佳匹配单元 + 指数衰减邻域核：码本把高维流形自组织为拓扑有序的低维格点</div>
+      <svg id="svg-som" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-som"></div>
+    </div>
+  </div>
+
   <div class="refs">
     站在巨人肩上：<code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
     <code>Bishop · PRML</code><code>Hastie et al. · ESL</code><code>Vaswani et al. 2017 · Attention Is All You Need</code>
@@ -508,6 +548,8 @@
     <code>Hopfield 1982 · 联想记忆</code><code>Amit et al. 1985 · 容量 0.138n</code>
     <code>Cho et al. 2014 · GRU</code><code>Bishop 2006 · Softmax 回归</code>
     <code>van Seijen et al. 2009 · Expected SARSA</code><code>Zou &amp; Hastie 2005 · Elastic Net</code>
+    <code>Cooley &amp; Tukey 1965 · FFT</code><code>Dormand &amp; Prince 1980 · RK5(4)</code>
+    <code>Sutton &amp; Barto §5 · Monte Carlo RL</code><code>Kohonen 1982 · SOM</code>
   </div>
 
   <footer>
@@ -1956,6 +1998,215 @@
       `<span style="font-family:monospace">非零 ${model.activeSet.length}/${d} · RMSE=${Math.sqrt(sse / y.length).toFixed(3)} · 黑虚线=真实系数</span>`;
   }
 
+  /* ───────── v1.12 新增演示 ───────── */
+  let fftSeed = 42;
+  function drawFFT() {
+    const { mulberry32, gaussianSample, fft, dftNaive, convolveLinear, convolveNaive } = A;
+    const rng = mulberry32(fftSeed);
+    const n = 128;
+    const sig = [];
+    for (let t = 0; t < n; t++) {
+      const u = t / n;
+      sig.push(0.70 * Math.sin(2 * Math.PI * 5 * u)
+        + 0.45 * Math.sin(2 * Math.PI * 13 * u + 0.6)
+        + 0.25 * Math.sin(2 * Math.PI * 29 * u + 1.2)
+        + 0.05 * gaussianSample(rng, 0, 1));
+    }
+    const F = fft(sig);
+    const mag = F.re.map((r, k) => Math.hypot(r, F.im[k]));
+    const naive = dftNaive(sig, new Array(n).fill(0));
+    let dftErr = 0;
+    for (let k = 0; k < n; k++) dftErr = Math.max(dftErr, Math.abs(mag[k] - Math.hypot(naive.re[k], naive.im[k])));
+    const ker = [0.10, 0.15, 0.20, 0.20, 0.20, 0.15, 0.10];
+    const conv = convolveLinear(sig, ker);
+    const convN = convolveNaive(sig, ker);
+    let convErr = 0;
+    for (let i = 0; i < conv.length; i++) convErr = Math.max(convErr, Math.abs(conv[i] - convN[i]));
+
+    let amp = 0; for (let i = 0; i < sig.length; i++) amp = Math.max(amp, Math.abs(sig[i]));
+    amp = (amp * 1.15) || 1;
+    const half = n >> 1;
+    let magMax = 0; for (let k = 0; k <= half; k++) magMax = Math.max(magMax, mag[k]);
+    magMax = magMax || 1;
+    const px = (i, len) => 30 + (i / (len - 1)) * 410;
+    const py = (v) => 62 - (v / amp) * 38;
+    const pyB = (v) => 285 - (v / magMax) * 118;
+
+    let svg = `<line x1="30" y1="62" x2="440" y2="62" stroke="#e6e9f2"/>`;
+    svg += `<polyline fill="none" stroke="#b0b8cc" stroke-width="1.4" points="`
+      + sig.map((v, i) => `${px(i, n).toFixed(1)},${py(v).toFixed(1)}`).join(' ') + '"/>';
+    svg += `<polyline fill="none" stroke="#2980b9" stroke-width="2" points="`
+      + conv.map((v, i) => `${px(i, conv.length).toFixed(1)},${py(v).toFixed(1)}`).join(' ') + '"/>';
+    // 频谱柱
+    const bw = 410 / (half + 1);
+    for (let k = 0; k <= half; k++) {
+      const h = magMax > 0 ? (mag[k] / magMax) * 118 : 0;
+      svg += `<rect x="${(30 + k * bw).toFixed(1)}" y="${(285 - h).toFixed(1)}" width="${(bw - 0.6).toFixed(1)}" height="${h.toFixed(1)}" fill="#7a3bfd" fill-opacity="0.75"/>`;
+    }
+    // 峰值标注
+    const peaks = [];
+    for (let k = 1; k < half; k++) if (mag[k] > mag[k - 1] && mag[k] > mag[k + 1] && mag[k] > magMax * 0.12) peaks.push(k);
+    peaks.sort((a, b) => mag[b] - mag[a]);
+    const topPeaks = peaks.slice(0, 3).sort((a, b) => a - b);
+    for (const k of topPeaks) {
+      svg += `<circle cx="${(30 + k * bw + bw / 2).toFixed(1)}" cy="${(285 - (mag[k] / magMax) * 118).toFixed(1)}" r="3" fill="#e67e22"/>`;
+      svg += `<text x="${(30 + k * bw + bw / 2).toFixed(1)}" y="178" font-size="9" text-anchor="middle" fill="#e67e22" font-family="monospace">k=${k}</text>`;
+    }
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">时域 x[t] / 与卷积核卷积后</text>`;
+    svg += `<text x="30" y="168" font-size="10" fill="#5b6478" font-family="monospace">幅度谱 |X_k|</text>`;
+    $('svg-fft').innerHTML = svg;
+    $('legend-fft').innerHTML =
+      `<span><i style="background:#b0b8cc"></i>原信号</span><span><i style="background:#2980b9"></i>线性卷积</span><span><i style="background:#7a3bfd"></i>|X_k|</span><span><i style="background:#e67e22"></i>主峰</span>` +
+      `<span style="font-family:monospace">n=${n} · FFT≡DFT err=${dftErr.toExponential(2)} · 卷积 err=${convErr.toExponential(2)}</span>`;
+  }
+
+  let odeSeed = 42;
+  function drawODE() {
+    const { solveODE, solveODERK45 } = A;
+    const f = (t, y) => [-y[0]];
+    const t0 = 0, t1 = 6, y0 = [1];
+    const h = 0.04 + (odeSeed % 7) * 0.005;
+    const eul = solveODE(f, t0, y0, t1, { h, method: 'euler' });
+    const rk4 = solveODE(f, t0, y0, t1, { h, method: 'rk4' });
+    const dp = solveODERK45(f, t0, y0, t1, { tol: 1e-10, h0: 0.1 });
+    const exact = (t) => Math.exp(-t);
+    const px = (t) => 30 + (t / t1) * 410;
+    const py = (v) => 118 - (v / 1.08) * 96;
+    const LO = -12, HI = 3;
+    const pyE = (e) => 285 - ((Math.max(LO, Math.min(HI, e)) - LO) / (HI - LO)) * 118;
+    const logRel = (arr, t) => {
+      let e = 0;
+      for (let i = 0; i < arr.t.length; i++) {
+        const ex = exact(arr.t[i]);
+        e = Math.max(e, Math.abs(arr.y[i][0] - ex) / ex);
+      }
+      return Math.log10(Math.max(e, 1e-16));
+    };
+    const eEul = logRel(eul), eRk4 = logRel(rk4), eDp = logRel(dp);
+    let svg = `<line x1="30" y1="118" x2="440" y2="118" stroke="#e6e9f2"/><line x1="30" y1="22" x2="30" y2="118" stroke="#e6e9f2"/>`;
+    svg += `<polyline fill="none" stroke="#b0b8cc" stroke-width="1.6" stroke-dasharray="5,4" points="`
+      + eul.t.map((t) => `${px(t).toFixed(1)},${py(exact(t)).toFixed(1)}`).join(' ') + '"/>';
+    svg += `<polyline fill="none" stroke="#e67e22" stroke-width="1.8" points="`
+      + eul.t.map((t, i) => `${px(t).toFixed(1)},${py(eul.y[i][0]).toFixed(1)}`).join(' ') + '"/>';
+    svg += `<polyline fill="none" stroke="#7a3bfd" stroke-width="2" points="`
+      + rk4.t.map((t, i) => `${px(t).toFixed(1)},${py(rk4.y[i][0]).toFixed(1)}`).join(' ') + '"/>';
+    svg += `<polyline fill="none" stroke="#16a085" stroke-width="2" points="`
+      + dp.t.map((t, i) => `${px(t).toFixed(1)},${py(dp.y[i][0]).toFixed(1)}`).join(' ') + '"/>';
+    // 误差面板
+    svg += `<line x1="30" y1="285" x2="440" y2="285" stroke="#e6e9f2"/>`;
+    for (const e of [0, -4, -8, -12]) {
+      const yy = pyE(e);
+      svg += `<line x1="30" y1="${yy.toFixed(1)}" x2="440" y2="${yy.toFixed(1)}" stroke="#f0f2f7"/>`;
+      svg += `<text x="28" y="${(yy + 3).toFixed(1)}" font-size="8" text-anchor="end" fill="#5b6478" font-family="monospace">1e${e}</text>`;
+    }
+    const curve = (arr, logv, col) => `<polyline fill="none" stroke="${col}" stroke-width="1.8" points="`
+      + arr.t.map((t, i) => `${px(t).toFixed(1)},${pyE(logv[i]).toFixed(1)}`).join(' ') + '"/>';
+    const lg = (arr) => arr.t.map((t, i) => Math.log10(Math.max(Math.abs(arr.y[i][0] - exact(t)) / exact(t), 1e-16)));
+    svg += curve(eul, lg(eul), '#e67e22');
+    svg += curve(rk4, lg(rk4), '#7a3bfd');
+    svg += curve(dp, lg(dp), '#16a085');
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">解 y′=−y（精确 e^{−t}）</text>`;
+    svg += `<text x="30" y="164" font-size="10" fill="#5b6478" font-family="monospace">相对误差（对数）</text>`;
+    $('svg-ode').innerHTML = svg;
+    $('legend-ode').innerHTML =
+      `<span><i style="background:#b0b8cc"></i>精确解</span><span><i style="background:#e67e22"></i>Euler</span>` +
+      `<span><i style="background:#7a3bfd"></i>RK4</span><span><i style="background:#16a085"></i>RK45</span>` +
+      `<span style="font-family:monospace">全程最大相对误差 log₁₀：Euler=${eEul.toFixed(2)} / RK4=${eRk4.toFixed(2)} / RK45=${eDp.toFixed(2)} · RK45 接受${dp.steps}步/尝试${dp.attempts}步</span>`;
+  }
+
+  let mcSeed = 42;
+  function drawMC() {
+    const { chainMDP, mcControl, valueIteration } = A;
+    const { P, R, S } = chainMDP({ n: 6, gamma: 0.9 });
+    const res = mcControl(P, R, {
+      gamma: 0.9, epsStart: 1, epsEnd: 0, epsDecayFrac: 0.5,
+      episodes: 1200, maxSteps: 30, seed: mcSeed,
+    });
+    const rets = res.episodeReturns, n = rets.length;
+    let rmin = Infinity, rmax = -Infinity;
+    for (const v of rets) { if (v < rmin) rmin = v; if (v > rmax) rmax = v; }
+    const pad = (rmax - rmin) * 0.1 || 1; rmin -= pad; rmax += pad;
+    const px = (i) => 30 + (i / (n - 1)) * 410;
+    const py = (v) => 20 + (1 - (v - rmin) / (rmax - rmin)) * 148;
+    let svg = `<line x1="30" y1="168" x2="440" y2="168" stroke="#e6e9f2"/>`;
+    let d = ''; for (let i = 0; i < n; i++) d += (i === 0 ? 'M' : 'L') + px(i).toFixed(1) + ',' + py(rets[i]).toFixed(1);
+    svg += `<path d="${d}" fill="none" stroke="#16a085" stroke-width="1" stroke-opacity="0.45"/>`;
+    const W = 60, sm = [];
+    for (let i = 0; i < n; i++) { let s = 0, c = 0; for (let k = Math.max(0, i - W + 1); k <= i; k++) { s += rets[k]; c++; } sm.push(s / c); }
+    let ds = ''; for (let i = 0; i < n; i++) ds += (i === 0 ? 'M' : 'L') + px(i).toFixed(1) + ',' + py(sm[i]).toFixed(1);
+    svg += `<path d="${ds}" fill="none" stroke="#e67e22" stroke-width="2"/>`;
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">回合回报（MC 高方差）</text>`;
+    // Q 表热力图
+    let qmin = Infinity, qmax = -Infinity;
+    for (let s = 0; s < S; s++) for (let a = 0; a < 2; a++) {
+      if (res.Q[s][a] < qmin) qmin = res.Q[s][a];
+      if (res.Q[s][a] > qmax) qmax = res.Q[s][a];
+    }
+    const cw = 78, ch = 13, x0 = 96, y0 = 196;
+    for (let s = 0; s < S; s++) {
+      svg += `<text x="86" y="${(y0 + s * ch + 10).toFixed(1)}" font-size="9" text-anchor="end" fill="#5b6478" font-family="monospace">s${s}</text>`;
+      for (let a = 0; a < 2; a++) {
+        const u = qmax > qmin ? (res.Q[s][a] - qmin) / (qmax - qmin) : 0;
+        const g = Math.round(230 - u * 175);
+        const col = `rgb(${g},${Math.round(90 + u * 60)},${Math.round(200 - u * 130)})`;
+        const x = x0 + a * cw;
+        svg += `<rect x="${x}" y="${(y0 + s * ch).toFixed(1)}" width="${cw - 3}" height="${ch - 2}" fill="${col}" rx="2"/>`;
+        svg += `<text x="${(x + (cw - 3) / 2).toFixed(1)}" y="${(y0 + s * ch + 9).toFixed(1)}" font-size="8" text-anchor="middle" fill="#fff" font-family="monospace">${res.Q[s][a].toFixed(3)}</text>`;
+        if (res.policy[s] === a) svg += `<rect x="${x}" y="${(y0 + s * ch).toFixed(1)}" width="${cw - 3}" height="${ch - 2}" fill="none" stroke="#1c2333" stroke-width="1.6" rx="2"/>`;
+      }
+    }
+    svg += `<text x="86" y="188" font-size="9" text-anchor="end" fill="#5b6478" font-family="monospace">a←</text>`;
+    svg += `<text x="${(x0 + cw / 2).toFixed(1)}" y="188" font-size="9" text-anchor="middle" fill="#5b6478" font-family="monospace">a=0</text>`;
+    svg += `<text x="${(x0 + cw * 1.5).toFixed(1)}" y="188" font-size="9" text-anchor="middle" fill="#5b6478" font-family="monospace">a=1</text>`;
+    const vi = valueIteration(P, R, 0.9);
+    const same = res.policy.every((p, s) => p === vi.policy[s]);
+    $('svg-mc').innerHTML = svg;
+    $('legend-mc').innerHTML =
+      `<span><i style="background:#16a085"></i>原始回报</span><span><i style="background:#e67e22"></i>滑动均值(60)</span>` +
+      `<span style="font-family:monospace">chainMDP(s=6) · GLIE ε:1→0 · 与最优策略一致=${same} · 黑框=贪心动作</span>`;
+  }
+
+  let somSeed = 42;
+  function drawSOM() {
+    const { mulberry32, gaussianSample, somBatchTrain, somBMU } = A;
+    const rng = mulberry32(somSeed);
+    const X = [];
+    for (let i = 0; i < 120; i++) {
+      const th = (2 * Math.PI * i) / 120;
+      const r = 80 + gaussianSample(rng, 0, 7);
+      X.push([230 + r * Math.cos(th), 100 + r * Math.sin(th)]);
+    }
+    const model = somBatchTrain(X, { rows: 1, cols: 12, iters: 150, seed: somSeed });
+    const cb = model.codebook[0];
+    const px = (v) => 30 + (v / 460) * 410;
+    const py = (v) => 12 + (v / 210) * 168;
+    let svg = '';
+    for (const p of X) svg += `<circle cx="${px(p[0]).toFixed(1)}" cy="${py(p[1]).toFixed(1)}" r="2.2" fill="#b0b8cc" fill-opacity="0.55"/>`;
+    for (let c = 0; c + 1 < cb.length; c++) {
+      svg += `<line x1="${px(cb[c][0]).toFixed(1)}" y1="${py(cb[c][1]).toFixed(1)}" x2="${px(cb[c + 1][0]).toFixed(1)}" y2="${py(cb[c + 1][1]).toFixed(1)}" stroke="#7a3bfd" stroke-width="1" stroke-opacity="0.5"/>`;
+    }
+    const cols = ['#e74c3c', '#2980b9', '#27ae60', '#e67e22', '#16a085', '#7a3bfd', '#d35400', '#16a085', '#2980b9', '#8e44ad', '#c0392b', '#2c3e50'];
+    for (let c = 0; c < cb.length; c++) {
+      svg += `<circle cx="${px(cb[c][0]).toFixed(1)}" cy="${py(cb[c][1]).toFixed(1)}" r="4.5" fill="${cols[c % cols.length]}" stroke="#fff" stroke-width="1"/>`;
+    }
+    // 量化误差曲线
+    const qe = model.quantErrors;
+    let qmin = Infinity, qmax = -Infinity;
+    for (const v of qe) { if (v < qmin) qmin = v; if (v > qmax) qmax = v; }
+    const qpad = (qmax - qmin) * 0.1 || 1; qmin -= qpad; qmax += qpad;
+    const qx = (i) => 30 + (i / Math.max(1, qe.length - 1)) * 410;
+    const qy = (v) => 285 - ((v - qmin) / (qmax - qmin)) * 78;
+    svg += `<line x1="30" y1="285" x2="440" y2="285" stroke="#e6e9f2"/>`;
+    let qd = ''; for (let i = 0; i < qe.length; i++) qd += (i === 0 ? 'M' : 'L') + qx(i).toFixed(1) + ',' + qy(qe[i]).toFixed(1);
+    svg += `<path d="${qd}" fill="none" stroke="#e74c3c" stroke-width="1.8"/>`;
+    svg += `<text x="30" y="200" font-size="10" fill="#5b6478" font-family="monospace">环形流形 + SOM 码本（1×12 链）</text>`;
+    svg += `<text x="30" y="212" font-size="10" fill="#5b6478" font-family="monospace">量化误差 QE 收敛</text>`;
+    $('svg-som').innerHTML = svg;
+    $('legend-som').innerHTML =
+      `<span><i style="background:#b0b8cc"></i>样本</span><span><i style="background:#7a3bfd"></i>码本邻接</span>` +
+      `<span style="font-family:monospace">1×12 格 · QE(RMSE) ${Math.sqrt(qe[0]).toFixed(2)} → ${Math.sqrt(qe[qe.length - 1]).toFixed(2)} · 样本 120</span>`;
+  }
+
   $('btn-qda').addEventListener('click', () => { qdaSeed = (qdaSeed * 37 + 11) % 100000; drawQDA(); });
   $('btn-lasso').addEventListener('click', () => { lassoSeed = (lassoSeed * 41 + 9) % 100000; drawLasso(); });
   $('btn-rbm').addEventListener('click', () => { rbmSeed = (rbmSeed * 29 + 13) % 100000; drawRBM(); });
@@ -1969,6 +2220,10 @@
   $('btn-softmax').addEventListener('click', () => { softmaxSeed = (softmaxSeed * 29 + 13) % 100000; drawSoftmax(); });
   $('btn-expsarsa').addEventListener('click', () => { expSarsaSeed = (expSarsaSeed * 31 + 17) % 100000; drawExpSarsa(); });
   $('btn-elastic').addEventListener('click', () => { enSeed = (enSeed * 41 + 9) % 100000; drawElasticNet(); });
+  $('btn-fft').addEventListener('click', () => { fftSeed = (fftSeed * 37 + 11) % 100000; drawFFT(); });
+  $('btn-ode').addEventListener('click', () => { odeSeed = (odeSeed * 41 + 9) % 100000; drawODE(); });
+  $('btn-mc').addEventListener('click', () => { mcSeed = (mcSeed * 29 + 13) % 100000; drawMC(); });
+  $('btn-som').addEventListener('click', () => { somSeed = (somSeed * 31 + 17) % 100000; drawSOM(); });
 
   $('btn-perc').addEventListener('click', () => { percSeed = (percSeed * 31 + 17) % 100000; drawPerc(); });
   $('btn-ica').addEventListener('click', () => { icaSeed = (icaSeed * 37 + 11) % 100000; drawICA(); });
@@ -2025,6 +2280,10 @@
   drawSoftmax();
   drawExpSarsa();
   drawElasticNet();
+  drawFFT();
+  drawODE();
+  drawMC();
+  drawSOM();
 })();
 </script>
 </body>
