@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">42 组套件 · 252 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">46 组套件 · 276 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -357,6 +357,46 @@
     </div>
   </div>
 
+  <h2>v1.9 新增算法 <span class="tag">二次判别 QDA · Lasso 稀疏回归 · 受限玻尔兹曼机 · Hopfield 联想记忆 · 均由本页引擎实时求解</span></h2>
+  <div class="demos">
+    <div class="card">
+      <div class="demo-head">
+        <strong>二次判别分析 QDA</strong>
+        <button id="btn-qda">重新生成</button>
+      </div>
+      <div class="desc">Bishop PRML §4.3 · 各类完整协方差 Σ_c ⇒ 二次边界：δ_c = log π_c − ½log|Σ_c| − ½(x−μ_c)ᵀΣ_c⁻¹(x−μ_c)</div>
+      <svg id="svg-qda" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-qda"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>Lasso 稀疏回归（坐标下降）</strong>
+        <button id="btn-lasso">重新生成</button>
+      </div>
+      <div class="desc">Tibshirani 1996 / glmnet 2010 · wⱼ ← softThreshold(ρⱼ,λ)/zⱼ：λ↓ 系数收缩路径 + 非零个数</div>
+      <svg id="svg-lasso" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-lasso"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>受限玻尔兹曼机 RBM（CD-k）</strong>
+        <button id="btn-rbm">重新训练</button>
+      </div>
+      <div class="desc">Hinton 2002 · E(v,h)=−vᵀWh−bᵀv−cᵀh：3 条一维图案训练前后重构概率热图对比</div>
+      <svg id="svg-rbm" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-rbm"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>Hopfield 联想记忆</strong>
+        <button id="btn-hp">重新存储</button>
+      </div>
+      <div class="desc">Hopfield 1982 · Hebbian W=(1/n)Σpμpμᵀ：25% 噪声探针收敛回原模式 + 能量下降曲线</div>
+      <svg id="svg-hp" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-hp"></div>
+    </div>
+  </div>
+
   <div class="refs">
     站在巨人肩上：<code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
     <code>Bishop · PRML</code><code>Hastie et al. · ESL</code><code>Vaswani et al. 2017 · Attention Is All You Need</code>
@@ -383,6 +423,9 @@
     <code>Hyvärinen &amp; Oja 2000 · FastICA</code><code>Comon 1994 · ICA 可识别性</code>
     <code>Hotelling 1936 · 典型相关</code><code>Sokal &amp; Michener 1958 · 层次聚类</code>
     <code>Lance &amp; Williams 1967 · 凝聚递推</code>
+    <code>Tibshirani 1996 · Lasso</code><code>Friedman et al. 2010 · glmnet</code>
+    <code>Smolensky 1986 · Harmonium</code><code>Hinton 2002 · CD 算法</code>
+    <code>Hopfield 1982 · 联想记忆</code><code>Amit et al. 1985 · 容量 0.138n</code>
   </div>
 
   <footer>
@@ -1396,6 +1439,193 @@
       `<span style="font-family:monospace">${model.linkage} linkage · 切 3 簇 ARI=${ari.toFixed(4)}</span>`;
   }
 
+  /* ================= v1.9 · 二次判别分析 QDA（Bishop §4.3） ================= */
+  let qdaSeed = 7;
+  function drawQDA() {
+    const { mulberry32, gaussianSample, qdaFit, qdaPredict, qdaDiscriminant } = A;
+    const rng = mulberry32(qdaSeed);
+    // 两个协方差不同的高斯团：类0 沿 x 拉长、类1 沿 y 拉长（Σ₀ ≠ Σ₁ ⇒ 二次边界）
+    const c0 = [rng() * 2 - 1, rng() * 2 - 1], c1 = [rng() * 2 + 2, rng() * 2 + 2];
+    const X = [], y = [];
+    for (let i = 0; i < 70; i++) { X.push([gaussianSample(rng, c0[0], 1.1), gaussianSample(rng, c0[1], 0.45)]); y.push(0); }
+    for (let i = 0; i < 70; i++) { X.push([gaussianSample(rng, c1[0], 0.45), gaussianSample(rng, c1[1], 1.1)]); y.push(1); }
+    const model = qdaFit(X, y, { reg: 1e-6 });
+    const pred = qdaPredict(X, model);
+    let acc = 0; for (let i = 0; i < X.length; i++) if (pred.labels[i] === y[i]) acc++; acc /= X.length;
+    let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+    for (const p of X) { if (p[0] < xmin) xmin = p[0]; if (p[0] > xmax) xmax = p[0]; if (p[1] < ymin) ymin = p[1]; if (p[1] > ymax) ymax = p[1]; }
+    const px = (v) => 20 + (v - xmin) / (xmax - xmin) * 420;
+    const py = (v) => 280 - (v - ymin) / (ymax - ymin) * 260;
+    // 背景网格逐点计算判别式 δ_c(x)，填色 + 边界浓度（|δ₁−δ₀| 小 ⇒ 贴近二次边界）
+    const G = 26, cellW = 420 / G, cellH = 260 / G;
+    let svg = '';
+    for (let r = 0; r < G; r++) {
+      for (let c = 0; c < G; c++) {
+        const gx = xmin + (c + 0.5) / G * (xmax - xmin);
+        const gy = ymin + (r + 0.5) / G * (ymax - ymin);
+        const delta = qdaDiscriminant([gx, gy], model);
+        const cls = delta[1] > delta[0] ? 1 : 0;
+        const margin = Math.abs(delta[1] - delta[0]);
+        const op = margin < 1.2 ? 0.32 : 0.11;
+        svg += `<rect x="${(20 + c * cellW).toFixed(1)}" y="${(20 + r * cellH).toFixed(1)}" width="${cellW.toFixed(1)}" height="${cellH.toFixed(1)}" fill="${cls === 0 ? 'rgba(41,128,185,' + op + ')' : 'rgba(231,76,60,' + op + ')'}"/>`;
+      }
+    }
+    for (let i = 0; i < X.length; i++) {
+      const col = y[i] === 0 ? '#2980b9' : '#e74c3c';
+      svg += `<circle cx="${px(X[i][0]).toFixed(1)}" cy="${py(X[i][1]).toFixed(1)}" r="3.4" fill="${col}" fill-opacity="0.85" stroke="#fff" stroke-width="0.5"/>`;
+    }
+    for (let k = 0; k < 2; k++) {
+      svg += `<circle cx="${px(model.classMeans[k][0]).toFixed(1)}" cy="${py(model.classMeans[k][1]).toFixed(1)}" r="6" fill="none" stroke="#1c2333" stroke-width="2"/>`;
+    }
+    $('svg-qda').innerHTML = svg;
+    $('legend-qda').innerHTML =
+      `<span><i style="background:#2980b9"></i>类0（沿 x 拉伸）</span><span><i style="background:#e74c3c"></i>类1（沿 y 拉伸）</span>` +
+      `<span style="font-family:monospace">准确率=${acc.toFixed(3)} · log|Σ|=[${model.logDets.map((v) => v.toFixed(2)).join(', ')}] · 深色带=二次决策边界</span>`;
+  }
+
+  /* ================= v1.9 · Lasso 稀疏回归（坐标下降） ================= */
+  let lassoSeed = 7;
+  function drawLasso() {
+    const { mulberry32, randomMatrix, gaussianSample, lassoPath, lassoPredict } = A;
+    const rng = mulberry32(lassoSeed);
+    const n = 60, d = 6;
+    const X = randomMatrix(n, d, rng, -1, 1);
+    const wTrue = [2, 0, -1.5, 0, 0.8, 0]; // 稀疏真源：3 非零 3 零
+    const y = X.map((r) => { let s = 0; for (let j = 0; j < d; j++) s += wTrue[j] * r[j]; return s + gaussianSample(rng, 0, 0.15); });
+    // λ 网格：50 → 0.01 对数刻度（lassoPath 内部按降序求解）
+    const lambdas = [];
+    for (let k = 0; k <= 50; k++) lambdas.push(50 * Math.pow(0.01 / 50, k / 50));
+    const path = lassoPath(X, y, lambdas, { iters: 2000, tol: 1e-12 });
+    const lmax = Math.log10(path[0].lambda), lmin = Math.log10(path[path.length - 1].lambda);
+    let wmax = 0;
+    for (const m of path) for (const v of m.w) { const a = Math.abs(v); if (a > wmax) wmax = a; }
+    wmax = (wmax * 1.12) || 1;
+    const px = (lam) => 40 + (Math.log10(lam) - lmax) / (lmin - lmax) * 400; // λ 大在左
+    const py = (v) => 145 - (v / wmax) * 105; // 系数值（含负半轴）
+    const cols = ['#2980b9', '#e74c3c', '#17994f', '#7a3bfd', '#e67e22', '#16a085'];
+    let svg = '<line x1="40" y1="145" x2="440" y2="145" stroke="#d5dbe5"/><line x1="40" y1="20" x2="40" y2="250" stroke="#d5dbe5"/>';
+    for (const t of [50, 5, 0.5, 0.05, 0.01]) {
+      const tx = px(t);
+      svg += `<line x1="${tx.toFixed(1)}" y1="145" x2="${tx.toFixed(1)}" y2="150" stroke="#95a5a6"/>` +
+        `<text x="${tx.toFixed(1)}" y="164" font-size="10" fill="#5b6478" text-anchor="middle" font-family="monospace">${t}</text>`;
+    }
+    svg += `<text x="240" y="182" font-size="11" fill="#5b6478" text-anchor="middle">λ（对数刻度，左大右小）</text>`;
+    for (let j = 0; j < d; j++) {
+      if (wTrue[j] !== 0) {
+        svg += `<line x1="40" y1="${py(wTrue[j]).toFixed(1)}" x2="440" y2="${py(wTrue[j]).toFixed(1)}" stroke="${cols[j]}" stroke-width="0.8" stroke-dasharray="3,3" stroke-opacity="0.45"/>`;
+      }
+    }
+    for (let j = 0; j < d; j++) {
+      let dStr = '';
+      for (let k = 0; k < path.length; k++) dStr += (k === 0 ? 'M' : 'L') + px(path[k].lambda).toFixed(1) + ',' + py(path[k].w[j]).toFixed(1);
+      svg += `<path d="${dStr}" fill="none" stroke="${cols[j]}" stroke-width="1.8" stroke-opacity="0.92"/>`;
+    }
+    const last = path[path.length - 1];
+    let sse = 0;
+    const yhat = lassoPredict(X, last);
+    for (let i = 0; i < y.length; i++) sse += (y[i] - yhat[i]) ** 2;
+    $('svg-lasso').innerHTML = svg;
+    $('legend-lasso').innerHTML =
+      cols.slice(0, d).map((c, j) => `<span><i style="background:${c}"></i>w${j + 1}（真值 ${wTrue[j]}）</span>`).join('') +
+      `<span style="font-family:monospace">λ=0.01 时非零 ${last.activeSet.length}/${d} · RMSE=${Math.sqrt(sse / y.length).toFixed(3)} · 虚线=真实系数</span>`;
+  }
+
+  /* ================= v1.9 · 受限玻尔兹曼机 RBM（CD-k） ================= */
+  let rbmSeed = 42;
+  function drawRBM() {
+    const { rbmTrain, rbmReconstruct } = A;
+    // 3 条一维 0/1 图案（"条纹棒"）——RBM 应学会逐条重构
+    const pats = [
+      [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1],
+    ];
+    const opts = { hidden: 6, cdK: 1, lr: 0.1, iters: 300, seed: rbmSeed };
+    const before = rbmTrain(pats, { ...opts, iters: 0 });
+    const after = rbmTrain(pats, opts);
+    const err = (m) => {
+      let t = 0;
+      for (const p of pats) {
+        const { vProb } = rbmReconstruct(m, p);
+        for (let i = 0; i < p.length; i++) t += (p[i] - vProb[i]) ** 2;
+      }
+      return t / pats.length;
+    };
+    const L = pats[0].length, cw = 30, ch = 28, x0 = 62;
+    const col = (p) => `rgb(${Math.round(245 + p * (41 - 245))},${Math.round(247 + p * (128 - 247))},${Math.round(252 + p * (185 - 252))})`;
+    const drawBlock = (m, oy, label) => {
+      let s = `<text x="14" y="${oy + 56}" font-size="12" fill="#1c2333" font-weight="600">${label}</text>`;
+      for (let r = 0; r < pats.length; r++) {
+        const { vProb } = rbmReconstruct(m, pats[r]);
+        for (let i = 0; i < L; i++) {
+          const cx = x0 + i * cw, cy = oy + 14 + r * ch;
+          s += `<rect x="${cx}" y="${cy}" width="${cw - 2}" height="${ch - 2}" rx="3" fill="${col(vProb[i])}" stroke="${pats[r][i] ? '#1c2333' : '#c9d2e0'}" stroke-width="${pats[r][i] ? 1.4 : 0.7}"/>`;
+        }
+      }
+      return s;
+    };
+    let svg = drawBlock(before, 20, '训练前');
+    svg += `<line x1="20" y1="128" x2="440" y2="128" stroke="#e6e9f2"/>`;
+    svg += drawBlock(after, 142, '训练后');
+    $('svg-rbm').innerHTML = svg;
+    $('legend-rbm').innerHTML =
+      `<span><i style="background:linear-gradient(90deg,#f5f7fc,#2980b9)"></i>重构概率 P(vᵢ=1) 0→1</span>` +
+      `<span><i style="background:#1c2333"></i>黑框=目标位 1</span>` +
+      `<span style="font-family:monospace">平均重构误差 ${err(before).toFixed(3)} → ${err(after).toFixed(3)}（CD-1 · 300 轮 · 6 隐单元）</span>`;
+  }
+
+  /* ================= v1.9 · Hopfield 联想记忆 ================= */
+  let hpSeed = 2024;
+  function drawHP() {
+    const { mulberry32, hopfieldTrain, hopfieldRecall } = A;
+    const rng = mulberry32(hpSeed);
+    const n = 64, m = 4; // m/n = 0.0625 ≤ 0.138（Amit 1985 容量上限）
+    const patterns = Array.from({ length: m }, () => Array.from({ length: n }, () => (rng() < 0.5 ? -1 : 1)));
+    const model = hopfieldTrain(patterns, { zeroDiag: true });
+    const target = patterns[0];
+    const probe = target.slice();
+    for (let i = 0; i < n; i++) if (rng() < 0.25) probe[i] = -probe[i]; // 翻转 25% 比特
+    const rec = hopfieldRecall(model.W, model.b, probe, { maxSteps: 100, seed: 42 });
+    const match = rec.state.every((v, i) => v === target[i]);
+    const drawGrid = (state, ox, label) => {
+      let s = `<text x="${ox}" y="26" font-size="12" fill="#1c2333" font-weight="600">${label}</text>`;
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          const v = state[r * 8 + c];
+          s += `<rect x="${ox + c * 10}" y="${34 + r * 10}" width="9" height="9" fill="${v > 0 ? '#2980b9' : '#f2f4f9'}" stroke="#c9d2e0" stroke-width="0.6"/>`;
+        }
+      }
+      return s;
+    };
+    let svg = drawGrid(probe, 40, '探针（翻转 25%）');
+    svg += drawGrid(rec.state, 150, match ? '收敛态 = 原模式 ✓' : '收敛态 ≠ 原模式 ✗');
+    let nFlip = 0;
+    for (let i = 0; i < n; i++) if (probe[i] !== target[i]) nFlip++;
+    svg += `<text x="40" y="128" font-size="11" fill="#5b6478">翻转 ${nFlip} 比特 · ${rec.steps} 轮收敛（异步随机序）</text>`;
+    // 能量 E(s) 下降曲线（Lyapunov：每步不增）
+    const tr = rec.energyTrace;
+    let eMax = -Infinity, eMin = Infinity;
+    for (const e of tr) { if (e > eMax) eMax = e; if (e < eMin) eMin = e; }
+    const ex = (k) => 262 + (k / (tr.length - 1)) * 168;
+    const ey = (e) => 240 - ((e - eMin) / (eMax - eMin || 1)) * 180;
+    let d = '';
+    for (let k = 0; k < tr.length; k++) d += (k === 0 ? 'M' : 'L') + ex(k).toFixed(1) + ',' + ey(tr[k]).toFixed(1);
+    svg += `<text x="262" y="26" font-size="12" fill="#1c2333" font-weight="600">能量 E(s) 下降曲线</text>`;
+    svg += `<line x1="262" y1="240" x2="430" y2="240" stroke="#d5dbe5"/><line x1="262" y1="60" x2="262" y2="240" stroke="#d5dbe5"/>`;
+    svg += `<path d="${d}" fill="none" stroke="#17994f" stroke-width="1.6"/>`;
+    svg += `<circle cx="${ex(0).toFixed(1)}" cy="${ey(tr[0]).toFixed(1)}" r="2.6" fill="#e74c3c"/>`;
+    svg += `<circle cx="${ex(tr.length - 1).toFixed(1)}" cy="${ey(tr[tr.length - 1]).toFixed(1)}" r="2.6" fill="#17994f"/>`;
+    $('svg-hp').innerHTML = svg;
+    $('legend-hp').innerHTML =
+      `<span><i style="background:#2980b9"></i>+1</span><span><i style="background:#f2f4f9"></i>−1</span>` +
+      `<span style="font-family:monospace">Hebbian 存 ${m} 模式（n=${n}，m/n=${(m / n).toFixed(3)}≤0.138）· 能量 ${tr[0].toFixed(2)} → ${tr[tr.length - 1].toFixed(2)}（Lyapunov 不增）</span>`;
+  }
+
+  $('btn-qda').addEventListener('click', () => { qdaSeed = (qdaSeed * 37 + 11) % 100000; drawQDA(); });
+  $('btn-lasso').addEventListener('click', () => { lassoSeed = (lassoSeed * 41 + 9) % 100000; drawLasso(); });
+  $('btn-rbm').addEventListener('click', () => { rbmSeed = (rbmSeed * 29 + 13) % 100000; drawRBM(); });
+  $('btn-hp').addEventListener('click', () => { hpSeed = (hpSeed * 31 + 17) % 100000; drawHP(); });
+
   $('btn-perc').addEventListener('click', () => { percSeed = (percSeed * 31 + 17) % 100000; drawPerc(); });
   $('btn-ica').addEventListener('click', () => { icaSeed = (icaSeed * 37 + 11) % 100000; drawICA(); });
   $('btn-cca').addEventListener('click', () => { ccaSeed = (ccaSeed * 29 + 13) % 100000; drawCCA(); });
@@ -1438,6 +1668,10 @@
   drawICA();
   drawCCA();
   drawHC();
+  drawQDA();
+  drawLasso();
+  drawRBM();
+  drawHP();
   drawOpt();
 })();
 </script>

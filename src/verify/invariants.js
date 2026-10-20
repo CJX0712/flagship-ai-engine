@@ -1,7 +1,7 @@
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 42 组套件全绿 = 引擎数学正确性的机器证明。
+ * 46 组套件全绿 = 引擎数学正确性的机器证明。
  */
 
 import {
@@ -119,6 +119,10 @@ import {
 import { icaFit, icaTransform } from '../ml/ica.js';
 import { ccaFit, ccaProject } from '../ml/cca.js';
 import { hierarchicalCluster, hierarchicalCophenetic } from '../ml/hierarchical.js';
+import { qdaFit, qdaPredict, qdaDiscriminant } from '../ml/qda.js';
+import { lassoFit, lassoPath, lassoPredict } from '../ml/lasso.js';
+import { rbmTrain, rbmHiddenProbs, rbmReconstruct, rbmFreeEnergy } from '../nn/rbm.js';
+import { hopfieldTrain, hopfieldEnergy, hopfieldUpdateUnit, hopfieldRecall } from '../nn/hopfield.js';
 
 /** 向量最大绝对值 */
 function vinf(v) {
@@ -205,6 +209,10 @@ export function runAllInvariants() {
     ['独立成分分析 · FastICA (Hyvärinen & Oja 2000)', suiteICA],
     ['典型相关分析 · CCA (Hotelling 1936)', suiteCCA],
     ['层次聚类 · Hierarchical (Lance & Williams 1967)', suiteHierarchical],
+    ['二次判别分析 · QDA (Bishop §4.3)', suiteQDA],
+    ['Lasso 稀疏回归 · Tibshirani 1996', suiteLasso],
+    ['受限玻尔兹曼机 · RBM (Hinton 2002)', suiteRBM],
+    ['Hopfield 联想记忆 · Hopfield 1982', suiteHopfield],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -2843,5 +2851,498 @@ function suiteHierarchical(check) {
     }
     const r = soc / Math.sqrt(so * sc);
     c(r >= 0.9, `cophenetic corr=${r.toFixed(6)}`);
+  });
+}
+
+/* ============================================================
+ * 套件 43 · 二次判别分析 QDA（Bishop PRML §4.3）
+ * 站在：Fisher 1936 / Bishop 2006 §4.3。判别三足鼎立之第三足：
+ *       各类完整协方差 Σ_c ⇒ 二次决策边界；Σ_c 共享时二次项对 argmax
+ *       无贡献 ⇒ 边界退化为线性（≡ LDA + 最近类心）。
+ * ============================================================ */
+function suiteQDA(check) {
+  const run = (label, fn) => {
+    try { fn((ok, info) => check(label, ok, info)); }
+    catch (e) { check(label, false, '执行异常: ' + (e && e.message)); }
+  };
+
+  // 协方差不同的两个高斯团：类0 沿 x 拉长、类1 沿 y 拉长（Σ₀ ≠ Σ₁）
+  const rngQ = mulberry32(21);
+  const XQ = [], yQ = [];
+  for (let i = 0; i < 200; i++) { XQ.push([gaussianSample(rngQ, -3, 1.2), gaussianSample(rngQ, 0, 0.5)]); yQ.push(0); }
+  for (let i = 0; i < 200; i++) { XQ.push([gaussianSample(rngQ, 3, 0.5), gaussianSample(rngQ, 0, 1.2)]); yQ.push(1); }
+  const modelQ = qdaFit(XQ, yQ, { reg: 1e-6 });
+  const predQ = qdaPredict(XQ, modelQ);
+  const regQ = 1e-6;
+
+  run('QDA：classMeans ≡ 暴力均值（逐元素 < 1e-9）', (c) => {
+    let maxErr = 0;
+    for (let ci = 0; ci < modelQ.classes.length; ci++) {
+      const rows = XQ.filter((_, i) => yQ[i] === modelQ.classes[ci]);
+      for (let j = 0; j < XQ[0].length; j++) {
+        let s = 0; for (const r of rows) s += r[j];
+        maxErr = Math.max(maxErr, Math.abs(s / rows.length - modelQ.classMeans[ci][j]));
+      }
+    }
+    c(maxErr < 1e-9, `maxMeanErr=${maxErr.toExponential(2)}`);
+  });
+
+  run('QDA：各类 covs 对称且 ≡ covarianceMatrix 无偏估计 + reg·I（逐元素 < 1e-9）', (c) => {
+    let maxErr = 0, maxAsym = 0;
+    for (let ci = 0; ci < modelQ.classes.length; ci++) {
+      const rows = XQ.filter((_, i) => yQ[i] === modelQ.classes[ci]);
+      const C = covarianceMatrix(rows); // 独立实现：/(n_c−1) 无偏
+      const cov = modelQ.covs[ci];
+      for (let i = 0; i < cov.length; i++) {
+        for (let j = 0; j < cov.length; j++) {
+          maxErr = Math.max(maxErr, Math.abs(cov[i][j] - C[i][j] - (i === j ? regQ : 0)));
+          maxAsym = Math.max(maxAsym, Math.abs(cov[i][j] - cov[j][i]));
+        }
+      }
+    }
+    c(maxErr < 1e-9 && maxAsym < 1e-9, `maxCovErr=${maxErr.toExponential(2)}，maxAsym=${maxAsym.toExponential(2)}`);
+  });
+
+  run('QDA：posterior 每行和 ≡ 1（< 1e-12）', (c) => {
+    let maxErr = 0;
+    for (const p of predQ.posteriors) {
+      let s = 0; for (const v of p) s += v;
+      maxErr = Math.max(maxErr, Math.abs(s - 1));
+    }
+    c(maxErr < 1e-12, `maxRowSumErr=${maxErr.toExponential(2)}`);
+  });
+
+  run('QDA：log-posterior ≡ 独立实现（solve 求逆 + 多元高斯对数密度，< 1e-9）', (c) => {
+    const d = XQ[0].length;
+    const log2pi = Math.log(2 * Math.PI);
+    let maxErr = 0, nChk = 0;
+    for (let i = 0; i < XQ.length; i += 37) {
+      nChk++;
+      const xi = XQ[i];
+      const logp = [];
+      for (let k = 0; k < modelQ.classes.length; k++) {
+        const mu = modelQ.classMeans[k];
+        const diff = xi.map((v, j) => v - mu[j]);
+        const cov = modelQ.covs[k];
+        // 独立路径：Cholesky 求 log|Σ|、solve 求二次项（不经 covsInv / logDets 字段）
+        const L = cholesky(cov);
+        let logDet = 0; for (let t = 0; t < d; t++) logDet += 2 * Math.log(L[t][t]);
+        const sol = solve(cov, diff);
+        let quad = 0; for (let j = 0; j < d; j++) quad += diff[j] * sol[j];
+        logp.push(Math.log(modelQ.priors[k]) - 0.5 * (d * log2pi + logDet + quad));
+      }
+      const lse = logsumexp(logp);
+      for (let k = 0; k < logp.length; k++) {
+        maxErr = Math.max(maxErr, Math.abs(Math.exp(logp[k] - lse) - predQ.posteriors[i][k]));
+      }
+    }
+    c(maxErr < 1e-9, `抽样 ${nChk} 点，maxPosteriorErr=${maxErr.toExponential(2)}`);
+  });
+
+  run('QDA：协方差不同的可分合成数据训练准确率 = 1.0', (c) => {
+    let acc = 0;
+    for (let i = 0; i < XQ.length; i++) if (predQ.labels[i] === yQ[i]) acc++;
+    const accR = acc / XQ.length;
+    c(accR === 1.0, `acc=${accR.toFixed(4)}（Σ₀ 沿 x 拉伸、Σ₁ 沿 y 拉伸）`);
+  });
+
+  run('QDA：同协方差时边界退化为线性 — 与 LDA + 最近类心标签完全一致', (c) => {
+    const rngS = mulberry32(5);
+    const XS = [], yS = [];
+    for (let i = 0; i < 200; i++) { XS.push([gaussianSample(rngS, -3, 1), gaussianSample(rngS, 0, 1)]); yS.push(0); }
+    for (let i = 0; i < 200; i++) { XS.push([gaussianSample(rngS, 3, 1), gaussianSample(rngS, 0, 1)]); yS.push(1); }
+    const mQS = qdaFit(XS, yS, { reg: 1e-6 });
+    const mL = ldaFit(XS, yS, { reg: 1e-6 });
+    const predS = qdaPredict(XS, mQS);
+    // 共享 Σ=σ²I ⇒ Σ⁻¹ 度量退化为欧氏度量 ⇒ 最近类心 ≡ LDA 判别 ≡ QDA argmax
+    let mismatch = 0;
+    for (let i = 0; i < XS.length; i++) {
+      let best = 0, bd = Infinity;
+      for (let k = 0; k < mL.classes.length; k++) {
+        const mu = mL.classMeans[k];
+        const dd = (XS[i][0] - mu[0]) ** 2 + (XS[i][1] - mu[1]) ** 2;
+        if (dd < bd) { bd = dd; best = k; }
+      }
+      if (predS.labels[i] !== mL.classes[best]) mismatch++;
+    }
+    c(mismatch === 0, `标签不一致数=${mismatch}/${XS.length}（二次项消失定理）`);
+  });
+}
+
+/* ============================================================
+ * 套件 44 · Lasso 稀疏回归（坐标下降）
+ * 站在：Tibshirani 1996 / Friedman-Hastie-Tibshirani 2010 glmnet /
+ *       Efron et al. 2004 LARS。凸目标 ⇒ KKT 即最优性证书。
+ * ============================================================ */
+function suiteLasso(check) {
+  const run = (label, fn) => {
+    try { fn((ok, info) => check(label, ok, info)); }
+    catch (e) { check(label, false, '执行异常: ' + (e && e.message)); }
+  };
+
+  // 稀疏真源：wTrue = [2, 0, −1.5, 0, 0.8, 0]（3 非零 3 零）+ 小噪声
+  const rngL = mulberry32(17);
+  const nL = 80, dL = 6;
+  const XL = randomMatrix(nL, dL, rngL, -1, 1);
+  const wTrue = [2, 0, -1.5, 0, 0.8, 0];
+  const yL = XL.map((r) => {
+    let s = 0; for (let j = 0; j < dL; j++) s += wTrue[j] * r[j];
+    return s + gaussianSample(rngL, 0, 0.1);
+  });
+  const lambdaL = 0.5;
+  const model = lassoFit(XL, yL, { lambda: lambdaL, iters: 5000, tol: 1e-13 });
+
+  run('Lasso：KKT 最优性证书 — |ρⱼ|≤λ(1+1e-6) 且 wⱼ≠0 ⇒ ρⱼ=λ·sign(wⱼ)（<1e-7）', (c) => {
+    // 独立中心化 + 残差重算（不经模型内部状态）
+    const xbar = new Array(dL).fill(0);
+    for (const r of XL) for (let j = 0; j < dL; j++) xbar[j] += r[j];
+    for (let j = 0; j < dL; j++) xbar[j] /= nL;
+    let ybar = 0; for (const v of yL) ybar += v; ybar /= nL;
+    const r = yL.map((v, i) => {
+      let s = v - ybar;
+      for (let j = 0; j < dL; j++) s -= (XL[i][j] - xbar[j]) * model.w[j];
+      return s;
+    });
+    let maxKKT = 0, maxSub = 0;
+    for (let j = 0; j < dL; j++) {
+      let rho = 0;
+      for (let i = 0; i < nL; i++) rho += (XL[i][j] - xbar[j]) * r[i];
+      if (model.w[j] !== 0) maxKKT = Math.max(maxKKT, Math.abs(rho - lambdaL * Math.sign(model.w[j])));
+      else maxSub = Math.max(maxSub, Math.abs(rho) - lambdaL);
+    }
+    c(maxKKT < 1e-7 && maxSub <= lambdaL * 1e-6, `w≠0: max|ρ−λsign|=${maxKKT.toExponential(2)}；w=0: max(|ρ|−λ)=${maxSub.toExponential(2)}`);
+  });
+
+  run('Lasso：正交设计闭式 — X̃ᵀX̃=n·I ⇒ w ≡ OLS 系数逐元素 soft-threshold（<1e-10）', (c) => {
+    // Hadamard 型正交列：零均值、两两正交、范度 √n ⇒ 中心化后仍有 X̃ᵀX̃ = n·I
+    const nO = 8, dO = 3;
+    const cols = [
+      [1, 1, 1, 1, -1, -1, -1, -1],
+      [1, 1, -1, -1, 1, 1, -1, -1],
+      [1, -1, 1, -1, 1, -1, 1, -1],
+    ];
+    const XO = [];
+    for (let i = 0; i < nO; i++) {
+      const row = [];
+      for (let j = 0; j < dO; j++) row.push(cols[j][i]); // 列范度 √n、两列内积 0 ⇒ X̃ᵀX̃ = n·I
+      XO.push(row);
+    }
+    const rngO = mulberry32(3);
+    const wO = [1.5, -0.8, 0.6];
+    const yO = XO.map((r) => {
+      let s = 0; for (let j = 0; j < dO; j++) s += wO[j] * r[j];
+      return s + gaussianSample(rngO, 0, 0.05);
+    });
+    const lamO = 1.2;
+    const mO = lassoFit(XO, yO, { lambda: lamO, iters: 20000, tol: 1e-14 });
+    // OLS（中心化数据闭式）：ŵⱼ = (1/n)Σᵢx̃ᵢⱼỹᵢ；lasso 闭式：wⱼ = softThreshold(ŵⱼ, λ/n)
+    const wOls = new Array(dO).fill(0);
+    for (let j = 0; j < dO; j++) {
+      let s = 0;
+      for (let i = 0; i < nO; i++) s += XO[i][j] * yO[i];
+      wOls[j] = s / nO;
+    }
+    let maxErr = 0;
+    for (let j = 0; j < dO; j++) {
+      const th = lamO / nO;
+      const expect = Math.sign(wOls[j]) * Math.max(Math.abs(wOls[j]) - th, 0);
+      maxErr = Math.max(maxErr, Math.abs(mO.w[j] - expect));
+    }
+    c(maxErr < 1e-10, `maxCoefErr=${maxErr.toExponential(2)}，w=[${mO.w.map(v => v.toFixed(6)).join(', ')}]`);
+  });
+
+  run('Lasso：λ=0 解 ≡ linearRegression（< 1e-6）', (c) => {
+    const m0 = lassoFit(XL, yL, { lambda: 0, iters: 50000, tol: 1e-14 });
+    const ols = linearRegression(XL, yL);
+    let maxErr = 0;
+    for (let j = 0; j < dL; j++) maxErr = Math.max(maxErr, Math.abs(m0.w[j] - ols.w[j + 1]));
+    maxErr = Math.max(maxErr, Math.abs(m0.b - ols.w[0]));
+    c(maxErr < 1e-6, `maxCoefErr=${maxErr.toExponential(2)}（含截距，nIter=${m0.nIter}）`);
+  });
+
+  run('Lasso：λ ≥ maxⱼ|Σx̃ᵢⱼỹᵢ| ⇒ w 全 0（精确）', (c) => {
+    const xbar = new Array(dL).fill(0);
+    for (const r of XL) for (let j = 0; j < dL; j++) xbar[j] += r[j];
+    for (let j = 0; j < dL; j++) xbar[j] /= nL;
+    let ybar = 0; for (const v of yL) ybar += v; ybar /= nL;
+    let maxRho = 0;
+    for (let j = 0; j < dL; j++) {
+      let rho = 0;
+      for (let i = 0; i < nL; i++) rho += (XL[i][j] - xbar[j]) * (yL[i] - ybar);
+      maxRho = Math.max(maxRho, Math.abs(rho));
+    }
+    const mBig = lassoFit(XL, yL, { lambda: maxRho * (1 + 1e-9), iters: 100, tol: 1e-12 });
+    const allZero = mBig.w.every((v) => v === 0);
+    c(allZero && mBig.activeSet.length === 0, `λ*=${maxRho.toFixed(6)}，activeSet=${mBig.activeSet.length}，b=${mBig.b.toExponential(2)}`);
+  });
+
+  run('Lasso：路径单调 — λ↓ ⇒ ‖w‖₁ 非减', (c) => {
+    const lambdas = [];
+    for (let k = 40; k >= 0; k--) lambdas.push(Math.pow(10, 3 - 5 * k / 40)); // 1e3 → 1e-2 对数刻度
+    const path = lassoPath(XL, yL, lambdas, { iters: 3000, tol: 1e-13 });
+    let worst = 0;
+    for (let k = 1; k < path.length; k++) {
+      const l1a = path[k - 1].w.reduce((s, v) => s + Math.abs(v), 0);
+      const l1b = path[k].w.reduce((s, v) => s + Math.abs(v), 0);
+      worst = Math.max(worst, l1a - l1b); // λ↓ ⇒ L1 非减 ⇒ l1a−l1b ≤ 0
+    }
+    const nnzEnd = path[path.length - 1].activeSet.length;
+    c(worst < 1e-9, `41 个 λ 最大回退=${worst.toExponential(2)}，末端非零=${nnzEnd}/${dL}`);
+  });
+
+  run('Lasso：欠定 d>n ⇒ ‖w‖₀ ≤ min(n,d)', (c) => {
+    const rngU = mulberry32(77);
+    const nU = 6, dU = 12;
+    const XU = randomMatrix(nU, dU, rngU, -1, 1);
+    const wU = [1, -1, 0.5, 0, 0, 0.8, 0, 0, -0.6, 0, 0, 0.4];
+    const yU = XU.map((r) => {
+      let s = 0; for (let j = 0; j < dU; j++) s += wU[j] * r[j];
+      return s + gaussianSample(rngU, 0, 0.01);
+    });
+    const mU = lassoFit(XU, yU, { lambda: 0.05, iters: 20000, tol: 1e-14 });
+    const nnz = mU.activeSet.length;
+    c(nnz <= Math.min(nU, dU), `‖w‖₀=${nnz} ≤ min(${nU},${dU})=${Math.min(nU, dU)}`);
+  });
+}
+
+/* ============================================================
+ * 套件 45 · 受限玻尔兹曼机 RBM（CD-k）
+ * 站在：Smolensky 1986 / Hinton 2002 CD / Hinton-Salakhutdinov 2006 Science。
+ *       核心恒等式：FE(v) ≡ −log Σ_h e^{−E(v,h)}（配分函数），
+ *       CD 更新 ΔW ≡ lr(E_data[vhᵀ] − E_model[vhᵀ])。
+ * ============================================================ */
+function suiteRBM(check) {
+  const run = (label, fn) => {
+    try { fn((ok, info) => check(label, ok, info)); }
+    catch (e) { check(label, false, '执行异常: ' + (e && e.message)); }
+  };
+
+  // 三条一维 0/1 图案（"条纹棒"）——RBM 应把高概率质量压到它们上面
+  const pats = [
+    [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1],
+  ];
+  const rbmReconErr = (model) => {
+    let tot = 0;
+    for (const p of pats) {
+      const { vProb } = rbmReconstruct(model, p);
+      for (let i = 0; i < p.length; i++) tot += (p[i] - vProb[i]) ** 2;
+    }
+    return tot / pats.length;
+  };
+  const mBefore = rbmTrain(pats, { hidden: 6, cdK: 1, lr: 0.1, iters: 0, seed: 42 });
+  const mT = rbmTrain(pats, { hidden: 6, cdK: 1, lr: 0.1, iters: 400, seed: 42 });
+  const errBefore = rbmReconErr(mBefore);
+  const errAfter = rbmReconErr(mT);
+
+  // 枚举恒等式用小型模型（2^8=256 可见态 × 2^5=32 隐藏态）
+  const rngF = mulberry32(9);
+  const visF = 8, hidF = 5;
+  const mF = {
+    W: randomMatrix(visF, hidF, rngF, -0.8, 0.8),
+    b: Array.from({ length: visF }, () => rngF() * 2 - 1),
+    c: Array.from({ length: hidF }, () => rngF() * 2 - 1),
+    hidden: hidF, visible: visF,
+  };
+
+  run('RBM：P(h|v) ≡ 独立 σ(Wᵀv+c)（< 1e-15）', (c) => {
+    const v = [1, 0, 1, 1, 0, 0, 1, 0];
+    const hp = rbmHiddenProbs(mF, v);
+    let maxErr = 0;
+    for (let j = 0; j < hp.length; j++) {
+      let s = mF.c[j];
+      for (let i = 0; i < v.length; i++) s += mF.W[i][j] * v[i];
+      maxErr = Math.max(maxErr, Math.abs(hp[j] - sigmoid(s)));
+    }
+    c(maxErr < 1e-15, `maxErr=${maxErr.toExponential(2)}`);
+  });
+
+  run('RBM：自由能-配分函数恒等式 — softmax(−FE) ≡ 联合分布枚举归一（< 1e-10）', (c) => {
+    const nV = 1 << visF, nH = 1 << hidF;
+    const negFE = new Array(nV), Z = new Array(nV);
+    for (let mask = 0; mask < nV; mask++) {
+      const v = Array.from({ length: visF }, (_, i) => (mask >> i) & 1);
+      negFE[mask] = -rbmFreeEnergy(mF, v);
+      let z = 0; // Z(v) = Σ_h e^{−E(v,h)}，E = −vᵀWh − bᵀv − cᵀh
+      for (let hm = 0; hm < nH; hm++) {
+        const h = Array.from({ length: hidF }, (_, j) => (hm >> j) & 1);
+        let e = 0;
+        for (let i = 0; i < visF; i++) e -= mF.b[i] * v[i];
+        for (let j = 0; j < hidF; j++) e -= mF.c[j] * h[j];
+        for (let i = 0; i < visF; i++) for (let j = 0; j < hidF; j++) e -= mF.W[i][j] * v[i] * h[j];
+        z += Math.exp(-e);
+      }
+      Z[mask] = z;
+    }
+    const pFE = softmax(negFE);
+    let zSum = 0; for (const z of Z) zSum += z;
+    let maxErr = 0;
+    for (let mask = 0; mask < nV; mask++) maxErr = Math.max(maxErr, Math.abs(pFE[mask] - Z[mask] / zSum));
+    c(maxErr < 1e-10, `${nV} 个可见态最大偏差=${maxErr.toExponential(2)}`);
+  });
+
+  run('RBM：softmax(−FE) 在全状态上概率和 = 1（< 1e-12）', (c) => {
+    const nV = 1 << visF;
+    const negFE = new Array(nV);
+    for (let mask = 0; mask < nV; mask++) {
+      const v = Array.from({ length: visF }, (_, i) => (mask >> i) & 1);
+      negFE[mask] = -rbmFreeEnergy(mF, v);
+    }
+    const p = softmax(negFE);
+    let s = 0; for (const x of p) s += x;
+    c(Math.abs(s - 1) < 1e-12, `Σp=${s.toFixed(15)}`);
+  });
+
+  run('RBM：CD 训练后训练集平均重构误差 < 训练前（固定 seed，留足 margin）', (c) => {
+    c(errAfter < errBefore - 0.5, `before=${errBefore.toFixed(4)} → after=${errAfter.toFixed(4)}（margin=${(errBefore - errAfter).toFixed(4)}）`);
+  });
+
+  run('RBM：训练后训练样本 FE < 随机样本 FE（能量间隔 > 0）', (c) => {
+    const rngZ = mulberry32(11);
+    let feTr = 0;
+    for (const p of pats) feTr += rbmFreeEnergy(mT, p);
+    feTr /= pats.length;
+    const nRnd = 32;
+    let feRd = 0;
+    for (let t = 0; t < nRnd; t++) {
+      const v = Array.from({ length: pats[0].length }, () => (rngZ() < 0.5 ? 0 : 1));
+      feRd += rbmFreeEnergy(mT, v);
+    }
+    feRd /= nRnd;
+    c(feTr < feRd, `FE(训练)=${feTr.toFixed(4)} < FE(随机)=${feRd.toFixed(4)}，间隔=${(feRd - feTr).toFixed(4)}`);
+  });
+
+  run('RBM：CD 更新恒等式 — 单步 ΔW ≡ lr(E_data[vhᵀ]−E_model[vhᵀ])（重算正负相一致 <1e-12）', (c) => {
+    const rngC = mulberry32(3);
+    const XC = Array.from({ length: 6 }, () => Array.from({ length: 8 }, () => (rngC() < 0.5 ? 0 : 1)));
+    const hidC = 5, cdKC = 2, lrC = 0.1;
+    const m0 = rbmTrain(XC, { hidden: hidC, cdK: cdKC, lr: lrC, iters: 0, seed: 42 });
+    const m1 = rbmTrain(XC, { hidden: hidC, cdK: cdKC, lr: lrC, iters: 1, seed: 42 });
+    // 独立重放：同种子初始化 + 同序伯努利采样，按 CD 定义重算正/负相统计
+    const rng = mulberry32(42);
+    const W = randomMatrix(8, hidC, rng, -0.1, 0.1);
+    const bb = new Array(8).fill(0), cc = new Array(hidC).fill(0);
+    const dW = zeros(8, hidC), mW = zeros(8, hidC);
+    for (let s = 0; s < XC.length; s++) {
+      const v0 = XC[s];
+      const h0p = [];
+      for (let j = 0; j < hidC; j++) {
+        let t = cc[j];
+        for (let i = 0; i < 8; i++) t += W[i][j] * v0[i];
+        h0p.push(sigmoid(t));
+      }
+      const h0 = h0p.map((p) => (rng() < p ? 1 : 0));
+      for (let i = 0; i < 8; i++) for (let j = 0; j < hidC; j++) dW[i][j] += v0[i] * h0[j];
+      let v = v0, h = h0;
+      for (let t = 0; t < cdKC; t++) {
+        const vp = [];
+        for (let i = 0; i < 8; i++) {
+          let u = bb[i];
+          for (let j = 0; j < hidC; j++) u += W[i][j] * h[j];
+          vp.push(sigmoid(u));
+        }
+        v = vp.map((p) => (rng() < p ? 1 : 0));
+        const hp = [];
+        for (let j = 0; j < hidC; j++) {
+          let u = cc[j];
+          for (let i = 0; i < 8; i++) u += W[i][j] * v[i];
+          hp.push(sigmoid(u));
+        }
+        h = hp.map((p) => (rng() < p ? 1 : 0));
+      }
+      for (let i = 0; i < 8; i++) for (let j = 0; j < hidC; j++) mW[i][j] += v[i] * h[j];
+    }
+    let maxErr = 0;
+    for (let i = 0; i < 8; i++) for (let j = 0; j < hidC; j++) {
+      const expect = W[i][j] + (lrC / XC.length) * (dW[i][j] - mW[i][j]);
+      maxErr = Math.max(maxErr, Math.abs(expect - m1.W[i][j]));
+    }
+    c(maxErr < 1e-12, `ΔW 重算最大偏差=${maxErr.toExponential(2)}`);
+  });
+}
+
+/* ============================================================
+ * 套件 46 · Hopfield 联想记忆
+ * 站在：Hopfield 1982 PNAS / Amit-Gutfreund-Sompolinski 1985（容量 c≈0.138）。
+ *       核心定理：异步单单元更新下 E(s) = −½sᵀWs − bᵀs 单调不增（Lyapunov），
+ *       存储模式在 m ≤ 0.138n 时为不动点（局部极小，ΔE = 2pᵢ(Wp)ᵢ ≥ 0）。
+ * ============================================================ */
+function suiteHopfield(check) {
+  const run = (label, fn) => {
+    try { fn((ok, info) => check(label, ok, info)); }
+    catch (e) { check(label, false, '执行异常: ' + (e && e.message)); }
+  };
+
+  // 4 条随机 ±1 模式：n=100，m/n = 0.04 ≪ 0.138 容量上限
+  const rngH = mulberry32(2024);
+  const nH = 100, mH = 4;
+  const patterns = Array.from({ length: mH }, () =>
+    Array.from({ length: nH }, () => (rngH() < 0.5 ? -1 : 1)));
+  const model = hopfieldTrain(patterns, { zeroDiag: true });
+  const { W, b } = model;
+
+  run('Hopfield：Lyapunov 能量不增 — 随机轨迹每步 ΔE ≤ 0（1e-12 容差，全步检查）', (c) => {
+    const rngT = mulberry32(31);
+    const s0 = Array.from({ length: nH }, () => (rngT() < 0.5 ? -1 : 1));
+    const rec = hopfieldRecall(W, b, s0, { maxSteps: 50, seed: 5 });
+    let worst = -Infinity, nUpd = 0;
+    for (let k = 1; k < rec.energyTrace.length; k++) {
+      const dE = rec.energyTrace[k] - rec.energyTrace[k - 1];
+      if (dE > worst) worst = dE;
+      nUpd++;
+    }
+    c(worst <= 1e-12, `全 ${nUpd} 次单单元更新 max ΔE=${worst.toExponential(2)}，收敛=${rec.converged}`);
+  });
+
+  run('Hopfield：Hebbian 存储的模式是不动点（从 pμ 出发收敛回 pμ）', (c) => {
+    let allOk = true;
+    const info = [];
+    for (let mu = 0; mu < patterns.length; mu++) {
+      const rec = hopfieldRecall(W, b, patterns[mu], { maxSteps: 50, seed: 100 + mu });
+      const same = rec.state.every((v, i) => v === patterns[mu][i]);
+      if (!same || !rec.converged) allOk = false;
+      info.push(`p${mu}:${same ? '✓' : '✗'}(${rec.steps}轮)`);
+    }
+    c(allOk, info.join(' '));
+  });
+
+  run('Hopfield：W 对角元 = 0（精确）', (c) => {
+    let maxDiag = 0;
+    for (let i = 0; i < nH; i++) maxDiag = Math.max(maxDiag, Math.abs(W[i][i]));
+    c(maxDiag === 0, `max|Wᵢᵢ|=${maxDiag}`);
+  });
+
+  run('Hopfield：W 对称（精确）', (c) => {
+    let maxAsym = 0;
+    for (let i = 0; i < nH; i++) for (let j = i + 1; j < nH; j++) maxAsym = Math.max(maxAsym, Math.abs(W[i][j] - W[j][i]));
+    c(maxAsym === 0, `max|Wᵢⱼ−Wⱼᵢ|=${maxAsym}`);
+  });
+
+  run('Hopfield：25% 比特噪声探针仍收敛回原模式（m ≤ 0.138n）', (c) => {
+    const rngP = mulberry32(55);
+    let allOk = true;
+    const info = [];
+    for (let mu = 0; mu < patterns.length; mu++) {
+      const probe = patterns[mu].slice();
+      for (let i = 0; i < nH; i++) if (rngP() < 0.25) probe[i] = -probe[i];
+      const rec = hopfieldRecall(W, b, probe, { maxSteps: 50, seed: 200 + mu });
+      const same = rec.state.every((v, i) => v === patterns[mu][i]);
+      if (!same) allOk = false;
+      info.push(`p${mu}:${same ? '✓' : '✗'}`);
+    }
+    c(allOk, `${info.join(' ')}（m/n=${(mH / nH).toFixed(3)} ≤ 0.138）`);
+  });
+
+  run('Hopfield：存储模式能量 ≤ 全部单比特翻转邻居能量（局部极小）', (c) => {
+    let worst = -Infinity; // 最大「违规量」= max(E(p)−E(flip))，应 ≤ 0
+    for (const p of patterns) {
+      const e0 = hopfieldEnergy(W, b, p);
+      for (let i = 0; i < nH; i++) {
+        const flip = p.slice(); flip[i] = -flip[i];
+        worst = Math.max(worst, e0 - hopfieldEnergy(W, b, flip)); // ≤0 ⟺ p 为局部极小
+      }
+    }
+    c(worst <= 1e-12, `max(E(p)−E(flip))=${worst.toExponential(2)}（≡ 2pᵢ(Wp)ᵢ ≥ 0）`);
   });
 }

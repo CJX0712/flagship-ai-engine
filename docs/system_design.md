@@ -1,7 +1,7 @@
 # 旗舰AI引擎 (Flagship AI Engine) — 系统架构设计说明书
 
 > 作者署名：晨星 (Morning Star / CJX0712) ｜ 架构师：高见远 (Bob)
-> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、42/42 全绿**。
+> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、46/46 全绿**。
 
 ---
 
@@ -11,13 +11,13 @@
 
 | 设计稿 | 最终实现 | 说明 |
 |---|---|---|
-| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 42 组套件，Node 与浏览器共用同一份 |
+| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 46 组套件，Node 与浏览器共用同一份 |
 | `src/verify/suites.js` | 并入 `src/verify/invariants.js` | 套件与检查器同文件，杜绝跨文件漂移 |
 | `src/core/rng.js` / `src/core/utils.js` | 并入 `src/core/stats.js`（mulberry32/gaussianSample）与 `src/core/linalg.js`/`numerical.js` | 随机源归概率层，工具归各自的消费者 |
 | 浏览器 `<script type="module">` 直引 src | `scripts/bundle.mjs` 按依赖序内联进 `showcase/index.html`（`globalThis.FlagshipAI`） | 兼容 `file://` 双击即用；`node --check` 兜底语法校验 |
-| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 42/42`（CI grep 校验） | 语义一致，命名对齐实现 |
+| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 46/46`（CI grep 校验） | 语义一致，命名对齐实现 |
 
-落地验证结论：`node test/run.mjs` → **PASS 42/42（约 2.9s，252 条不变量）**，与本设计书的全部不变量承诺一致。
+落地验证结论：`node test/run.mjs` → **PASS 46/46（约 2.9s，276 条不变量）**，与本设计书的全部不变量承诺一致。
 
 ### v1.1 增补（2026-10-19）
 
@@ -97,6 +97,17 @@
 
 > 数值要点：CCA 将 `Σxx⁻¹ΣxyΣyy⁻¹Σyx`（两对称阵之积、非对称）经白化代换为对称半正定 `H = Wx·(ΣxyΣyy⁻¹Σyx)·Wxᵀ`，使 Jacobi 特征向量正确、对角化恒等式达 1e-15——直接对非对称积做 Jacobi 会得到错误特征向量（联调中 offErr≈3e-3）。
 
+### v1.9 增补（2026-10-20）
+
+| 增补模块 | 不变量（定理背书） |
+|---|---|
+| `src/ml/qda.js`（二次判别分析，Fisher 1936 / Bishop §4.3） | 类心≡暴力均值；Σ_c 对称≡无偏估计（8.2e-17）；后验行和=1（6.7e-16）；log-后验≡独立实现（1.1e-16）；可分 acc=1.0；同协方差边界退化为线性（0/400 不一致） |
+| `src/ml/lasso.js`（Lasso，Tibshirani 1996 / glmnet 2010） | KKT 最优性证书（1.16e-13）；正交设计≡OLS 软阈值闭式（4.4e-16）；λ=0≡OLS（1.3e-15）；λ* 全零；路径 ‖w‖₁ 单调（41 点回退 0）；欠定 ‖w‖₀≤min(n,d) |
+| `src/nn/rbm.js`（受限玻尔兹曼机，Smolensky 1986 / Hinton 2002 CD-k） | 自由能≡配分函数枚举（256 态 2.6e-17）；P(h\|v)≡σ(Wᵀv+c)；CD 更新恒等式（0）；训练后 FE 间隔 11.93；重构误差 2.975→0.023 |
+| `src/nn/hopfield.js`（联想记忆，Hopfield 1982 / AGS 1985） | Lyapunov 每步 ΔE≤0（300 步 max ΔE=0）；存储模式是不动点；W 对角=0 对称；25% 噪声 4/4 收敛；局部极小 max(E(p)−E(flip))=−1.40 |
+
+> 选型纪律：v1.9 立项前经 `grep` 查重——`classification.js` 已含 `knnPredict`（KNN 出局）、`regression.js` 已含 OLS/Ridge/逻辑回归、`kalman.js` 无平滑器但本轮聚焦「判别三足鼎立（QDA）+ 稀疏回归（Lasso）+ 能量模型双璧（RBM/Hopfield）」三大真实缺口，无重复造轮子。
+
 ---
 
 ## 0. 设计总览
@@ -106,7 +117,7 @@
 | 运行形态 | 原生 **ES Module**（源码 `.js` + `package.json` 声明 `type:module`，测试入口 `.mjs`），浏览器 `<script type="module">` 与 Node `node test/run.mjs` 双跑 |
 | 依赖 | **零第三方依赖**；测试/服务仅用 Node 内置模块（`node:assert`、`node:process`、`node:http`、`node:fs`、`node:path`） |
 | 可复现 | 全确定性：核心不使用 `Math.random()` / `Date.now()`，统一经 `mulberry32(seed)` 种子随机数 |
-| 验证 | **42 组不变量套件**（v1.0 的 8 组起步，逐版本累积至 v1.8 的 42 组、252 条），每组聚合若干「不变量自检」，全部通过即为 42/42 全绿；CI 中以退出码 0/1 反映 |
+| 验证 | **46 组不变量套件**（v1.0 的 8 组起步，逐版本累积至 v1.9 的 46 组、276 条），每组聚合若干「不变量自检」，全部通过即为 46/46 全绿；CI 中以退出码 0/1 反映 |
 | 展示 | 单文件 `showcase/index.html`，内联 CSS/JS，零外部依赖，实时渲染自检报告 + 算法演示 |
 | 文档 | `README.md` / `ARCHITECTURE.md` / `MATH.md`（数学证明与不变量）/ `LICENSE`(MIT) / `.github/workflows/ci.yml` |
 
