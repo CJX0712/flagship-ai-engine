@@ -1,7 +1,7 @@
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 50 组套件全绿 = 引擎数学正确性的机器证明。
+ * 54 组套件全绿 = 引擎数学正确性的机器证明。
  */
 
 import {
@@ -134,6 +134,18 @@ import {
   sarsa, sarsaLambda, sarsaBellmanResidual, sarsaStep,
   sarsaEpsilonProbs, epsilonGreedyAction, sarsaTraceSet, sarsaTraceDecay,
 } from '../rl/sarsa.js';
+import {
+  softmaxRegression, softmaxGradientCheck,
+} from '../ml/softmaxRegression.js';
+import {
+  elasticNetFit, elasticNetPredict,
+} from '../ml/elasticNet.js';
+import {
+  GRU, gruGradientCheck, trainGRU, gruStepClosed,
+} from '../nn/gru.js';
+import {
+  expectedSarsa, expectedSarsaStep, expectedValue, expectedBellmanResidual,
+} from '../rl/expectedSarsa.js';
 
 /** 向量最大绝对值 */
 function vinf(v) {
@@ -172,7 +184,7 @@ function blobs(rng, centers, nPer, sigma) {
 }
 
 /**
- * 运行全部 14 组不变量自检。
+ * 运行全部 54 组不变量自检。
  * @returns {{results:Array, passed:number, total:number, allOk:boolean}}
  */
 export function runAllInvariants() {
@@ -228,6 +240,10 @@ export function runAllInvariants() {
     ['粒子滤波 · Gordon 1993 (SIR)', suiteParticleFilter],
     ['Mean Shift 众数搜索 · Fukunaga 1975', suiteMeanShift],
     ['SARSA 同策略TD · Rummery & Niranjan 1994', suiteSARSA],
+    ['门控循环单元 · GRU (Cho et al. 2014)', suiteGRU],
+    ['多类逻辑回归 · Softmax Regression (Bishop §4.3.4)', suiteSoftmaxRegression],
+    ['期望SARSA · Expected SARSA (van Seijen et al. 2009)', suiteExpectedSarsa],
+    ['弹性网络 · Elastic Net (Zou & Hastie 2005)', suiteElasticNet],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -3635,4 +3651,278 @@ function suiteSARSA(check) {
   let repDiff = 0;
   for (let i = 0; i < 6; i++) for (let j = 0; j < 2; j++) repDiff = Math.max(repDiff, Math.abs(r1.Q[i][j] - r2.Q[i][j]));
   check('SARSA：同 seed 两次训练 Q 逐位一致', repDiff === 0, `maxDiff=${repDiff}`);
+}
+
+/* ============================================================
+ * 套件 51 · 门控循环单元 GRU（Cho et al. 2014）
+ * ============================================================ */
+function suiteGRU(check) {
+  const rng = mulberry32(11);
+  const net = new GRU({ inputSize: 3, hiddenSize: 4, outputSize: 2, seed: 11 });
+
+  // ① BPTT 解析梯度 ≡ 中心差分数值梯度（双判据 CS231n）
+  const T = 6;
+  const X = Array.from({ length: T }, () => Array.from({ length: 3 }, () => (rng() - 0.5) * 1.5));
+  const targets = Array.from({ length: T }, () => Array.from({ length: 2 }, () => (rng() - 0.5) * 1.5));
+  const gc = gruGradientCheck(net, X, targets, { eps: 1e-5 });
+  check('GRU：BPTT 解析梯度 ≡ 中心差分数值梯度（maxRelErr<1e-6）', gc.maxRelErr < 1e-6 && gc.significant > 0,
+    `maxRelErr=${gc.maxRelErr.toExponential(2)}，显著分量=${gc.significant}`);
+
+  // ② 循环递推恒等式：h_t = (1−z_t)·h_{t−1} + z_t·h̃_t（逐位精确）
+  const fwd = net.forward(X);
+  let recErr = 0;
+  let hPrev = new Array(4).fill(0);
+  for (let t = 0; t < fwd.T; t++) {
+    for (let j = 0; j < 4; j++) {
+      const expected = (1 - fwd.Z[t][j]) * hPrev[j] + fwd.Z[t][j] * fwd.HT[t][j];
+      recErr = Math.max(recErr, Math.abs(fwd.H[t][j] - expected));
+    }
+    hPrev = fwd.H[t];
+  }
+  check('GRU：隐态递推恒等式 h_t=(1−z_t)h_{t−1}+z_t·h̃_t（<1e-12）', recErr < 1e-12, `maxErr=${recErr.toExponential(2)}`);
+
+  // ③ 单步闭式：gruStepClosed 手算首步 ≡ forward 首步（独立交叉验证）
+  const closed = gruStepClosed(net, X[0], new Array(4).fill(0));
+  let stepErr = 0;
+  for (let j = 0; j < 4; j++) stepErr = Math.max(stepErr, Math.abs(closed.hT[j] - fwd.H[0][j]));
+  check('GRU：单步闭式手算 ≡ forward 首步（<1e-12）', stepErr < 1e-12, `maxErr=${stepErr.toExponential(2)}`);
+
+  // ④ 候选重构：h̃_t = tanh(W_xh·x_t + r_t⊙(W_hh·h_{t−1}) + b_h)（含重置门调制）
+  let candErr = 0;
+  hPrev = new Array(4).fill(0);
+  for (let t = 0; t < fwd.T; t++) {
+    for (let j = 0; j < 4; j++) {
+      let sh = net.bh[j];
+      for (let k = 0; k < 3; k++) sh += net.Wxh[j][k] * X[t][k];
+      let hh = 0;
+      for (let k = 0; k < 4; k++) hh += net.Whh[j][k] * hPrev[k];
+      sh += fwd.R[t][j] * hh;
+      candErr = Math.max(candErr, Math.abs(fwd.HT[t][j] - Math.tanh(sh)));
+    }
+    hPrev = fwd.H[t];
+  }
+  check('GRU：候选 h̃_t 含重置门调制重构（<1e-12）', candErr < 1e-12, `maxErr=${candErr.toExponential(2)}`);
+
+  // ⑤ 训练显著降损：固定教师网络（不同权重）产生目标，学生 GRU 训练拟合 → MSE 大幅收敛
+  const teacherNet = new GRU({ inputSize: 3, hiddenSize: 4, outputSize: 2, seed: 99 });
+  const teacherTargets = teacherNet.forward(X).Y;
+  const { losses } = trainGRU(net, X, teacherTargets, { lr: 0.05, iters: 2000 });
+  check('GRU：拟合教师网络目标下训练大幅降损（末损 < 初损×0.1）',
+    losses[losses.length - 1] < losses[0] * 0.1,
+    `初损=${losses[0].toExponential(2)}，末损=${losses[losses.length - 1].toExponential(2)}`);
+
+  // ⑥ 同 seed 初始化一致：两次构造（未训练）权重逐位相同
+  const netSeed = new GRU({ inputSize: 3, hiddenSize: 4, outputSize: 2, seed: 11 });
+  const net2 = new GRU({ inputSize: 3, hiddenSize: 4, outputSize: 2, seed: 11 });
+  let same = true;
+  for (const key of ['Wxr', 'Wxz', 'Wxh', 'Whr', 'Whz', 'Whh', 'Why']) {
+    for (let j = 0; j < netSeed[key].length; j++)
+      for (let k = 0; k < netSeed[key][j].length; k++)
+        if (netSeed[key][j][k] !== net2[key][j][k]) same = false;
+  }
+  check('GRU：同 seed 两次构造权重逐位一致', same, `一致=${same}`);
+}
+
+/* ============================================================
+ * 套件 52 · 多类逻辑回归 Softmax Regression（Bishop §4.3.4）
+ * ============================================================ */
+function suiteSoftmaxRegression(check) {
+  const rng = mulberry32(21);
+  const { X, y } = blobs(rng, [[-2, -2], [2, 2], [-2, 2]], 20, 0.4);
+  const K = 3;
+
+  // ① 解析梯度 ≡ 数值梯度（双判据）
+  const g = softmaxGradientCheck(X, y, { eps: 1e-5, seed: 21 });
+  check('Softmax：解析梯度 ≡ 中心差分数值梯度（maxRelErr<1e-6）', g.maxRelErr < 1e-6 && g.significant > 0,
+    `maxRelErr=${g.maxRelErr.toExponential(2)}，显著=${g.significant}`);
+
+  const model = softmaxRegression(X, y, { lr: 0.5, iters: 800, seed: 21, K });
+
+  // ③ 概率归一：Σ_k p_{i,k} ≡ 1
+  const proba = model.predictProba(X);
+  let sumErr = 0;
+  for (const p of proba) sumErr = Math.max(sumErr, Math.abs(p.reduce((a, b) => a + b, 0) - 1));
+  check('Softmax：每样本概率和 ≡ 1（<1e-12）', sumErr < 1e-12, `max偏差=${sumErr.toExponential(2)}`);
+
+  // ④ 交叉熵非负且训练单调不增
+  let nonNeg = true, mono = true;
+  for (const l of model.losses) if (l < -1e-12) nonNeg = false;
+  for (let i = 1; i < model.losses.length; i++) if (model.losses[i] > model.losses[i - 1] + 1e-9) mono = false;
+  check('Softmax：交叉熵 ≥ 0 且训练单调不增', nonNeg && mono, `非负=${nonNeg}，单调=${mono}`);
+
+  // ⑤ 同 seed 可复现：两次训练 W 逐位一致
+  const m2 = softmaxRegression(X, y, { lr: 0.5, iters: 800, seed: 21, K });
+  let same = true;
+  for (let k = 0; k < K; k++) for (let j = 0; j < model.W[k].length; j++) if (model.W[k][j] !== m2.W[k][j]) same = false;
+  check('Softmax：同 seed 两次训练 W 逐位一致', same, `一致=${same}`);
+
+  // ② K=2 退化：预测标签 ≡ logisticRegression 预测标签（可分数据逐位一致）
+  const { X: X2, y: y2 } = blobs(rng, [[-2], [2]], 20, 0.3);
+  const sm = softmaxRegression(X2, y2, { lr: 0.5, iters: 1000, seed: 21, K: 2 });
+  const lg = logisticRegression(X2, y2, { lr: 0.5, iters: 1000, seed: 1 });
+  const ps = sm.predict(X2);
+  const pl = lg.predict(X2);
+  let eq = true;
+  for (let i = 0; i < ps.length; i++) if (ps[i] !== pl[i]) eq = false;
+  let acc = 0;
+  for (let i = 0; i < ps.length; i++) if (ps[i] === y2[i]) acc++;
+  check('Softmax(K=2)：预测标签 ≡ logisticRegression 且可分满分', eq && acc === ps.length,
+    `标签一致=${eq}，准确率=${acc}/${ps.length}`);
+}
+
+/* ============================================================
+ * 套件 53 · 期望 SARSA Expected SARSA（van Seijen et al. 2009）
+ * ============================================================ */
+function suiteExpectedSarsa(check) {
+  const rng = mulberry32(31);
+  const S = 3, A = 2;
+  const Q0 = randomMatrix(S, A, rng, -1, 1);
+  const P = [], R = [];
+  for (let s = 0; s < S; s++) {
+    const pa = [], ra = [];
+    for (let a = 0; a < A; a++) {
+      const ns = (s + (a === 1 ? 1 : -1) + S) % S;
+      pa.push([[ns, 1]]);
+      ra.push([a === 1 ? 1 : 0]);
+    }
+    P.push(pa); R.push(ra);
+  }
+  const gamma = 0.9;
+
+  // ① ε=0 退化：单步 TD 目标 ≡ Q-learning 贪婪目标
+  const s = 0, a = 0;
+  const s2 = P[s][a][0][0];
+  const r = R[s][a][0];
+  const aGreedy = greedyAction(Q0, s2);
+  const Qe = Q0.map((row) => row.slice());
+  expectedSarsaStep(Qe, s, a, r, s2, { alpha: 0.1, gamma, eps: 0 });
+  const Qq = Q0.map((row) => row.slice());
+  const deltaQL = r + gamma * Math.max(...Qq[s2]) - Qq[s][a];
+  Qq[s][a] += 0.1 * deltaQL;
+  let diff = 0;
+  for (let i = 0; i < S; i++) for (let j = 0; j < A; j++) diff = Math.max(diff, Math.abs(Qe[i][j] - Qq[i][j]));
+  check('ExpSARSA：ε=0 单步 ≡ Q-learning 贪婪目标（1e-15）', diff < 1e-15, `maxDiff=${diff.toExponential(2)}`);
+
+  // ② 期望目标代数：r + γ·Σ π Q ≡ r + γ·dot(π, Q[s'])
+  const probs = [0.3, 0.7];
+  const expV = expectedValue(Q0, s2, probs);
+  let dotV = 0;
+  for (let b = 0; b < A; b++) dotV += probs[b] * Q0[s2][b];
+  check('ExpSARSA：期望目标 ≡ dot(π, Q[s’])（<1e-15）', Math.abs(expV - dotV) < 1e-15, `差=${Math.abs(expV - dotV).toExponential(2)}`);
+
+  // ③ GLIE 收敛：chainMDP 上收敛 Q ≈ qFromV(V*)
+  const { P: Pg, R: Rg } = chainMDP({ n: 6, gamma });
+  const vi = valueIteration(Pg, Rg, gamma);
+  const Qref = qFromV(Pg, Rg, gamma, vi.V);
+  const res = expectedSarsa(Pg, Rg, {
+    gamma, alpha: 0.2, epsStart: 1, epsEnd: 0, episodes: 4000, stepsPerEpisode: 40,
+    seed: 5, epsDecayFrac: 0.5,
+  });
+  let qDiff = 0;
+  for (let i = 0; i < 6; i++) for (let j = 0; j < 2; j++) qDiff = Math.max(qDiff, Math.abs(res.Q[i][j] - Qref[i][j]));
+  let polOk = true;
+  for (let i = 0; i < 6; i++) if (greedyAction(res.Q, i) !== greedyAction(Qref, i)) polOk = false;
+  check('ExpSARSA：GLIE 收敛 Q ≈ qFromV(V*) 且策略一致', qDiff < 0.4 && polOk, `max|ΔQ|=${qDiff.toFixed(4)}，策略一致=${polOk}`);
+
+  // ④ 同策略期望 Bellman 残差 → 0
+  const resid = expectedBellmanResidual(Pg, Rg, gamma, res.Q, 0);
+  check('ExpSARSA：同策略期望 Bellman 残差 ‖Q − B^πQ‖ → 0（<0.4）', resid < 0.4, `max残差=${resid.toFixed(4)}`);
+
+  // ⑤ 学习改善：后期回合平均回报 > 前期
+  const ret = res.episodeReturns;
+  const m = Math.max(1, Math.floor(ret.length * 0.1));
+  let firstAvg = 0, lastAvg = 0;
+  for (let i = 0; i < m; i++) firstAvg += ret[i];
+  for (let i = ret.length - m; i < ret.length; i++) lastAvg += ret[i];
+  firstAvg /= m; lastAvg /= m;
+  check('ExpSARSA：后期回合平均回报 > 前期（探索→利用）', lastAvg > firstAvg + 1e-9, `前=${firstAvg.toFixed(3)}，后=${lastAvg.toFixed(3)}`);
+
+  // ⑥ 同 seed 两次训练 Q 逐位一致
+  const r1 = expectedSarsa(Pg, Rg, { gamma, episodes: 500, stepsPerEpisode: 30, seed: 9 });
+  const r2 = expectedSarsa(Pg, Rg, { gamma, episodes: 500, stepsPerEpisode: 30, seed: 9 });
+  let repDiff = 0;
+  for (let i = 0; i < 6; i++) for (let j = 0; j < 2; j++) repDiff = Math.max(repDiff, Math.abs(r1.Q[i][j] - r2.Q[i][j]));
+  check('ExpSARSA：同 seed 两次训练 Q 逐位一致', repDiff === 0, `maxDiff=${repDiff}`);
+}
+
+/* ============================================================
+ * 套件 54 · 弹性网络 Elastic Net（Zou & Hastie 2005）
+ * ============================================================ */
+function suiteElasticNet(check) {
+  const rng = mulberry32(41);
+  const n = 60, d = 5;
+  const X = Array.from({ length: n }, () => Array.from({ length: d }, () => gaussianSample(rng, 0, 1)));
+  const trueW = [1.5, -2.0, 0.5, 0.0, 1.0];
+  const y = X.map((xi) => {
+    let s = 0;
+    for (let j = 0; j < d; j++) s += trueW[j] * xi[j];
+    return s + gaussianSample(rng, 0, 0.1);
+  });
+  const softTh = (rho, lam) => (rho > lam ? rho - lam : (rho < -lam ? rho + lam : 0));
+
+  // ① λ1=0 ≡ 岭回归
+  const en0 = elasticNetFit(X, y, { lambda1: 0, lambda2: 2, iters: 5000 });
+  const ridge = ridgeRegression(X, y, 2);
+  let wDiff = 0, bDiff = 0;
+  for (let j = 0; j < d; j++) wDiff = Math.max(wDiff, Math.abs(en0.w[j] - ridge.w[j + 1]));
+  bDiff = Math.abs(en0.b - ridge.w[0]);
+  check('ElasticNet：λ1=0 解 ≡ 岭回归（w,b < 1e-6）', wDiff < 1e-6 && bDiff < 1e-6,
+    `max|Δw|=${wDiff.toExponential(2)}，Δb=${bDiff.toExponential(2)}`);
+
+  // ② λ2=0 ≡ Lasso
+  const en1 = elasticNetFit(X, y, { lambda1: 0.5, lambda2: 0, iters: 5000 });
+  const lasso = lassoFit(X, y, { lambda: 0.5, iters: 5000 });
+  let wDiff2 = 0, bDiff2 = 0;
+  for (let j = 0; j < d; j++) wDiff2 = Math.max(wDiff2, Math.abs(en1.w[j] - lasso.w[j]));
+  bDiff2 = Math.abs(en1.b - lasso.b);
+  check('ElasticNet：λ2=0 解 ≡ Lasso（w,b < 1e-7）', wDiff2 < 1e-7 && bDiff2 < 1e-7,
+    `max|Δw|=${wDiff2.toExponential(2)}，Δb=${bDiff2.toExponential(2)}`);
+
+  // ③ λ1=λ2=0 ≡ 普通最小二乘
+  const en2 = elasticNetFit(X, y, { lambda1: 0, lambda2: 0, iters: 5000 });
+  const ols = linearRegression(X, y);
+  let wDiff3 = 0;
+  for (let j = 0; j < d; j++) wDiff3 = Math.max(wDiff3, Math.abs(en2.w[j] - ols.w[j + 1]));
+  check('ElasticNet：λ1=λ2=0 解 ≡ 最小二乘斜率（< 1e-6）', wDiff3 < 1e-6, `max|Δw|=${wDiff3.toExponential(2)}`);
+
+  // ④ 坐标下降不动点：收敛解满足 w_j = S(ρ_j,λ1)/(z_j+λ2)（精确）
+  const en3 = elasticNetFit(X, y, { lambda1: 0.8, lambda2: 1.5, iters: 5000 });
+  const xbar = new Array(d).fill(0);
+  for (const r of X) for (let j = 0; j < d; j++) xbar[j] += r[j];
+  for (let j = 0; j < d; j++) xbar[j] /= n;
+  const Xc = X.map((r) => r.map((v, j) => v - xbar[j]));
+  const ybar = y.reduce((a, b) => a + b, 0) / n;
+  const yc = y.map((v) => v - ybar);
+  const z = new Array(d).fill(0);
+  for (let j = 0; j < d; j++) for (let i = 0; i < n; i++) z[j] += Xc[i][j] * Xc[i][j];
+  const rr = yc.slice();
+  for (let j = 0; j < d; j++) for (let i = 0; i < n; i++) rr[i] -= Xc[i][j] * en3.w[j];
+  let fpErr = 0;
+  for (let j = 0; j < d; j++) {
+    let rho = 0;
+    for (let i = 0; i < n; i++) rho += Xc[i][j] * rr[i];
+    rho += z[j] * en3.w[j];
+    const target = softTh(rho, 0.8) / (z[j] + 1.5);
+    fpErr = Math.max(fpErr, Math.abs(en3.w[j] - target));
+  }
+  check('ElasticNet：收敛解满足坐标不动点 w_j=S(ρ_j,λ1)/(z_j+λ2)（<1e-9）', fpErr < 1e-9, `maxErr=${fpErr.toExponential(2)}`);
+
+  // ⑤ KKT 证书：平滑梯度 ρ'_j = Σ Xc_j r；活跃 ρ'_j = λ2·w_j + λ1·sign(w_j)，非活跃 |ρ'_j| ≤ λ1
+  let kktOk = true;
+  for (let j = 0; j < d; j++) {
+    let rhoPrime = 0;
+    for (let i = 0; i < n; i++) rhoPrime += Xc[i][j] * rr[i];
+    if (Math.abs(en3.w[j]) > 1e-9) {
+      if (Math.abs(rhoPrime - (1.5 * en3.w[j] + 0.8 * Math.sign(en3.w[j]))) > 1e-7) kktOk = false;
+    } else if (Math.abs(rhoPrime) > 0.8 * (1 + 1e-6)) {
+      kktOk = false;
+    }
+  }
+  check('ElasticNet：KKT 证书（活跃 ρ’=λ2·w+λ1·sign，非活跃 |ρ’|≤λ1）', kktOk, `KKT满足=${kktOk}`);
+
+  // ⑥ 目标单调不增
+  const obj = en3.objective;
+  let monoObj = true;
+  for (let i = 1; i < obj.length; i++) if (obj[i] > obj[i - 1] + 1e-9) monoObj = false;
+  check('ElasticNet：坐标下降目标单调不增', monoObj, `单调=${monoObj}`);
 }

@@ -21,5 +21,5 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - name: 运行不变量自检
         run: node test/run.mjs
-      - name: 校验 50/50 全绿
-        run: node test/run.mjs | grep -q "PASS 50/50" || (echo "自检未达 50/50 全绿" && exit 1)
+      - name: 校验 54/54 全绿
+        run: node test/run.mjs | grep -q "PASS 54/54" || (echo "自检未达 54/54 全绿" && exit 1)

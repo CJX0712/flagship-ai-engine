@@ -53,7 +53,9 @@ flagship-ai-engine/
 │   │   ├── cca.js               # 典型相关分析（白化代换对称广义特征）
 │   │   ├── hierarchical.js      # 凝聚式层次聚类（single/complete/average，Lance-Williams）
 │   │   ├── qda.js               # 二次判别分析 QDA（各类完整协方差 + Cholesky logDet）
-│   │   └── lasso.js             # Lasso 稀疏回归（坐标下降 + 软阈值，截距不惩罚）
+│   │   ├── lasso.js             # Lasso 稀疏回归（坐标下降 + 软阈值，截距不惩罚）
+│   │   ├── softmaxRegression.js # Softmax 多类逻辑回归（Bishop §4.3.4，softmax + 交叉熵）
+│   │   ├── elasticNet.js        # 弹性网络（Zou&Hastie'05，L1+L2 混合坐标下降）
 │   │   ├── kalmanSmoother.js    # 卡尔曼平滑 RTS（Rauch-Tung-Striebel 1965 反向递推增益）
 │   │   ├── particleFilter.js    # 粒子滤波 SIR（Gordon 1993，log 权重 + 系统重采样 + ESS）
 │   │   └── meanShift.js         # Mean Shift 核密度爬山（Fukunaga 1975 / Cheng 1995）
@@ -63,6 +65,7 @@ flagship-ai-engine/
 │   │   ├── transformer.js       # LayerNorm/位置编码/Transformer 块
 │   │   ├── rnn.js               # Elman RNN + BPTT(梯度检验)
 │   │   ├── lstm.js              # LSTM 门控网络 + BPTT(梯度检验)
+│   │   ├── gru.js               # GRU 门控循环单元（Cho'14，双门 r/z + BPTT 梯度检验）
 │   │   ├── cnn.js               # 卷积/池化（im2col+GEMM，反向传播梯度检验）
 │   │   ├── optimizers.js        # SGD-Momentum / RMSProp / Adam + minimize
 │   │   ├── activations.js       # GELU/SiLU/Mish/HardSwish/Softplus + erf(A&S 7.1.26)
@@ -77,11 +80,12 @@ flagship-ai-engine/
 │   │   ├── valueIteration.js    # 值迭代/策略评估/网格世界/链式 MDP 暴力枚举
 │   │   └── qLearning.js         # Q-learning(免模型TD) + Bellman 残差 + qFromV
 │   │   └── sarsa.js             # SARSA / SARSA(λ) 同策略 TD 控制 + 替换迹
+│   │   └── expectedSarsa.js     # Expected SARSA（van Seijen'09，对 π 求期望的 TD）
 │   └── verify/
-│       └── invariants.js        # 50 组不变量自检套件（Node 与浏览器共用同一份）
-├── test/run.mjs                 # 无头自检入口 → PASS 50/50
+│       └── invariants.js        # 54 组不变量自检套件（Node 与浏览器共用同一份）
+├── test/run.mjs                 # 无头自检入口 → PASS 54/54
 ├── showcase/
-│   ├── template.html            # 旗舰展示页模板（35 个实时演示）
+│   ├── template.html            # 旗舰展示页模板（39 个实时演示）
 │   └── index.html               # 生成物：单文件、内联引擎、双击即用
 ├── scripts/
 │   ├── serve.mjs                # 零依赖静态服务器（可选）
@@ -148,8 +152,8 @@ graph LR
 | T4 | ml/classification + clustering + dimreduction + tree | T1,T2 |
 | T5 | nn/dense（反向传播 + 梯度检验） | T1,T2 |
 | T6 | nn/attention + transformer | T1,T2,T5 |
-| T7 | verify/invariants（50 组套件） | T1–T6 |
-| T8 | test/run.mjs 跑通 50/50 | T7 |
+| T7 | verify/invariants（54 组套件） | T1–T6 |
+| T8 | test/run.mjs 跑通 54/54 | T7 |
 | T9 | bundle + showcase 单文件页 | T7 |
 | T10 | 文档 + GitHub 推送 + CI 绿 | T8,T9 |
 

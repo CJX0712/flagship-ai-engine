@@ -6,15 +6,15 @@
 [![CI](https://github.com/CJX0712/flagship-ai-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/CJX0712/flagship-ai-engine/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Zero Dependency](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](package.json)
-[![Self-Test](https://img.shields.io/badge/self--test-50%2F50%20green-success.svg)](test/run.mjs)
-[![Release](https://img.shields.io/badge/release-v1.10.0-blue.svg)](https://github.com/CJX0712/flagship-ai-engine/releases)
+[![Self-Test](https://img.shields.io/badge/self--test-54%2F54%20green-success.svg)](test/run.mjs)
+[![Release](https://img.shields.io/badge/release-v1.11.0-blue.svg)](https://github.com/CJX0712/flagship-ai-engine/releases)
 
 ---
 
 ## 旗舰宣言
 
-- **零重写 · 集大成**：每一行代码都站在世界顶级成果之上。数学来自 Numerical Recipes / Golub & Van Loan；机器学习来自 ESL / Bishop；深度学习来自 Attention Is All You Need；循环网络来自 Werbos 1990；SVM 来自 Cortes & Vapnik 1995；集成学习来自 Freund & Schapire 1997；HMM 来自 Baum & Petrie 1966；强化学习来自 Bellman 1957；免模型控制来自 Watkins 1989；密度聚类来自 Ester et al. 1996；流形嵌入来自 van der Maaten & Hinton 2008；自适应优化来自 Kingma & Ba 2015；核主成分来自 Schölkopf et al. 1998；谱聚类来自 Shi & Malik 2000 / Ng-Jordan-Weiss 2002；现代激活来自 Hendrycks & Gimpel 2016（GELU）；学习率调度来自 Vaswani et al. 2017（Noam）与 Loshchilov & Hutter 2016（SGDR）；归一化来自 Ioffe & Szegedy 2015（BatchNorm）/ Ba 2016（LayerNorm）；残差网络来自 He et al. 2015；网页排名来自 Page & Brin 1998；吉布斯采样来自 Geman & Geman 1984 / Casella & George 1992；二次判别来自 Fisher 1936 / Bishop §4.3；稀疏回归来自 Tibshirani 1996 / glmnet 2010；受限玻尔兹曼机来自 Smolensky 1986 / Hinton 2002；联想记忆来自 Hopfield 1982 / Amit-Gutfreund-Sompolinsky 1985；状态估计平滑来自 Rauch-Tung-Striebel 1965（RTS 平滑）/ Gordon 1993（粒子滤波 SIR）；同策略强化学习来自 Rummery & Niranjan 1994（SARSA）；核密度爬山来自 Fukunaga 1975 / Cheng 1995（Mean Shift 梯度上升 + 单调收敛）。凡有更强现成方案，立即替换自写。
-- **可验证 · 不变量驱动**：每条算法至少带 1 条"可验证不变量"——解析解 vs 数值解、梯度检验、责任度和 1、KL≥0、EM 单调性、Bellman 残差→0、KKT 互补松弛、ARI=1、困惑度达成、Adam 首步闭式、线性核 KPCA ≡ 经典 PCA、谱聚类两月亮 ARI=1.000000、GELU/SiLU/Mish 导数 ≡ 中心差分、Noam 两支在 warmup 顶点精确连续、QDA 同协方差边界退化为线性、Lasso KKT 最优性证书、RBM 自由能 ≡ 配分函数枚举、Hopfield 能量每步不增…… 浏览器一键自检 + 无头 Node `50/50` 全绿。
+- **零重写 · 集大成**：每一行代码都站在世界顶级成果之上。数学来自 Numerical Recipes / Golub & Van Loan；机器学习来自 ESL / Bishop；深度学习来自 Attention Is All You Need；循环网络来自 Werbos 1990；SVM 来自 Cortes & Vapnik 1995；集成学习来自 Freund & Schapire 1997；HMM 来自 Baum & Petrie 1966；强化学习来自 Bellman 1957；免模型控制来自 Watkins 1989；密度聚类来自 Ester et al. 1996；流形嵌入来自 van der Maaten & Hinton 2008；自适应优化来自 Kingma & Ba 2015；核主成分来自 Schölkopf et al. 1998；谱聚类来自 Shi & Malik 2000 / Ng-Jordan-Weiss 2002；现代激活来自 Hendrycks & Gimpel 2016（GELU）；学习率调度来自 Vaswani et al. 2017（Noam）与 Loshchilov & Hutter 2016（SGDR）；归一化来自 Ioffe & Szegedy 2015（BatchNorm）/ Ba 2016（LayerNorm）；残差网络来自 He et al. 2015；网页排名来自 Page & Brin 1998；吉布斯采样来自 Geman & Geman 1984 / Casella & George 1992；二次判别来自 Fisher 1936 / Bishop §4.3；稀疏回归来自 Tibshirani 1996 / glmnet 2010；受限玻尔兹曼机来自 Smolensky 1986 / Hinton 2002；联想记忆来自 Hopfield 1982 / Amit-Gutfreund-Sompolinsky 1985；状态估计平滑来自 Rauch-Tung-Striebel 1965（RTS 平滑）/ Gordon 1993（粒子滤波 SIR）；同策略强化学习来自 Rummery & Niranjan 1994（SARSA）；核密度爬山来自 Fukunaga 1975 / Cheng 1995（Mean Shift 梯度上升 + 单调收敛）；门控循环单元来自 Cho et al. 2014（GRU）；多类逻辑回归来自 Bishop §4.3.4；期望 SARSA 来自 van Seijen et al. 2009；弹性网络来自 Zou & Hastie 2005 / Friedman 2010（glmnet）。凡有更强现成方案，立即替换自写。
+- **可验证 · 不变量驱动**：每条算法至少带 1 条"可验证不变量"——解析解 vs 数值解、梯度检验、责任度和 1、KL≥0、EM 单调性、Bellman 残差→0、KKT 互补松弛、ARI=1、困惑度达成、Adam 首步闭式、线性核 KPCA ≡ 经典 PCA、谱聚类两月亮 ARI=1.000000、GELU/SiLU/Mish 导数 ≡ 中心差分、Noam 两支在 warmup 顶点精确连续、QDA 同协方差边界退化为线性、Lasso KKT 最优性证书、RBM 自由能 ≡ 配分函数枚举、Hopfield 能量每步不增、GRU BPTT 梯度双判据、Softmax K=2≡logistic、Expected SARSA ε=0≡Q-learning、Elastic Net 退化≡Ridge/Lasso/OLS…… 浏览器一键自检 + 无头 Node `54/54` 全绿。
 - **闭环交付**：完整开源、可运行、可复现、可验证。
 
 ## 快速开始
@@ -26,7 +26,7 @@ cd flagship-ai-engine
 
 # 运行不变量自检（无需安装任何依赖）
 node test/run.mjs
-# 期望输出：PASS 50/50 — 全部不变量自检通过
+# 期望输出：PASS 54/54 — 全部不变量自检通过
 ```
 
 **旗舰展示页**：直接双击 `showcase/index.html`（引擎已内联，零服务器、零网络），
@@ -42,7 +42,7 @@ node test/run.mjs
 经典机器学习层 ml/    regression · classification · clustering · dimreduction · dbscan · tsne · kpca · spectral · svm · boosting · hmm · tree · kalmanSmoother · particleFilter · meanShift
 深度学习层   nn/    denseNet · attention · transformerBlock · rnn · lstm · optimizers · activations · schedulers
 强化学习层   rl/    valueIteration · policyEvaluation · qLearning · sarsa · gridworld
-验证层       verify/ 每条算法的不变量自检（50 组套件）
+验证层       verify/ 每条算法的不变量自检（54 组套件）
 展示层       showcase/ 单文件 HTML 旗舰页
 ```
 
@@ -94,8 +94,12 @@ node test/run.mjs
 | 贝叶斯滤波 | 粒子滤波 SIR（Gordon 1993，log 权重 + 系统重采样 + ESS） | 权重归一 Σw=1；收敛邻卡尔曼（meanDiff<0.01）；ESS≤N 且重采样后=1；系统重采样守恒；退化抑制；同 seed 一致 |
 | 核密度聚类 | Mean Shift（Fukunaga 1975 / Cheng 1995，KDE 梯度上升 + 模态） | 梯度恒等式 m(x)−x=h²∇f̂/f̂（maxRelErr<1e-8）；h→∞ 退化为质心；单调收敛；不动点；单峰唯一；两团分离 |
 | 同策略强化学习 | SARSA / SARSA(λ)（Rummery & Niranjan 1994，在策略 TD + 替换迹） | ε=0≡Q-learning；λ=0≡单步 SARSA；GLIE 收敛 V→V*；在策略 Bellman 残差→0；资格迹替换+γλ 衰减；同 seed 一致 |
+| 循环网络 | GRU（Cho et al. 2014，双门 r/z + 候选隐态） | BPTT 梯度 ≡ 中心差分（双判据 maxRelErr<1e-6）；门控闭合 z≡1⇒h=h̃、z≡0⇒h_{t−1}；单步闭式；重置门隔离；训练收敛；同 seed 一致 |
+| 多类分类 | Softmax Regression（Bishop §4.3.4，softmax + 交叉熵） | 解析梯度 ≡ 中心差分；K=2≡logisticRegression；Σ_k p=1；交叉熵≥0 且单调不增；同 seed 一致 |
+| 离策略期望 TD | Expected SARSA（van Seijen et al. 2009，对 π 求期望） | ε=0 单步≡Q-learning（1e-15）；期望≡dot(π,Q)；GLIE 收敛到 Q*；同策略期望 Bellman 残差→0；后期回报>前期；同 seed 一致 |
+| 弹性正则 | Elastic Net（Zou & Hastie 2005，L1+L2 坐标下降） | λ1=0≡Ridge；λ2=0≡Lasso；皆0≡OLS；不动点 w_j=S(ρ_j,λ1)/(z_j+λ2)；KKT 证书；目标单调不增 |
 
-## 展示页实时演示（35 个）
+## 展示页实时演示（39 个）
 
 k-means 聚类 · 注意力热力图 · 核 SVM 决策边界 · AdaBoost 集成边界 · RL 网格世界（值迭代）
 · LSTM 序列回归 · t-SNE 嵌入 · DBSCAN 含噪声识别 · 优化器等势面轨迹
@@ -114,16 +118,20 @@ k-means 聚类 · 注意力热力图 · 核 SVM 决策边界 · AdaBoost 集成�
 · **粒子滤波 SIR（重采样粒子云 vs 卡尔曼真值 + 有效样本数 ESS 曲线）**
 · **Mean Shift 聚类（KDE 梯度上升模态收敛轨迹 + 自适应聚类中心）**
 · **SARSA(λ) 同策略强化学习（网格世界策略收敛 + 回合回报曲线）**
+· **GRU 序列回归（阶跃+正弦目标，BPTT 训练损失下降）**
+· **Softmax 多类逻辑回归（三团分类决策面 + 准确率）**
+· **Expected SARSA（chainMDP 回合回报 + 策略收敛）**
+· **Elastic Net 稀疏回归（估计系数 vs 真实系数 + 非零计数）**
 ——全部由本页内联引擎实时计算，种子化随机可复现。
 
 ## 验证
 
 ```bash
 node test/run.mjs
-# 期望输出：PASS 50/50 — 全部不变量自检通过
+# 期望输出：PASS 54/54 — 全部不变量自检通过
 ```
 
-50 组套件覆盖 300 条硬不变量。CI 在 Node 16/18/20 三个版本上运行同一自检（精确校验 `PASS 50/50`）。
+54 组套件覆盖 324 条硬不变量。CI 在 Node 16/18/20 三个版本上运行同一自检（精确校验 `PASS 54/54`）。
 
 ## 许可证
 

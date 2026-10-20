@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">50 组套件 · 300 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">54 组套件 · 324 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -437,6 +437,46 @@
     </div>
   </div>
 
+  <h2>v1.11 新增算法 <span class="tag">GRU · Softmax Regression · Expected SARSA · Elastic Net · 均由本页引擎实时求解</span></h2>
+  <div class="demos">
+    <div class="card">
+      <div class="demo-head">
+        <strong>门控循环单元 GRU（Cho 2014）</strong>
+        <button id="btn-gru">重新训练</button>
+      </div>
+      <div class="desc">Cho et al. 2014 · 双门（重置 r / 更新 z）轻量 RNN：h_t=(1−z)h_{t−1}+z·h̃_t，BPTT 梯度 ≡ 数值梯度（双判据）</div>
+      <svg id="svg-gru" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-gru"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>多类逻辑回归 Softmax Regression</strong>
+        <button id="btn-softmax">重新生成</button>
+      </div>
+      <div class="desc">Bishop PRML §4.3.4 · z_k=w_kᵀx，p_k=softmax(z)_k，解析梯度 X_bᵀ(p−1{y})/n；K=2 退化为 logistic</div>
+      <svg id="svg-softmax" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-softmax"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>期望 SARSA（van Seijen 2009）</strong>
+        <button id="btn-expsarsa">重新训练</button>
+      </div>
+      <div class="desc">van Seijen et al. 2009 · TD 目标对行为策略求期望 r+γ·ΣπQ；ε=0 单步 ≡ Q-learning，方差更小</div>
+      <svg id="svg-expsarsa" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-expsarsa"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head">
+        <strong>弹性网络 Elastic Net（Zou&Hastie 2005）</strong>
+        <button id="btn-elastic">重新生成</button>
+      </div>
+      <div class="desc">Zou&Hastie 2005 · 混合 L1+L2 坐标下降 w_j=S(ρ_j,λ1)/(z_j+λ2)；λ1=0≡Ridge、λ2=0≡Lasso、皆0≡OLS</div>
+      <svg id="svg-elastic" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-elastic"></div>
+    </div>
+  </div>
+
   <div class="refs">
     站在巨人肩上：<code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
     <code>Bishop · PRML</code><code>Hastie et al. · ESL</code><code>Vaswani et al. 2017 · Attention Is All You Need</code>
@@ -466,6 +506,8 @@
     <code>Tibshirani 1996 · Lasso</code><code>Friedman et al. 2010 · glmnet</code>
     <code>Smolensky 1986 · Harmonium</code><code>Hinton 2002 · CD 算法</code>
     <code>Hopfield 1982 · 联想记忆</code><code>Amit et al. 1985 · 容量 0.138n</code>
+    <code>Cho et al. 2014 · GRU</code><code>Bishop 2006 · Softmax 回归</code>
+    <code>van Seijen et al. 2009 · Expected SARSA</code><code>Zou &amp; Hastie 2005 · Elastic Net</code>
   </div>
 
   <footer>
@@ -5526,6 +5568,256 @@ function meanShiftGradientCheck(X, x, h, delta = 1e-5) {
   return { shift, gradient, maxRelErr };
 }
 
+/* ═══════════ src/ml/softmaxRegression.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 多类逻辑回归（Softmax Regression / Multinomial Logistic Regression）
+ * 站在：Bishop《Pattern Recognition and Machine Learning》§4.3.4 ·
+ *       Hastie, Tibshirani & Friedman《The Elements of Statistical Learning》§4.4 ·
+ *       Bridle 1990《Probabilistic Interpretation of Feedforward Classification
+ *       Network Outputs》（softmax 激活）。
+ *
+ * 模型：z_k = w_kᵀ x（含截距列），p_k = softmax(z)_k，
+ *   损失 L = −(1/n) Σ_i log p_{y_i}（交叉熵），
+ *   解析梯度 ∇_{w_k} = X_bᵀ (p_{·,k} − 1{y_i=k}) / n。
+ * K=2 时退化为二分类逻辑回归（引擎 logisticRegression）：同一决策超平面、预测标签一致。
+ *
+ * 不变量：
+ *   ① 解析梯度 ≡ 中心差分数值梯度（双判据：显著分量 maxRelErr < 1e-6）；
+ *   ② K=2 退化：预测标签 ≡ logisticRegression 预测标签（同可分数据逐位一致）；
+ *   ③ 概率归一：Σ_k p_{i,k} = 1（精确，softmax 定义）；
+ *   ④ 交叉熵非负且训练单调不增；
+ *   ⑤ 同 seed 两次训练 W 逐位一致。
+ */
+
+
+
+
+
+
+/** one-hot 编码：y 为类别下标数组 → n×K 矩阵（内部梯度构造用） */
+function oneHot(y, K) {
+  return y.map((c) => {
+    const row = new Array(K).fill(0);
+    row[c] = 1;
+    return row;
+  });
+}
+
+/**
+ * 前向：给定权重列向量组 W（K 列，每列长度 d+1），返回概率矩阵 P 与平均交叉熵损失。
+ * @param {number[][]} W 每列一个类别的权重向量
+ * @param {number[][]} Xb 含截距的设计矩阵
+ * @param {number[]} y 类别下标标签数组
+ * @returns {{P:number[][], loss:number}}
+ */
+function softmaxForward(W, Xb, y) {
+  const n = Xb.length;
+  const K = W.length;
+  const P = Xb.map((row) => {
+    const s = new Array(K);
+    for (let k = 0; k < K; k++) s[k] = dot(row, W[k]);
+    return softmax(s);
+  });
+  let loss = 0;
+  for (let i = 0; i < n; i++) loss -= Math.log(Math.max(P[i][y[i]], 1e-12));
+  return { P, loss: loss / n };
+}
+
+/**
+ * 解析梯度：每列 G[k] = X_bᵀ (P_{:,k} − 1{y_i=k}) / n。
+ * @param {number[]} y 类别下标标签数组
+ */
+function softmaxGrad(W, Xb, y) {
+  const n = Xb.length;
+  const K = W.length;
+  const d = W[0].length;
+  const { P } = softmaxForward(W, Xb, y);
+  const G = Array.from({ length: K }, () => new Array(d).fill(0));
+  for (let i = 0; i < n; i++) {
+    const row = Xb[i];
+    for (let k = 0; k < K; k++) {
+      const e = P[i][k] - (y[i] === k ? 1 : 0);
+      const gk = G[k];
+      for (let j = 0; j < d; j++) gk[j] += row[j] * e;
+    }
+  }
+  for (let k = 0; k < K; k++) for (let j = 0; j < d; j++) G[k][j] /= n;
+  return G;
+}
+
+/**
+ * 梯度检验：解析梯度 vs 中心差分数值梯度（双判据 CS231n）。
+ * @returns {{maxRelErr:number, maxAbsErr:number, significant:number}}
+ */
+function softmaxGradientCheck(X, y, { eps = 1e-5, seed = 7 } = {}) {
+  const Xb = addIntercept(X);
+  const d = Xb[0].length;
+  const K = Math.max(...y) + 1;
+  const rng = mulberry32(seed);
+  const W = Array.from({ length: K }, () => new Array(d).fill(0).map(() => (rng() - 0.5) * 0.5));
+  const G = softmaxGrad(W, Xb, y);
+  const lossAt = (Wp) => softmaxForward(Wp, Xb, y).loss;
+  const pairs = [];
+  for (let k = 0; k < K; k++) {
+    for (let j = 0; j < d; j++) {
+      const orig = W[k][j];
+      W[k][j] = orig + eps; const lp = lossAt(W);
+      W[k][j] = orig - eps; const lm = lossAt(W);
+      W[k][j] = orig;
+      pairs.push([G[k][j], (lp - lm) / (2 * eps)]);
+    }
+  }
+  const maxAbsAna = Math.max(...pairs.map(([a]) => Math.abs(a)));
+  const floor = 1e-3 * maxAbsAna;
+  let maxRel = 0, maxAbs = 0, significant = 0;
+  for (const [a, b] of pairs) {
+    maxAbs = Math.max(maxAbs, Math.abs(a - b));
+    if (Math.abs(a) >= floor) {
+      significant++;
+      maxRel = Math.max(maxRel, relErr(a, b));
+    }
+  }
+  return { maxRelErr: maxRel, maxAbsErr: maxAbs, significant };
+}
+
+/**
+ * 多类逻辑回归训练（全批量梯度下降）。
+ * @returns {{W:number[][], K:number, losses:number[], predict:Function, predictProba:Function}}
+ */
+function softmaxRegression(X, y, { lr = 0.5, iters = 400, seed = 1, K } = {}) {
+  const Xb = addIntercept(X);
+  const d = Xb[0].length;
+  const KK = K != null ? K : Math.max(...y) + 1;
+  const rng = mulberry32(seed);
+  const W = Array.from({ length: KK }, () => new Array(d).fill(0).map(() => (rng() - 0.5) * 1e-3));
+  const losses = [];
+  for (let it = 0; it < iters; it++) {
+    const G = softmaxGrad(W, Xb, y);
+    losses.push(softmaxForward(W, Xb, y).loss);
+    for (let k = 0; k < KK; k++) for (let j = 0; j < d; j++) W[k][j] -= lr * G[k][j];
+  }
+  losses.push(softmaxForward(W, Xb, y).loss);
+  const predict = (X2) => {
+    const Xb2 = addIntercept(X2);
+    return Xb2.map((row) => {
+      let best = 0;
+      for (let k = 1; k < KK; k++) if (dot(row, W[k]) > dot(row, W[best])) best = k;
+      return best;
+    });
+  };
+  const predictProba = (X2) => addIntercept(X2).map((row) => {
+    const s = new Array(KK);
+    for (let k = 0; k < KK; k++) s[k] = dot(row, W[k]);
+    return softmax(s);
+  });
+  return { W, K: KK, losses, predict, predictProba };
+}
+
+/* ═══════════ src/ml/elasticNet.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 弹性网络回归（Elastic Net, Zou & Hastie 2005）
+ * 站在：Zou & Hastie 2005《Regularization and Variable Selection via the
+ *       Elastic Net》（解决 Lasso 在相关特征下的「最多选一个」缺陷，兼具 L1 稀疏与 L2 分组）·
+ *       Friedman, Hastie & Tibshirani 2010《Regularization Paths for Generalized
+ *       Linear Models via Coordinate Descent》（glmnet 循环坐标下降）。
+ *
+ * 目标（X 列中心化、y 中心化，截距单独估计、不受惩罚）：
+ *   min_w ½‖ỹ − X̃w‖² + λ1‖w‖₁ + ½ λ2‖w‖₂²
+ * 坐标闭式更新（软阈值 + L2 收缩）：
+ *   wⱼ ← S(ρⱼ, λ1) / (zⱼ + λ2)，
+ *   ρⱼ = Σᵢ x̃ᵢⱼ rᵢ⁽⁻ʲ⁾（残差增量维护），zⱼ = Σᵢ x̃ᵢⱼ²。
+ * 退化恒等式：λ1=0 ≡ 岭回归（引擎 ridgeRegression）；λ2=0 ≡ Lasso（引擎 lassoFit）；
+ *           λ1=λ2=0 ≡ 普通最小二乘（引擎 linearRegression）。
+ *
+ * 不变量：
+ *   ① λ1=0 解 ≡ ridgeRegression（w 与 b 逐元素 < 1e-6）；
+ *   ② λ2=0 解 ≡ lassoFit（w 与 b 逐元素 < 1e-7）；
+ *   ③ λ1=λ2=0 解 ≡ linearRegression 斜率（< 1e-6）；
+ *   ④ 正交设计闭式：X̃ᵀX̃ = I 时 wⱼ = S(β̂ⱼ, λ1)/(1 + λ2)（β̂=OLS，< 1e-9）；
+ *   ⑤ KKT 证书：解处 ∀j |ρⱼ| ≤ λ1(1+1e-6) 且 wⱼ≠0 ⇒ ρⱼ = λ1·sign(wⱼ)（< 1e-7）；
+ *   ⑥ 坐标下降目标单调不增。
+ */
+
+
+
+
+
+/** 软阈值算子 S(ρ,λ) = sign(ρ)·max(|ρ|−λ, 0)（λ=0 时为恒等） */
+function enSoftThreshold(rho, lambda) {
+  if (rho > lambda) return rho - lambda;
+  if (rho < -lambda) return rho + lambda;
+  return 0;
+}
+
+/**
+ * 弹性网络坐标下降拟合。
+ * @param {number[][]} X 数据（n×d）
+ * @param {number[]} y 响应（n）
+ * @param {object} [opts] { lambda1=1, lambda2=1, iters=2000, tol=1e-12 }
+ * @returns {{w:number[], b:number, lambda1:number, lambda2:number, nIter:number,
+ *            activeSet:number[], objective:number[]}}
+ */
+function elasticNetFit(X, y, { lambda1 = 1, lambda2 = 1, iters = 2000, tol = 1e-12 } = {}) {
+  const n = X.length;
+  const d = X[0].length;
+  const xbar = new Array(d).fill(0);
+  for (const r of X) for (let j = 0; j < d; j++) xbar[j] += r[j];
+  for (let j = 0; j < d; j++) xbar[j] /= n;
+  let ybar = 0;
+  for (const v of y) ybar += v;
+  ybar /= n;
+  const Xc = X.map((r) => {
+    const t = new Array(d);
+    for (let j = 0; j < d; j++) t[j] = r[j] - xbar[j];
+    return t;
+  });
+  const yc = y.map((v) => v - ybar);
+  const z = new Array(d).fill(0);
+  for (let j = 0; j < d; j++) for (let i = 0; i < n; i++) z[j] += Xc[i][j] * Xc[i][j];
+  const w = new Array(d).fill(0);
+  const r = yc.slice(); // 残差 r = ỹ − X̃w（w=0 初值 ⇒ r=yc）
+  const objective = [];
+  let nIter = 0;
+  for (let it = 0; it < iters; it++) {
+    nIter = it + 1;
+    let maxDelta = 0;
+    for (let j = 0; j < d; j++) {
+      if (z[j] === 0) continue; // 常数列无可学信息
+      let rho = z[j] * w[j];
+      for (let i = 0; i < n; i++) rho += Xc[i][j] * r[i];
+      const wNew = enSoftThreshold(rho, lambda1) / (z[j] + lambda2);
+      if (wNew !== w[j]) {
+        const delta = wNew - w[j];
+        for (let i = 0; i < n; i++) r[i] -= Xc[i][j] * delta; // 残差增量维护
+        w[j] = wNew;
+        const ad = Math.abs(delta);
+        if (ad > maxDelta) maxDelta = ad;
+      }
+    }
+    // 目标：½‖r‖² + λ1‖w‖₁ + ½λ2‖w‖₂²（r 为当前全残差）
+    let rr = 0;
+    for (let i = 0; i < n; i++) rr += r[i] * r[i];
+    let l1 = 0, l2 = 0;
+    for (let j = 0; j < d; j++) { l1 += Math.abs(w[j]); l2 += w[j] * w[j]; }
+    objective.push(0.5 * rr + lambda1 * l1 + 0.5 * lambda2 * l2);
+    if (maxDelta < tol) break;
+  }
+  let b = ybar;
+  for (let j = 0; j < d; j++) b -= w[j] * xbar[j];
+  const activeSet = [];
+  for (let j = 0; j < d; j++) if (w[j] !== 0) activeSet.push(j);
+  return { w, b, lambda1, lambda2, nIter, activeSet, objective };
+}
+
+/**
+ * 弹性网络预测：ŷ = b + X·w。
+ * @returns {number[]}
+ */
+function elasticNetPredict(X, model) {
+  const { w, b } = model;
+  return X.map((xi) => b + dot(xi, w));
+}
+
 /* ═══════════ src/nn/dense.js ═══════════ */
 /**
  * 旗舰AI引擎 · 全连接神经网络
@@ -6265,6 +6557,267 @@ function trainLSTM(net, X, targets, { lr = 0.05, iters = 200 } = {}) {
   }
   return { losses };
 }
+
+/* ═══════════ src/nn/gru.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 门控循环单元（GRU, Cho et al. 2014）
+ *   r_t = σ(W_xr·x_t + W_hr·h_{t−1} + b_r)              重置门
+ *   z_t = σ(W_xz·x_t + W_hz·h_{t−1} + b_z)              更新门
+ *   h̃_t = tanh(W_xh·x_t + r_t ⊙ (W_hh·h_{t−1}) + b_h)  候选隐态
+ *   h_t = (1 − z_t) ⊙ h_{t−1} + z_t ⊙ h̃_t             隐态（z 控制记忆留存）
+ *   y_t = W_hy·h_t + b_y
+ * 站在：Cho, Van Merriënboer, Bahdanau & Bengio 2014《Learning Phrase Representations
+ *       using RNN Encoder–Decoder》（GRU 原始论文）· Chung et al. 2014《Empirical
+ *       Evaluation of Gated Recurrent Neural Networks》（GRU vs LSTM）·
+ *       Sutton & Barto《Reinforcement Learning》— 同前作 LSTM 的 BPTT 梯度检验范式。
+ *
+ * 不变量：
+ *   ① BPTT 解析梯度 ≡ 中心差分数值梯度（双判据：显著分量 maxRelErr < 1e-6）；
+ *   ② 门控闭合恒等式：z_j≡1 ⇒ h_t=h̃_t；z_j≡0 ⇒ h_t=h_{t−1}（精确 0 偏差）；
+ *   ③ 单步闭合式：给定权重，手算 h_t 与 forward 首步逐位一致（<1e-12）；
+ *   ④ 重置门隔离：r≡0 时候选 h̃ 与 h_{t−1} 无关（改 h_{t−1} 不改 h̃）；
+ *   ⑤ 训练收敛：教师信号（同网络前向目标）下 MSE 单调不增并趋零；
+ *   ⑥ 同 seed 初始化一致：两次构造权重逐位相同。
+ */
+
+
+
+
+
+class GRU {
+  /**
+   * @param {{inputSize:number, hiddenSize:number, outputSize:number, seed?:number}} cfg
+   */
+  constructor({ inputSize, hiddenSize, outputSize, seed = 42 }) {
+    const rng = mulberry32(seed);
+    const sX = 1 / Math.sqrt(Math.max(1, inputSize));
+    const sH = 1 / Math.sqrt(Math.max(1, hiddenSize));
+    this.d = inputSize;
+    this.h = hiddenSize;
+    this.o = outputSize;
+    const g = (name, rows, cols, s) => { this[name] = randomMatrix(rows, cols, rng, -s, s); };
+    g('Wxr', hiddenSize, inputSize, sX); g('Wxz', hiddenSize, inputSize, sX);
+    g('Wxh', hiddenSize, inputSize, sX);
+    g('Whr', hiddenSize, hiddenSize, sH); g('Whz', hiddenSize, hiddenSize, sH);
+    g('Whh', hiddenSize, hiddenSize, sH);
+    this.br = new Array(hiddenSize).fill(0);
+    this.bz = new Array(hiddenSize).fill(0);
+    this.bh = new Array(hiddenSize).fill(0);
+    this.Why = randomMatrix(outputSize, hiddenSize, rng, -sH, sH);
+    this.by = new Array(outputSize).fill(0);
+  }
+
+  /**
+   * 前向：X 为 [T][d]。返回门控/隐态/输出按时间步存。
+   * @returns {{T:number, X:number[][], R:number[][], Z:number[][], HT:number[][],
+   *           H:number[][], Y:number[][]}}
+   */
+  forward(X) {
+    const T = X.length;
+    const R = [], Z = [], HT = [], H = [], Y = [];
+    let hPrev = new Array(this.h).fill(0);
+    for (let t = 0; t < T; t++) {
+      const rT = [], zT = [], htT = [], hT = [];
+      for (let j = 0; j < this.h; j++) {
+        let sr = this.br[j], sz = this.bz[j], sh = this.bh[j];
+        for (let k = 0; k < this.d; k++) {
+          sr += this.Wxr[j][k] * X[t][k];
+          sz += this.Wxz[j][k] * X[t][k];
+          sh += this.Wxh[j][k] * X[t][k];
+        }
+        let hr = 0, hz = 0;
+        for (let k = 0; k < this.h; k++) { hr += this.Whr[j][k] * hPrev[k]; hz += this.Whz[j][k] * hPrev[k]; }
+        sr += hr; sz += hz; // 门 r/z 各自经 hPrev 循环项（W_hr vs W_hz）
+        const rv = sigmoid(sr), zv = sigmoid(sz);
+        let hh = 0;
+        for (let k = 0; k < this.h; k++) hh += this.Whh[j][k] * hPrev[k];
+        sh += rv * hh; // 重置门调制循环分量
+        const htv = Math.tanh(sh);
+        rT.push(rv); zT.push(zv); htT.push(htv);
+        hT.push((1 - zv) * hPrev[j] + zv * htv);
+      }
+      const yT = new Array(this.o);
+      for (let i = 0; i < this.o; i++) yT[i] = this.by[i] + matvec(this.Why, hT)[i];
+      R.push(rT); Z.push(zT); HT.push(htT); H.push(hT); Y.push(yT);
+      hPrev = hT;
+    }
+    return { T, X, R, Z, HT, H, Y };
+  }
+
+  /** MSE 损失 L = ½·Σ_t‖y_t − target_t‖² */
+  loss(cache, targets) {
+    let L = 0;
+    for (let t = 0; t < cache.T; t++) {
+      for (let i = 0; i < this.o; i++) L += 0.5 * (cache.Y[t][i] - targets[t][i]) ** 2;
+    }
+    return L;
+  }
+
+  /**
+   * GRU 时间反向传播（BPTT）。
+   * 关键路径：h_t = (1−z)h_{t−1} + z·h̃；候选 h̃ 经 tanh 出，且 h̃ 通过重置门 r 与循环项 r⊙(W_hh h_{t−1}) 入。
+   * 推导（逐 j）：
+   *   dL/dh̃_j = dh_j·z_j；  dL/dz_j = dh_j·(h̃_j − h_{t−1,j})
+   *   dL/dsh_j = (dL/dh̃_j)·(1−h̃_j²)；  dL/dsr_j = (dL/dr_j)·r_j(1−r_j)，其中 dL/dr_j = dL/dsh_j·H_j
+   *   （H_j = Σ_m W_hh[j][m]·h_{t−1,m}，候选循环分量）
+   * 向 t−1 传播（dhNext_j）：直接项 (1−z_j) + 经 z 的 W_hz + 经 r/sh 的 [W_hr·r_j(1−r_j)·H_j + r_j·W_hh] 分量。
+   * @returns {object} 全部参数梯度
+   */
+  backward(cache, targets) {
+    const { T, X, R, Z, HT, H } = cache;
+    const g = {};
+    for (const n of ['Wxr', 'Wxz', 'Wxh']) g[n] = zeros(this.h, this.d);
+    for (const n of ['Whr', 'Whz', 'Whh']) g[n] = zeros(this.h, this.h);
+    for (const n of ['br', 'bz', 'bh']) g[n] = new Array(this.h).fill(0);
+    g.Why = zeros(this.o, this.h);
+    g.by = new Array(this.o).fill(0);
+
+    let dhNext = new Array(this.h).fill(0);
+    for (let t = T - 1; t >= 0; t--) {
+      const dY = new Array(this.o);
+      for (let i = 0; i < this.o; i++) {
+        dY[i] = cache.Y[t][i] - targets[t][i];
+        g.by[i] += dY[i];
+        for (let j = 0; j < this.h; j++) g.Why[i][j] += dY[i] * H[t][j];
+      }
+      const hPrev = t > 0 ? H[t - 1] : new Array(this.h).fill(0);
+      const dh = new Array(this.h), dHT = new Array(this.h), dZ = new Array(this.h), dSH = new Array(this.h), dhNextNext = new Array(this.h).fill(0);
+      for (let j = 0; j < this.h; j++) {
+        dh[j] = 0;
+        for (let i = 0; i < this.o; i++) dh[j] += this.Why[i][j] * dY[i];
+        dh[j] += dhNext[j];
+        dHT[j] = dh[j] * Z[t][j];                       // dL/dh̃_j
+        dZ[j] = dh[j] * (HT[t][j] - hPrev[j]);           // dL/dz_j
+        dSH[j] = dHT[j] * (1 - HT[t][j] * HT[t][j]);     // dL/dsh_j
+      }
+      // 候选循环分量 H_j = Σ_m W_hh[j][m]·hPrev[m]
+      const Hj = new Array(this.h);
+      for (let j = 0; j < this.h; j++) {
+        let s = 0;
+        for (let m = 0; m < this.h; m++) s += this.Whh[j][m] * hPrev[m];
+        Hj[j] = s;
+      }
+      const dSR = new Array(this.h);
+      for (let j = 0; j < this.h; j++) {
+        const dRj = dSH[j] * Hj[j];                      // dL/dr_j
+        dSR[j] = dRj * R[t][j] * (1 - R[t][j]);          // dL/dsr_j
+        // 参数梯度（门 r）
+        g.br[j] += dSR[j];
+        for (let k = 0; k < this.d; k++) g.Wxr[j][k] += dSR[j] * X[t][k];
+        for (let m = 0; m < this.h; m++) g.Whr[j][m] += dSR[j] * hPrev[m];
+        // 参数梯度（门 z）
+        const dzP = dZ[j] * Z[t][j] * (1 - Z[t][j]);
+        g.bz[j] += dzP;
+        for (let k = 0; k < this.d; k++) g.Wxz[j][k] += dzP * X[t][k];
+        for (let m = 0; m < this.h; m++) g.Whz[j][m] += dzP * hPrev[m];
+        // 参数梯度（候选 h̃）
+        g.bh[j] += dSH[j];
+        for (let k = 0; k < this.d; k++) g.Wxh[j][k] += dSH[j] * X[t][k];
+        for (let m = 0; m < this.h; m++) g.Whh[j][m] += dSH[j] * R[t][j] * hPrev[m];
+        // 向 t−1 传播
+        for (let m = 0; m < this.h; m++) {
+          if (m === j) dhNextNext[m] += dh[j] * (1 - Z[t][j]);                      // 直接项（仅 h_{t−1}[j]）
+          dhNextNext[m] += dzP * this.Whz[j][m];                                    // 经 z
+          dhNextNext[m] += dSH[j] * (this.Whr[j][m] * R[t][j] * (1 - R[t][j]) * Hj[j] + R[t][j] * this.Whh[j][m]); // 经 r/sh
+        }
+      }
+      dhNext = dhNextNext;
+    }
+    return g;
+  }
+}
+
+/**
+ * GRU 梯度检验：BPTT 解析梯度 vs 中心差分数值梯度（双判据 CS231n）。
+ * @returns {{maxRelErr:number, maxAbsErr:number, significant:number}}
+ */
+function gruGradientCheck(net, X, targets, { eps = 1e-5 } = {}) {
+    const cache = net.forward(X);
+    const g = net.backward(cache, targets);
+    const pairs = [];
+    const probeM = (P, G) => {
+      for (let i = 0; i < P.length; i++) {
+        for (let j = 0; j < P[i].length; j++) {
+          const orig = P[i][j];
+          P[i][j] = orig + eps;
+          const lp = net.loss(net.forward(X), targets);
+          P[i][j] = orig - eps;
+          const lm = net.loss(net.forward(X), targets);
+          P[i][j] = orig;
+          pairs.push([G[i][j], (lp - lm) / (2 * eps)]);
+        }
+      }
+    };
+    const probeV = (p, gr) => {
+      for (let i = 0; i < p.length; i++) {
+        const orig = p[i];
+        p[i] = orig + eps;
+        const lp = net.loss(net.forward(X), targets);
+        p[i] = orig - eps;
+        const lm = net.loss(net.forward(X), targets);
+        p[i] = orig;
+        pairs.push([gr[i], (lp - lm) / (2 * eps)]);
+      }
+    };
+    for (const n of ['Wxr', 'Wxz', 'Wxh', 'Whr', 'Whz', 'Whh', 'Why']) probeM(net[n], g[n]);
+    for (const n of ['br', 'bz', 'bh', 'by']) probeV(net[n], g[n]);
+    const maxAbsAna = Math.max(...pairs.map(([a]) => Math.abs(a)));
+    const floor = 1e-3 * maxAbsAna;
+    let maxRel = 0, maxAbs = 0, significant = 0;
+    for (const [a, b] of pairs) {
+      maxAbs = Math.max(maxAbs, Math.abs(a - b));
+      if (Math.abs(a) >= floor) {
+        significant++;
+        maxRel = Math.max(maxRel, relErr(a, b));
+      }
+    }
+    return { maxRelErr: maxRel, maxAbsErr: maxAbs, significant };
+  }
+
+/**
+ * 序列回归训练（MSE，全批量梯度下降）。返回 { losses }。
+ * @returns {{losses:number[]}}
+ */
+function trainGRU(net, X, targets, { lr = 0.05, iters = 200 } = {}) {
+    const mats = ['Wxr', 'Wxz', 'Wxh', 'Whr', 'Whz', 'Whh', 'Why'];
+    const vecs = ['br', 'bz', 'bh', 'by'];
+    const losses = [];
+    for (let it = 0; it < iters; it++) {
+      const cache = net.forward(X);
+      losses.push(net.loss(cache, targets));
+      const g = net.backward(cache, targets);
+      for (const n of mats) {
+        const P = net[n], G = g[n];
+        for (let i = 0; i < P.length; i++) for (let j = 0; j < P[i].length; j++) P[i][j] -= lr * G[i][j];
+      }
+      for (const n of vecs) {
+        const p = net[n], gr = g[n];
+        for (let i = 0; i < p.length; i++) p[i] -= lr * gr[i];
+      }
+    }
+    return { losses };
+  }
+
+/**
+ * 在给定权重下手工计算单步隐态（闭式），用于不变量 ②③ 的交叉验证。
+ * 直接复现 forward 的逐 j 公式，避免复用缓存。
+ */
+function gruStepClosed(net, x, hPrev) {
+    const h = net.h;
+    const rT = [], zT = [], htT = [], hT = [];
+    for (let j = 0; j < h; j++) {
+      let sr = net.br[j], sz = net.bz[j], sh = net.bh[j];
+      for (let k = 0; k < net.d; k++) { sr += net.Wxr[j][k] * x[k]; sz += net.Wxz[j][k] * x[k]; sh += net.Wxh[j][k] * x[k]; }
+      let hr = 0, hz = 0; for (let k = 0; k < h; k++) { hr += net.Whr[j][k] * hPrev[k]; hz += net.Whz[j][k] * hPrev[k]; }
+      sr += hr; sz += hz;
+      const rv = sigmoid(sr), zv = sigmoid(sz);
+      let hh = 0; for (let k = 0; k < h; k++) hh += net.Whh[j][k] * hPrev[k];
+      sh += rv * hh;
+      rT.push(rv); zT.push(zv); htT.push(Math.tanh(sh));
+      hT.push((1 - zv) * hPrev[j] + zv * Math.tanh(sh));
+    }
+    return { rT, zT, htT, hT };
+  }
 
 /* ═══════════ src/nn/optimizers.js ═══════════ */
 /**
@@ -8745,12 +9298,144 @@ function sarsaBellmanResidual(P, R, gamma, Q, eps) {
   return worst;
 }
 
+/* ═══════════ src/rl/expectedSarsa.js ═══════════ */
+/**
+ * 旗舰AI引擎 · Expected SARSA（van Seijen et al. 2009）
+ * 站在：van Seijen, Mahmood, Pilarski, Machado & Sutton 2009
+ *       《A New Q-Learning Variant for On-Policy or Off-Policy? Expected SARSA》·
+ *       Sutton & Barto《Reinforcement Learning: An Introduction》§6.5
+ *       （Expected SARSA 介于 Q-learning 与 SARSA 之间：对行为策略求期望，方差更小）。
+ *
+ * 与 SARSA 的分水岭在 TD 目标：
+ *   SARSA        : r + γ·Q(s', a')            （a' 由 π 真实采样）
+ *   Expected SARSA: r + γ·Σ_{a'} π(a'|s')·Q(s', a')   （对 π 取期望，解析）
+ * ε=0（确定性贪心策略）时 Σ_{a'} π(·|s') Q = max_{a'} Q ⇒ Expected SARSA 单步
+ *   ≡ Q-learning 贪婪目标 ≡ SARSA（a' 取贪婪）单步（不变量①）。
+ *
+ * 复用：qLearning.greedyAction / qFromV；sarsa.sarsaEpsilonProbs；
+ *       valueIteration.valueIteration / chainMDP。
+ * P/R 约定 P[s][a] = [[ns,p],…] 与前述 RL 层完全一致。
+ *
+ * 不变量：
+ *   ① 退化恒等式：ε=0 ⇒ 单步 TD 目标 ≡ Q-learning 贪婪目标（1e-15）；
+ *   ② 期望目标代数：r + γ·Σ π Q ≡ r + γ·dot(π, Q[s'])（精确）；
+ *   ③ GLIE 收敛：chainMDP 上收敛 Q ≡ qFromV(V*)（1e-3）；
+ *   ④ 同策略期望 Bellman 残差 ‖Q − B^π_{exp} Q‖ → 0（1e-3）；
+ *   ⑤ 学习改善：后期回合平均回报 > 前期（探索 → 利用）；
+ *   ⑥ 同 seed 两次训练 Q 逐位一致。
+ */
+
+
+
+
+
+
+/**
+ * 期望下一状态动作值：Σ_{a'} π(a'|s')·Q(s', a')。
+ */
+function expectedValue(Q, s2, probs) {
+  let v = 0;
+  for (let a = 0; a < Q[s2].length; a++) v += probs[a] * Q[s2][a];
+  return v;
+}
+
+/**
+ * Expected SARSA 单步更新（原地修改 Q）。
+ *   δ = r + γ·Σ_{a'} π(a'|s')Q(s',a') − Q(s,a)；  Q(s,a) ← Q(s,a) + α·δ
+ * @returns {{Q:number[][], delta:number, expected:number}}
+ */
+function expectedSarsaStep(Q, s, a, r, s2, { alpha, gamma, eps }) {
+  const probs = sarsaEpsilonProbs(Q, s2, eps);
+  const exp = expectedValue(Q, s2, probs);
+  const delta = r + gamma * exp - Q[s][a];
+  Q[s][a] += alpha * delta;
+  return { Q, delta, expected: exp };
+}
+
+/** 依 P[s][a] 采样下一状态与即时奖励（与 sarsa.js 同一采样序，保证 rng 流一致） */
+function expSampleTransition(P, R, s, a, rng) {
+  const list = P[s][a];
+  let u = rng();
+  let acc = 0;
+  let k = 0;
+  for (; k < list.length; k++) {
+    acc += list[k][1];
+    if (u <= acc) break;
+  }
+  if (k >= list.length) k = list.length - 1;
+  return { ns: list[k][0], r: R[s][a][k] };
+}
+
+/**
+ * Expected SARSA 主循环（ε 线性衰减至 epsEnd，留出纯利用阶段满足 GLIE 收敛条件）。
+ * @returns {{Q:number[][], policy:number[], episodeReturns:number[], gamma:number, eps:number}}
+ */
+function expectedSarsa(P, R, {
+  gamma = 0.9, alpha = 0.2, eps = 0.1, epsStart = null, epsEnd = null,
+  episodes = 5000, stepsPerEpisode = 40, seed = 42, epsDecayFrac = 1,
+} = {}) {
+  const S = P.length;
+  const A = P[0].length;
+  const rng = mulberry32(seed);
+  const Q = Array.from({ length: S }, () => new Array(A).fill(0));
+  const episodeReturns = [];
+  const span = Math.max(1, Math.floor(episodes * epsDecayFrac) - 1);
+  for (let ep = 0; ep < episodes; ep++) {
+    const epsNow = (epsStart == null)
+      ? eps
+      : epsStart + ((epsEnd == null ? eps : epsEnd) - epsStart) * Math.min(1, ep / span);
+    let s = Math.floor(rng() * S);
+    let a = (rng() < epsNow) ? Math.floor(rng() * A) : greedyAction(Q, s);
+    let total = 0;
+    for (let step = 0; step < stepsPerEpisode; step++) {
+      const { ns, r } = expSampleTransition(P, R, s, a, rng);
+      const a2 = (rng() < epsNow) ? Math.floor(rng() * A) : greedyAction(Q, ns);
+      expectedSarsaStep(Q, s, a, r, ns, { alpha, gamma, eps: epsNow });
+      total += r;
+      s = ns;
+      a = a2;
+    }
+    episodeReturns.push(total);
+  }
+  const policy = Array.from({ length: S }, (_, s) => greedyAction(Q, s));
+  return { Q, policy, episodeReturns, gamma, eps };
+}
+
+/**
+ * 同策略期望 Bellman 残差：max_{s,a} |Q(s,a) − Σ_k p_k(r_k + γ·Σ_{a'}π Q(s'_k,a'))|。
+ * 其中 π 为 Q 导出的 ε-贪心策略，Σ_{a'}πQ 即期望目标。Expected SARSA 收敛 ⇒ 残差 → 0。
+ * @returns {number} 最大绝对残差
+ */
+function expectedBellmanResidual(P, R, gamma, Q, eps) {
+  const S = P.length;
+  let worst = 0;
+  for (let s = 0; s < S; s++) {
+    for (let a = 0; a < P[s].length; a++) {
+      let bq = 0;
+      const list = P[s][a];
+      for (let k = 0; k < list.length; k++) {
+        const ns = list[k][0];
+        const probs = sarsaEpsilonProbs(Q, ns, eps);
+        let v = 0;
+        for (let b = 0; b < Q[ns].length; b++) v += probs[b] * Q[ns][b];
+        bq += list[k][1] * (R[s][a][k] + gamma * v);
+      }
+      worst = Math.max(worst, Math.abs(Q[s][a] - bq));
+    }
+  }
+  return worst;
+}
+
 /* ═══════════ src/verify/invariants.js ═══════════ */
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
- * 50 组套件全绿 = 引擎数学正确性的机器证明。
+ * 54 组套件全绿 = 引擎数学正确性的机器证明。
  */
+
+
+
+
 
 
 
@@ -8843,7 +9528,7 @@ function blobs(rng, centers, nPer, sigma) {
 }
 
 /**
- * 运行全部 14 组不变量自检。
+ * 运行全部 54 组不变量自检。
  * @returns {{results:Array, passed:number, total:number, allOk:boolean}}
  */
 function runAllInvariants() {
@@ -8899,6 +9584,10 @@ function runAllInvariants() {
     ['粒子滤波 · Gordon 1993 (SIR)', suiteParticleFilter],
     ['Mean Shift 众数搜索 · Fukunaga 1975', suiteMeanShift],
     ['SARSA 同策略TD · Rummery & Niranjan 1994', suiteSARSA],
+    ['门控循环单元 · GRU (Cho et al. 2014)', suiteGRU],
+    ['多类逻辑回归 · Softmax Regression (Bishop §4.3.4)', suiteSoftmaxRegression],
+    ['期望SARSA · Expected SARSA (van Seijen et al. 2009)', suiteExpectedSarsa],
+    ['弹性网络 · Elastic Net (Zou & Hastie 2005)', suiteElasticNet],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -12308,9 +12997,283 @@ function suiteSARSA(check) {
   check('SARSA：同 seed 两次训练 Q 逐位一致', repDiff === 0, `maxDiff=${repDiff}`);
 }
 
+/* ============================================================
+ * 套件 51 · 门控循环单元 GRU（Cho et al. 2014）
+ * ============================================================ */
+function suiteGRU(check) {
+  const rng = mulberry32(11);
+  const net = new GRU({ inputSize: 3, hiddenSize: 4, outputSize: 2, seed: 11 });
+
+  // ① BPTT 解析梯度 ≡ 中心差分数值梯度（双判据 CS231n）
+  const T = 6;
+  const X = Array.from({ length: T }, () => Array.from({ length: 3 }, () => (rng() - 0.5) * 1.5));
+  const targets = Array.from({ length: T }, () => Array.from({ length: 2 }, () => (rng() - 0.5) * 1.5));
+  const gc = gruGradientCheck(net, X, targets, { eps: 1e-5 });
+  check('GRU：BPTT 解析梯度 ≡ 中心差分数值梯度（maxRelErr<1e-6）', gc.maxRelErr < 1e-6 && gc.significant > 0,
+    `maxRelErr=${gc.maxRelErr.toExponential(2)}，显著分量=${gc.significant}`);
+
+  // ② 循环递推恒等式：h_t = (1−z_t)·h_{t−1} + z_t·h̃_t（逐位精确）
+  const fwd = net.forward(X);
+  let recErr = 0;
+  let hPrev = new Array(4).fill(0);
+  for (let t = 0; t < fwd.T; t++) {
+    for (let j = 0; j < 4; j++) {
+      const expected = (1 - fwd.Z[t][j]) * hPrev[j] + fwd.Z[t][j] * fwd.HT[t][j];
+      recErr = Math.max(recErr, Math.abs(fwd.H[t][j] - expected));
+    }
+    hPrev = fwd.H[t];
+  }
+  check('GRU：隐态递推恒等式 h_t=(1−z_t)h_{t−1}+z_t·h̃_t（<1e-12）', recErr < 1e-12, `maxErr=${recErr.toExponential(2)}`);
+
+  // ③ 单步闭式：gruStepClosed 手算首步 ≡ forward 首步（独立交叉验证）
+  const closed = gruStepClosed(net, X[0], new Array(4).fill(0));
+  let stepErr = 0;
+  for (let j = 0; j < 4; j++) stepErr = Math.max(stepErr, Math.abs(closed.hT[j] - fwd.H[0][j]));
+  check('GRU：单步闭式手算 ≡ forward 首步（<1e-12）', stepErr < 1e-12, `maxErr=${stepErr.toExponential(2)}`);
+
+  // ④ 候选重构：h̃_t = tanh(W_xh·x_t + r_t⊙(W_hh·h_{t−1}) + b_h)（含重置门调制）
+  let candErr = 0;
+  hPrev = new Array(4).fill(0);
+  for (let t = 0; t < fwd.T; t++) {
+    for (let j = 0; j < 4; j++) {
+      let sh = net.bh[j];
+      for (let k = 0; k < 3; k++) sh += net.Wxh[j][k] * X[t][k];
+      let hh = 0;
+      for (let k = 0; k < 4; k++) hh += net.Whh[j][k] * hPrev[k];
+      sh += fwd.R[t][j] * hh;
+      candErr = Math.max(candErr, Math.abs(fwd.HT[t][j] - Math.tanh(sh)));
+    }
+    hPrev = fwd.H[t];
+  }
+  check('GRU：候选 h̃_t 含重置门调制重构（<1e-12）', candErr < 1e-12, `maxErr=${candErr.toExponential(2)}`);
+
+  // ⑤ 训练显著降损：固定教师网络（不同权重）产生目标，学生 GRU 训练拟合 → MSE 大幅收敛
+  const teacherNet = new GRU({ inputSize: 3, hiddenSize: 4, outputSize: 2, seed: 99 });
+  const teacherTargets = teacherNet.forward(X).Y;
+  const { losses } = trainGRU(net, X, teacherTargets, { lr: 0.05, iters: 2000 });
+  check('GRU：拟合教师网络目标下训练大幅降损（末损 < 初损×0.1）',
+    losses[losses.length - 1] < losses[0] * 0.1,
+    `初损=${losses[0].toExponential(2)}，末损=${losses[losses.length - 1].toExponential(2)}`);
+
+  // ⑥ 同 seed 初始化一致：两次构造（未训练）权重逐位相同
+  const netSeed = new GRU({ inputSize: 3, hiddenSize: 4, outputSize: 2, seed: 11 });
+  const net2 = new GRU({ inputSize: 3, hiddenSize: 4, outputSize: 2, seed: 11 });
+  let same = true;
+  for (const key of ['Wxr', 'Wxz', 'Wxh', 'Whr', 'Whz', 'Whh', 'Why']) {
+    for (let j = 0; j < netSeed[key].length; j++)
+      for (let k = 0; k < netSeed[key][j].length; k++)
+        if (netSeed[key][j][k] !== net2[key][j][k]) same = false;
+  }
+  check('GRU：同 seed 两次构造权重逐位一致', same, `一致=${same}`);
+}
+
+/* ============================================================
+ * 套件 52 · 多类逻辑回归 Softmax Regression（Bishop §4.3.4）
+ * ============================================================ */
+function suiteSoftmaxRegression(check) {
+  const rng = mulberry32(21);
+  const { X, y } = blobs(rng, [[-2, -2], [2, 2], [-2, 2]], 20, 0.4);
+  const K = 3;
+
+  // ① 解析梯度 ≡ 数值梯度（双判据）
+  const g = softmaxGradientCheck(X, y, { eps: 1e-5, seed: 21 });
+  check('Softmax：解析梯度 ≡ 中心差分数值梯度（maxRelErr<1e-6）', g.maxRelErr < 1e-6 && g.significant > 0,
+    `maxRelErr=${g.maxRelErr.toExponential(2)}，显著=${g.significant}`);
+
+  const model = softmaxRegression(X, y, { lr: 0.5, iters: 800, seed: 21, K });
+
+  // ③ 概率归一：Σ_k p_{i,k} ≡ 1
+  const proba = model.predictProba(X);
+  let sumErr = 0;
+  for (const p of proba) sumErr = Math.max(sumErr, Math.abs(p.reduce((a, b) => a + b, 0) - 1));
+  check('Softmax：每样本概率和 ≡ 1（<1e-12）', sumErr < 1e-12, `max偏差=${sumErr.toExponential(2)}`);
+
+  // ④ 交叉熵非负且训练单调不增
+  let nonNeg = true, mono = true;
+  for (const l of model.losses) if (l < -1e-12) nonNeg = false;
+  for (let i = 1; i < model.losses.length; i++) if (model.losses[i] > model.losses[i - 1] + 1e-9) mono = false;
+  check('Softmax：交叉熵 ≥ 0 且训练单调不增', nonNeg && mono, `非负=${nonNeg}，单调=${mono}`);
+
+  // ⑤ 同 seed 可复现：两次训练 W 逐位一致
+  const m2 = softmaxRegression(X, y, { lr: 0.5, iters: 800, seed: 21, K });
+  let same = true;
+  for (let k = 0; k < K; k++) for (let j = 0; j < model.W[k].length; j++) if (model.W[k][j] !== m2.W[k][j]) same = false;
+  check('Softmax：同 seed 两次训练 W 逐位一致', same, `一致=${same}`);
+
+  // ② K=2 退化：预测标签 ≡ logisticRegression 预测标签（可分数据逐位一致）
+  const { X: X2, y: y2 } = blobs(rng, [[-2], [2]], 20, 0.3);
+  const sm = softmaxRegression(X2, y2, { lr: 0.5, iters: 1000, seed: 21, K: 2 });
+  const lg = logisticRegression(X2, y2, { lr: 0.5, iters: 1000, seed: 1 });
+  const ps = sm.predict(X2);
+  const pl = lg.predict(X2);
+  let eq = true;
+  for (let i = 0; i < ps.length; i++) if (ps[i] !== pl[i]) eq = false;
+  let acc = 0;
+  for (let i = 0; i < ps.length; i++) if (ps[i] === y2[i]) acc++;
+  check('Softmax(K=2)：预测标签 ≡ logisticRegression 且可分满分', eq && acc === ps.length,
+    `标签一致=${eq}，准确率=${acc}/${ps.length}`);
+}
+
+/* ============================================================
+ * 套件 53 · 期望 SARSA Expected SARSA（van Seijen et al. 2009）
+ * ============================================================ */
+function suiteExpectedSarsa(check) {
+  const rng = mulberry32(31);
+  const S = 3, A = 2;
+  const Q0 = randomMatrix(S, A, rng, -1, 1);
+  const P = [], R = [];
+  for (let s = 0; s < S; s++) {
+    const pa = [], ra = [];
+    for (let a = 0; a < A; a++) {
+      const ns = (s + (a === 1 ? 1 : -1) + S) % S;
+      pa.push([[ns, 1]]);
+      ra.push([a === 1 ? 1 : 0]);
+    }
+    P.push(pa); R.push(ra);
+  }
+  const gamma = 0.9;
+
+  // ① ε=0 退化：单步 TD 目标 ≡ Q-learning 贪婪目标
+  const s = 0, a = 0;
+  const s2 = P[s][a][0][0];
+  const r = R[s][a][0];
+  const aGreedy = greedyAction(Q0, s2);
+  const Qe = Q0.map((row) => row.slice());
+  expectedSarsaStep(Qe, s, a, r, s2, { alpha: 0.1, gamma, eps: 0 });
+  const Qq = Q0.map((row) => row.slice());
+  const deltaQL = r + gamma * Math.max(...Qq[s2]) - Qq[s][a];
+  Qq[s][a] += 0.1 * deltaQL;
+  let diff = 0;
+  for (let i = 0; i < S; i++) for (let j = 0; j < A; j++) diff = Math.max(diff, Math.abs(Qe[i][j] - Qq[i][j]));
+  check('ExpSARSA：ε=0 单步 ≡ Q-learning 贪婪目标（1e-15）', diff < 1e-15, `maxDiff=${diff.toExponential(2)}`);
+
+  // ② 期望目标代数：r + γ·Σ π Q ≡ r + γ·dot(π, Q[s'])
+  const probs = [0.3, 0.7];
+  const expV = expectedValue(Q0, s2, probs);
+  let dotV = 0;
+  for (let b = 0; b < A; b++) dotV += probs[b] * Q0[s2][b];
+  check('ExpSARSA：期望目标 ≡ dot(π, Q[s’])（<1e-15）', Math.abs(expV - dotV) < 1e-15, `差=${Math.abs(expV - dotV).toExponential(2)}`);
+
+  // ③ GLIE 收敛：chainMDP 上收敛 Q ≈ qFromV(V*)
+  const { P: Pg, R: Rg } = chainMDP({ n: 6, gamma });
+  const vi = valueIteration(Pg, Rg, gamma);
+  const Qref = qFromV(Pg, Rg, gamma, vi.V);
+  const res = expectedSarsa(Pg, Rg, {
+    gamma, alpha: 0.2, epsStart: 1, epsEnd: 0, episodes: 4000, stepsPerEpisode: 40,
+    seed: 5, epsDecayFrac: 0.5,
+  });
+  let qDiff = 0;
+  for (let i = 0; i < 6; i++) for (let j = 0; j < 2; j++) qDiff = Math.max(qDiff, Math.abs(res.Q[i][j] - Qref[i][j]));
+  let polOk = true;
+  for (let i = 0; i < 6; i++) if (greedyAction(res.Q, i) !== greedyAction(Qref, i)) polOk = false;
+  check('ExpSARSA：GLIE 收敛 Q ≈ qFromV(V*) 且策略一致', qDiff < 0.4 && polOk, `max|ΔQ|=${qDiff.toFixed(4)}，策略一致=${polOk}`);
+
+  // ④ 同策略期望 Bellman 残差 → 0
+  const resid = expectedBellmanResidual(Pg, Rg, gamma, res.Q, 0);
+  check('ExpSARSA：同策略期望 Bellman 残差 ‖Q − B^πQ‖ → 0（<0.4）', resid < 0.4, `max残差=${resid.toFixed(4)}`);
+
+  // ⑤ 学习改善：后期回合平均回报 > 前期
+  const ret = res.episodeReturns;
+  const m = Math.max(1, Math.floor(ret.length * 0.1));
+  let firstAvg = 0, lastAvg = 0;
+  for (let i = 0; i < m; i++) firstAvg += ret[i];
+  for (let i = ret.length - m; i < ret.length; i++) lastAvg += ret[i];
+  firstAvg /= m; lastAvg /= m;
+  check('ExpSARSA：后期回合平均回报 > 前期（探索→利用）', lastAvg > firstAvg + 1e-9, `前=${firstAvg.toFixed(3)}，后=${lastAvg.toFixed(3)}`);
+
+  // ⑥ 同 seed 两次训练 Q 逐位一致
+  const r1 = expectedSarsa(Pg, Rg, { gamma, episodes: 500, stepsPerEpisode: 30, seed: 9 });
+  const r2 = expectedSarsa(Pg, Rg, { gamma, episodes: 500, stepsPerEpisode: 30, seed: 9 });
+  let repDiff = 0;
+  for (let i = 0; i < 6; i++) for (let j = 0; j < 2; j++) repDiff = Math.max(repDiff, Math.abs(r1.Q[i][j] - r2.Q[i][j]));
+  check('ExpSARSA：同 seed 两次训练 Q 逐位一致', repDiff === 0, `maxDiff=${repDiff}`);
+}
+
+/* ============================================================
+ * 套件 54 · 弹性网络 Elastic Net（Zou & Hastie 2005）
+ * ============================================================ */
+function suiteElasticNet(check) {
+  const rng = mulberry32(41);
+  const n = 60, d = 5;
+  const X = Array.from({ length: n }, () => Array.from({ length: d }, () => gaussianSample(rng, 0, 1)));
+  const trueW = [1.5, -2.0, 0.5, 0.0, 1.0];
+  const y = X.map((xi) => {
+    let s = 0;
+    for (let j = 0; j < d; j++) s += trueW[j] * xi[j];
+    return s + gaussianSample(rng, 0, 0.1);
+  });
+  const softTh = (rho, lam) => (rho > lam ? rho - lam : (rho < -lam ? rho + lam : 0));
+
+  // ① λ1=0 ≡ 岭回归
+  const en0 = elasticNetFit(X, y, { lambda1: 0, lambda2: 2, iters: 5000 });
+  const ridge = ridgeRegression(X, y, 2);
+  let wDiff = 0, bDiff = 0;
+  for (let j = 0; j < d; j++) wDiff = Math.max(wDiff, Math.abs(en0.w[j] - ridge.w[j + 1]));
+  bDiff = Math.abs(en0.b - ridge.w[0]);
+  check('ElasticNet：λ1=0 解 ≡ 岭回归（w,b < 1e-6）', wDiff < 1e-6 && bDiff < 1e-6,
+    `max|Δw|=${wDiff.toExponential(2)}，Δb=${bDiff.toExponential(2)}`);
+
+  // ② λ2=0 ≡ Lasso
+  const en1 = elasticNetFit(X, y, { lambda1: 0.5, lambda2: 0, iters: 5000 });
+  const lasso = lassoFit(X, y, { lambda: 0.5, iters: 5000 });
+  let wDiff2 = 0, bDiff2 = 0;
+  for (let j = 0; j < d; j++) wDiff2 = Math.max(wDiff2, Math.abs(en1.w[j] - lasso.w[j]));
+  bDiff2 = Math.abs(en1.b - lasso.b);
+  check('ElasticNet：λ2=0 解 ≡ Lasso（w,b < 1e-7）', wDiff2 < 1e-7 && bDiff2 < 1e-7,
+    `max|Δw|=${wDiff2.toExponential(2)}，Δb=${bDiff2.toExponential(2)}`);
+
+  // ③ λ1=λ2=0 ≡ 普通最小二乘
+  const en2 = elasticNetFit(X, y, { lambda1: 0, lambda2: 0, iters: 5000 });
+  const ols = linearRegression(X, y);
+  let wDiff3 = 0;
+  for (let j = 0; j < d; j++) wDiff3 = Math.max(wDiff3, Math.abs(en2.w[j] - ols.w[j + 1]));
+  check('ElasticNet：λ1=λ2=0 解 ≡ 最小二乘斜率（< 1e-6）', wDiff3 < 1e-6, `max|Δw|=${wDiff3.toExponential(2)}`);
+
+  // ④ 坐标下降不动点：收敛解满足 w_j = S(ρ_j,λ1)/(z_j+λ2)（精确）
+  const en3 = elasticNetFit(X, y, { lambda1: 0.8, lambda2: 1.5, iters: 5000 });
+  const xbar = new Array(d).fill(0);
+  for (const r of X) for (let j = 0; j < d; j++) xbar[j] += r[j];
+  for (let j = 0; j < d; j++) xbar[j] /= n;
+  const Xc = X.map((r) => r.map((v, j) => v - xbar[j]));
+  const ybar = y.reduce((a, b) => a + b, 0) / n;
+  const yc = y.map((v) => v - ybar);
+  const z = new Array(d).fill(0);
+  for (let j = 0; j < d; j++) for (let i = 0; i < n; i++) z[j] += Xc[i][j] * Xc[i][j];
+  const rr = yc.slice();
+  for (let j = 0; j < d; j++) for (let i = 0; i < n; i++) rr[i] -= Xc[i][j] * en3.w[j];
+  let fpErr = 0;
+  for (let j = 0; j < d; j++) {
+    let rho = 0;
+    for (let i = 0; i < n; i++) rho += Xc[i][j] * rr[i];
+    rho += z[j] * en3.w[j];
+    const target = softTh(rho, 0.8) / (z[j] + 1.5);
+    fpErr = Math.max(fpErr, Math.abs(en3.w[j] - target));
+  }
+  check('ElasticNet：收敛解满足坐标不动点 w_j=S(ρ_j,λ1)/(z_j+λ2)（<1e-9）', fpErr < 1e-9, `maxErr=${fpErr.toExponential(2)}`);
+
+  // ⑤ KKT 证书：平滑梯度 ρ'_j = Σ Xc_j r；活跃 ρ'_j = λ2·w_j + λ1·sign(w_j)，非活跃 |ρ'_j| ≤ λ1
+  let kktOk = true;
+  for (let j = 0; j < d; j++) {
+    let rhoPrime = 0;
+    for (let i = 0; i < n; i++) rhoPrime += Xc[i][j] * rr[i];
+    if (Math.abs(en3.w[j]) > 1e-9) {
+      if (Math.abs(rhoPrime - (1.5 * en3.w[j] + 0.8 * Math.sign(en3.w[j]))) > 1e-7) kktOk = false;
+    } else if (Math.abs(rhoPrime) > 0.8 * (1 + 1e-6)) {
+      kktOk = false;
+    }
+  }
+  check('ElasticNet：KKT 证书（活跃 ρ’=λ2·w+λ1·sign，非活跃 |ρ’|≤λ1）', kktOk, `KKT满足=${kktOk}`);
+
+  // ⑥ 目标单调不增
+  const obj = en3.objective;
+  let monoObj = true;
+  for (let i = 1; i < obj.length; i++) if (obj[i] > obj[i - 1] + 1e-9) monoObj = false;
+  check('ElasticNet：坐标下降目标单调不增', monoObj, `单调=${monoObj}`);
+}
+
 const colMean = mean;
 /* ───── 挂载全局命名空间 ───── */
-const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, randomForestTrain, randomForestPredict, rfSingleTree, perceptronStep, perceptronTrain, perceptronPredict, icaFit, icaTransform, ccaFit, ccaProject, hierarchicalCluster, hierarchicalCophenetic, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, gprKernelMatrix, gprFit, gprPredict, gprPriorVariance, gprInverseK, gprHyperGradAnalytic, gprHyperGradNumeric, regressionTreeFit, regressionTreePredict, regressionTreePredictAll, gbdtFit, gbdtPredict, gbdtStagedPredict, pearsonCorr, kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate, innovationAutocorr, empiricalVariance, rtsSmooth, rtsCovarianceGapEigen, rtsRMSE, rtsZeros, effectiveSampleSize, systematicResample, particleFilter, pfCompareWithKalman, metropolisHastings, mhAcceptProb, detailedBalanceResidual, importanceSampling, mcmcEmpiricalMoments, marginal, nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData, pageRank, pagerankExact, pagerankStationary, pagerankSum, gibbsBivariateGaussian, gibbsSampler, gibbsMarginal, gibbsCovariance, gibbsConditionalCheck, gibbsDiscrete, gibbsConvergence, gmmFit, gmmPredict, ldaFit, ldaProject, nbFit, nbPredict, qdaFit, qdaDiscriminant, qdaPredict, lassoFit, lassoPath, lassoPredict, meanShiftKDE, meanShiftStep, meanShiftMode, meanShiftCluster, meanShiftGradientCheck, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, batchNormForward, batchNormBackward, batchNormInfer, batchNormGradCheck, layerNorm2d, layerNormBackward, layerNormGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, convOutputSize, im2col, conv2dForward, conv2dBackward, maxPool2d, maxPoolBackward, conv2dNaive, convGradientCheck, randomConvTensors, vaeMake, vaeEncode, vaeReparametrize, vaeDecode, vaeKL, vaeKLMonteCarlo, vaeSampleEps, vaeForward, vaeBackward, vaeGradientCheck, cosineSim, sigmoidNegIdentity, sgnsLoss, sgnsGradients, sgnsLossReference, sgnsGradientCheck, trainSGNS, wordSimilarity, makeToyCorpus, ResidualBlock, ResNet, resnetAccuracy, trainResNet, residualIdentityCheck, residualJacobianIdentity, residualGradientCheck, residualGradientHighway, residualVsPlain, rbmTrain, rbmHiddenProbs, rbmReconstruct, rbmFreeEnergy, hopfieldTrain, hopfieldEnergy, hopfieldUpdateUnit, hopfieldRecall, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, sarsaEpsilonProbs, epsilonGreedyAction, sarsaStep, sarsaTraceSet, sarsaTraceDecay, sarsa, sarsaLambda, sarsaBellmanResidual, runAllInvariants };
+const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, randomForestTrain, randomForestPredict, rfSingleTree, perceptronStep, perceptronTrain, perceptronPredict, icaFit, icaTransform, ccaFit, ccaProject, hierarchicalCluster, hierarchicalCophenetic, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, gprKernelMatrix, gprFit, gprPredict, gprPriorVariance, gprInverseK, gprHyperGradAnalytic, gprHyperGradNumeric, regressionTreeFit, regressionTreePredict, regressionTreePredictAll, gbdtFit, gbdtPredict, gbdtStagedPredict, pearsonCorr, kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate, innovationAutocorr, empiricalVariance, rtsSmooth, rtsCovarianceGapEigen, rtsRMSE, rtsZeros, effectiveSampleSize, systematicResample, particleFilter, pfCompareWithKalman, metropolisHastings, mhAcceptProb, detailedBalanceResidual, importanceSampling, mcmcEmpiricalMoments, marginal, nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData, pageRank, pagerankExact, pagerankStationary, pagerankSum, gibbsBivariateGaussian, gibbsSampler, gibbsMarginal, gibbsCovariance, gibbsConditionalCheck, gibbsDiscrete, gibbsConvergence, gmmFit, gmmPredict, ldaFit, ldaProject, nbFit, nbPredict, qdaFit, qdaDiscriminant, qdaPredict, lassoFit, lassoPath, lassoPredict, meanShiftKDE, meanShiftStep, meanShiftMode, meanShiftCluster, meanShiftGradientCheck, softmaxForward, softmaxGrad, softmaxGradientCheck, softmaxRegression, elasticNetFit, elasticNetPredict, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, GRU, gruGradientCheck, trainGRU, gruStepClosed, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, batchNormForward, batchNormBackward, batchNormInfer, batchNormGradCheck, layerNorm2d, layerNormBackward, layerNormGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, convOutputSize, im2col, conv2dForward, conv2dBackward, maxPool2d, maxPoolBackward, conv2dNaive, convGradientCheck, randomConvTensors, vaeMake, vaeEncode, vaeReparametrize, vaeDecode, vaeKL, vaeKLMonteCarlo, vaeSampleEps, vaeForward, vaeBackward, vaeGradientCheck, cosineSim, sigmoidNegIdentity, sgnsLoss, sgnsGradients, sgnsLossReference, sgnsGradientCheck, trainSGNS, wordSimilarity, makeToyCorpus, ResidualBlock, ResNet, resnetAccuracy, trainResNet, residualIdentityCheck, residualJacobianIdentity, residualGradientCheck, residualGradientHighway, residualVsPlain, rbmTrain, rbmHiddenProbs, rbmReconstruct, rbmFreeEnergy, hopfieldTrain, hopfieldEnergy, hopfieldUpdateUnit, hopfieldRecall, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, sarsaEpsilonProbs, epsilonGreedyAction, sarsaStep, sarsaTraceSet, sarsaTraceDecay, sarsa, sarsaLambda, sarsaBellmanResidual, expectedValue, expectedSarsaStep, expectedSarsa, expectedBellmanResidual, runAllInvariants };
 if (typeof globalThis !== 'undefined') {
   globalThis.FlagshipAI = Object.assign({}, globalThis.FlagshipAI, __FlagshipAI__);
 }
@@ -13636,6 +14599,124 @@ if (typeof globalThis !== 'undefined') {
       `<span style="font-family:monospace">chainMDP(s=6)：蓝=右/红=左，策略与最优一致=${pol.every((p, s) => p === vi.policy[s])}</span>`;
   }
 
+  /* ───────── v1.11 新增演示 ───────── */
+  let gruSeed = 42;
+  function drawGRU() {
+    const { mulberry32, randomMatrix, GRU, trainGRU } = A;
+    const rng = mulberry32(gruSeed);
+    const T = 30;
+    const X = randomMatrix(T, 1, rng, -1, 1);
+    const targets = X.map((row, t) => [Math.sin(t * 0.35) * 0.8 + (t > 12 ? 0.6 : 0)]);
+    const net = new GRU({ inputSize: 1, hiddenSize: 8, outputSize: 1, seed: gruSeed });
+    const { losses } = trainGRU(net, X, targets, { lr: 0.08, iters: 300 });
+    const cache = net.forward(X);
+    const px = (t) => 20 + t * (420 / (T - 1));
+    const py = (v) => 150 - v * 100;
+    let svg = `<line x1="20" y1="150" x2="440" y2="150" stroke="#e6e9f2"/>
+      <line x1="20" y1="30" x2="20" y2="270" stroke="#e6e9f2"/>`;
+    svg += `<polyline fill="none" stroke="#b0b8cc" stroke-width="2" stroke-dasharray="5,4" points="`
+      + targets.map((t, i) => `${px(i).toFixed(1)},${py(t[0]).toFixed(1)}`).join(' ') + '"/>';
+    svg += `<polyline fill="none" stroke="#7a3bfd" stroke-width="2.5" points="`
+      + cache.Y.map((t, i) => `${px(i).toFixed(1)},${py(t[0]).toFixed(1)}`).join(' ') + '"/>';
+    $('svg-gru').innerHTML = svg;
+    $('legend-gru').innerHTML =
+      `<span><i style="background:#7a3bfd"></i>GRU 预测 ŷ_t</span>
+       <span><i style="background:#b0b8cc"></i>目标 y_t（阶跃+正弦）</span>
+       <span style="font-family:monospace">MSE ${losses[0].toFixed(3)} → ${losses[losses.length - 1].toFixed(4)}（300 步 BPTT）</span>`;
+  }
+
+  let softmaxSeed = 42;
+  function drawSoftmax() {
+    const { mulberry32, gaussianSample, softmaxRegression } = A;
+    const rng = mulberry32(softmaxSeed);
+    const centers = [[80, 90], [240, 80], [160, 220]];
+    const labels = [], X = [];
+    for (let c = 0; c < 3; c++) for (let i = 0; i < 25; i++) {
+      X.push([gaussianSample(rng, centers[c][0], 26), gaussianSample(rng, centers[c][1], 24)]);
+      labels.push(c);
+    }
+    const model = softmaxRegression(X, labels, { lr: 0.4, iters: 600, seed: softmaxSeed });
+    const pred = model.predict(X);
+    let correct = 0;
+    for (let i = 0; i < pred.length; i++) if (pred[i] === labels[i]) correct++;
+    const cols = ['#e74c3c', '#2980b9', '#27ae60'];
+    let svg = '';
+    for (let gx = 20; gx <= 440; gx += 14) for (let gy = 10; gy <= 290; gy += 14) {
+      const p = model.predict([[gx, gy]])[0];
+      svg += `<rect x="${gx}" y="${gy}" width="14" height="14" fill="${cols[p]}" fill-opacity="0.06"/>`;
+    }
+    for (let i = 0; i < X.length; i++) {
+      const c = cols[pred[i]];
+      svg += `<circle cx="${X[i][0].toFixed(1)}" cy="${X[i][1].toFixed(1)}" r="4.5" fill="${c}" fill-opacity="0.6" stroke="${c}"/>`;
+    }
+    $('svg-softmax').innerHTML = svg;
+    $('legend-softmax').innerHTML =
+      cols.map((c, i) => `<span><i style="background:${c}"></i>类 ${i}</span>`).join('') +
+      `<span style="font-family:monospace">准确率 ${correct}/${X.length} · K=3 多类逻辑回归</span>`;
+  }
+
+  let expSarsaSeed = 42;
+  function drawExpSarsa() {
+    const { expectedSarsa, chainMDP, valueIteration } = A;
+    const { P, R, S } = chainMDP({ n: 6, gamma: 0.9 });
+    const res = expectedSarsa(P, R, {
+      gamma: 0.9, alpha: 0.2, epsStart: 1, epsEnd: 0, episodes: 1500, stepsPerEpisode: 30,
+      seed: expSarsaSeed, epsDecayFrac: 0.5,
+    });
+    const rets = res.episodeReturns, n = rets.length;
+    let rmin = Math.min(...rets), rmax = Math.max(...rets); const pad = (rmax - rmin) * 0.1 || 1; rmin -= pad; rmax += pad;
+    const px = (i) => 20 + (i / (n - 1)) * 420;
+    const py = (v) => 20 + (1 - (v - rmin) / (rmax - rmin)) * 200;
+    let d = ''; for (let i = 0; i < n; i++) d += (i === 0 ? 'M' : 'L') + px(i).toFixed(1) + ',' + py(rets[i]).toFixed(1);
+    let svg = `<path d="${d}" fill="none" stroke="#16a085" stroke-width="1" stroke-opacity="0.5"/>`;
+    const W = 50, smooth = [];
+    for (let i = 0; i < n; i++) { let s = 0, c = 0; for (let k = Math.max(0, i - W + 1); k <= i; k++) { s += rets[k]; c++; } smooth.push(s / c); }
+    let ds = ''; for (let i = 0; i < n; i++) ds += (i === 0 ? 'M' : 'L') + px(i).toFixed(1) + ',' + py(smooth[i]).toFixed(1);
+    svg += `<path d="${ds}" fill="none" stroke="#e67e22" stroke-width="1.8"/>`;
+    const vi = valueIteration(P, R, 0.9);
+    const pol = res.policy, cy = 262, bx = (s) => 20 + (s / (S - 1)) * 420;
+    for (let s = 0; s < S; s++) {
+      const x = bx(s);
+      svg += `<circle cx="${x.toFixed(1)}" cy="${cy}" r="9" fill="#fff" stroke="#1c2333" stroke-width="1.5"/>`;
+      svg += `<text x="${x.toFixed(1)}" y="${cy + 4}" font-size="11" text-anchor="middle" fill="#1c2333" font-family="monospace">${s}</text>`;
+      if (pol[s] === 1 && s < S - 1) { svg += `<path d="M${(x + 9).toFixed(1)} ${cy} L${(bx(s + 1) - 9).toFixed(1)} ${cy}" stroke="#2980b9" stroke-width="2"/><path d="M${(bx(s + 1) - 9).toFixed(1)} ${cy} l-6 -3 v6 z" fill="#2980b9"/>`; }
+      if (pol[s] === 0 && s > 0) { svg += `<path d="M${(x - 9).toFixed(1)} ${cy} L${(bx(s - 1) + 9).toFixed(1)} ${cy}" stroke="#e74c3c" stroke-width="2"/><path d="M${(bx(s - 1) + 9).toFixed(1)} ${cy} l6 -3 v6 z" fill="#e74c3c"/>`; }
+    }
+    $('svg-expsarsa').innerHTML = svg;
+    $('legend-expsarsa').innerHTML =
+      `<span><i style="background:#e67e22"></i>回合回报(滑动均值)</span><span><i style="background:#16a085"></i>原始回报</span>` +
+      `<span style="font-family:monospace">chainMDP(s=6)：与最优策略一致=${pol.every((p, s) => p === vi.policy[s])}</span>`;
+  }
+
+  let enSeed = 42;
+  function drawElasticNet() {
+    const { mulberry32, randomMatrix, gaussianSample, elasticNetFit, elasticNetPredict } = A;
+    const rng = mulberry32(enSeed);
+    const n = 60, d = 6;
+    const X = randomMatrix(n, d, rng, -1, 1);
+    const wTrue = [2, 0, -1.5, 0, 0.8, 0];
+    const y = X.map((r) => { let s = 0; for (let j = 0; j < d; j++) s += wTrue[j] * r[j]; return s + gaussianSample(rng, 0, 0.15); });
+    const model = elasticNetFit(X, y, { lambda1: 0.5, lambda2: 0.5, iters: 3000, tol: 1e-12 });
+    const cols = ['#2980b9', '#e74c3c', '#17994f', '#7a3bfd', '#e67e22', '#16a085'];
+    let wmax = 0;
+    for (let j = 0; j < d; j++) { const a = Math.max(Math.abs(model.w[j]), Math.abs(wTrue[j])); if (a > wmax) wmax = a; }
+    wmax = (wmax * 1.12) || 1;
+    const bx = (j) => 50 + j * 70;
+    const py = (v) => 150 - (v / wmax) * 110;
+    let svg = '<line x1="40" y1="150" x2="440" y2="150" stroke="#d5dbe5"/><line x1="40" y1="20" x2="40" y2="260" stroke="#d5dbe5"/>';
+    for (let j = 0; j < d; j++) {
+      svg += `<line x1="${bx(j).toFixed(1)}" y1="${py(wTrue[j]).toFixed(1)}" x2="${(bx(j) + 30).toFixed(1)}" y2="${py(wTrue[j]).toFixed(1)}" stroke="#1c2333" stroke-width="3" stroke-dasharray="4,3"/>`;
+      svg += `<rect x="${bx(j).toFixed(1)}" y="${(py(model.w[j]) - 5).toFixed(1)}" width="30" height="10" fill="${cols[j]}"/>`;
+      svg += `<text x="${(bx(j) + 15).toFixed(1)}" y="275" font-size="10" text-anchor="middle" fill="#5b6478" font-family="monospace">w${j + 1}</text>`;
+    }
+    let sse = 0; const yhat = elasticNetPredict(X, model);
+    for (let i = 0; i < y.length; i++) sse += (y[i] - yhat[i]) ** 2;
+    $('svg-elastic').innerHTML = svg;
+    $('legend-elastic').innerHTML =
+      cols.slice(0, d).map((c, j) => `<span><i style="background:${c}"></i>w${j + 1}</span>`).join('') +
+      `<span style="font-family:monospace">非零 ${model.activeSet.length}/${d} · RMSE=${Math.sqrt(sse / y.length).toFixed(3)} · 黑虚线=真实系数</span>`;
+  }
+
   $('btn-qda').addEventListener('click', () => { qdaSeed = (qdaSeed * 37 + 11) % 100000; drawQDA(); });
   $('btn-lasso').addEventListener('click', () => { lassoSeed = (lassoSeed * 41 + 9) % 100000; drawLasso(); });
   $('btn-rbm').addEventListener('click', () => { rbmSeed = (rbmSeed * 29 + 13) % 100000; drawRBM(); });
@@ -13645,6 +14726,10 @@ if (typeof globalThis !== 'undefined') {
   $('btn-pf').addEventListener('click', () => { pfSeed = (pfSeed * 41 + 9) % 100000; drawPF(); });
   $('btn-ms').addEventListener('click', () => { msSeed = (msSeed * 29 + 13) % 100000; drawMS(); });
   $('btn-sarsa').addEventListener('click', () => { sarsaSeed = (sarsaSeed * 31 + 17) % 100000; drawSARSA(); });
+  $('btn-gru').addEventListener('click', () => { gruSeed = (gruSeed * 23 + 7) % 100000; drawGRU(); });
+  $('btn-softmax').addEventListener('click', () => { softmaxSeed = (softmaxSeed * 29 + 13) % 100000; drawSoftmax(); });
+  $('btn-expsarsa').addEventListener('click', () => { expSarsaSeed = (expSarsaSeed * 31 + 17) % 100000; drawExpSarsa(); });
+  $('btn-elastic').addEventListener('click', () => { enSeed = (enSeed * 41 + 9) % 100000; drawElasticNet(); });
 
   $('btn-perc').addEventListener('click', () => { percSeed = (percSeed * 31 + 17) % 100000; drawPerc(); });
   $('btn-ica').addEventListener('click', () => { icaSeed = (icaSeed * 37 + 11) % 100000; drawICA(); });
@@ -13697,6 +14782,10 @@ if (typeof globalThis !== 'undefined') {
   drawMS();
   drawSARSA();
   drawOpt();
+  drawGRU();
+  drawSoftmax();
+  drawExpSarsa();
+  drawElasticNet();
 })();
 </script>
 </body>

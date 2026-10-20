@@ -48,11 +48,14 @@ const FILES = [
   'src/ml/qda.js',
   'src/ml/lasso.js',
   'src/ml/meanShift.js',
+  'src/ml/softmaxRegression.js',
+  'src/ml/elasticNet.js',
   'src/nn/dense.js',
   'src/nn/attention.js',
   'src/nn/transformer.js',
   'src/nn/rnn.js',
   'src/nn/lstm.js',
+  'src/nn/gru.js',
   'src/nn/optimizers.js',
   'src/nn/activations.js',
   'src/nn/normalization.js',
@@ -66,6 +69,7 @@ const FILES = [
   'src/rl/valueIteration.js',
   'src/rl/qLearning.js',
   'src/rl/sarsa.js',
+  'src/rl/expectedSarsa.js',
   'src/verify/invariants.js',
 ];
 

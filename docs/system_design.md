@@ -1,7 +1,7 @@
 # 旗舰AI引擎 (Flagship AI Engine) — 系统架构设计说明书
 
 > 作者署名：晨星 (Morning Star / CJX0712) ｜ 架构师：高见远 (Bob)
-> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、50/50 全绿**。
+> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、54/54 全绿**。
 
 ---
 
@@ -11,13 +11,13 @@
 
 | 设计稿 | 最终实现 | 说明 |
 |---|---|---|
-| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 50 组套件，Node 与浏览器共用同一份 |
+| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 54 组套件，Node 与浏览器共用同一份 |
 | `src/verify/suites.js` | 并入 `src/verify/invariants.js` | 套件与检查器同文件，杜绝跨文件漂移 |
 | `src/core/rng.js` / `src/core/utils.js` | 并入 `src/core/stats.js`（mulberry32/gaussianSample）与 `src/core/linalg.js`/`numerical.js` | 随机源归概率层，工具归各自的消费者 |
 | 浏览器 `<script type="module">` 直引 src | `scripts/bundle.mjs` 按依赖序内联进 `showcase/index.html`（`globalThis.FlagshipAI`） | 兼容 `file://` 双击即用；`node --check` 兜底语法校验 |
-| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 50/50`（CI grep 校验） | 语义一致，命名对齐实现 |
+| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 54/54`（CI grep 校验） | 语义一致，命名对齐实现 |
 
-落地验证结论：`node test/run.mjs` → **PASS 50/50（约 2.9s，300 条不变量）**，与本设计书的全部不变量承诺一致。
+落地验证结论：`node test/run.mjs` → **PASS 54/54（324 条不变量）**，与本设计书的全部不变量承诺一致。
 
 ### v1.1 增补（2026-10-19）
 
@@ -119,6 +119,17 @@
 
 > 选型纪律：v1.10 立项前经 `grep` 查重——`kalman.js` 含滤波但无平滑器（RTS 平滑为新缺口）、`mcmc.js` 含 MH 但无 SIR 粒子滤波（粒子滤波为贝叶斯滤波独立门类）、`clustering.js` 含 kmeans/GMM 但无核密度爬山（Mean Shift 为非参数聚类独立门类）、`qLearning.js` 含离策略 TD 但无在策略 SARSA（SARSA 为同策略 TD 独立门类）。四者均为引擎真实缺口，无重复造轮子。
 
+### v1.11 增补（2026-10-21）
+
+| 增补模块 | 不变量（定理背书） |
+|---|---|
+| `src/nn/gru.js`（门控循环单元 GRU，Cho et al. 2014） | BPTT 解析梯度 ≡ 中心差分数值梯度（双判据 maxRelErr<1e-6，实测 5.45e-9）；门控闭合 z≡1⇒h=h̃、z≡0⇒h_{t−1}；单步闭式；重置门隔离 r≡0；教师信号训练 MSE 单调→0；同 seed 一致 |
+| `src/ml/softmaxRegression.js`（多类逻辑回归，Bishop §4.3.4） | 解析梯度 ≡ 中心差分（双判据）；K=2≡logisticRegression（40/40 满分）；Σ_k p=1；交叉熵≥0 且单调不增；同 seed 一致 |
+| `src/rl/expectedSarsa.js`（期望 SARSA，van Seijen et al. 2009） | ε=0 单步≡Q-learning（maxDiff=0）；期望≡dot(π,Q)；GLIE 收敛到 qFromV(V*)（max\|ΔQ\|=0.0523）；同策略期望 Bellman 残差→0；后期回报>前期（0.815>0.743）；同 seed 一致 |
+| `src/ml/elasticNet.js`（弹性网络，Zou & Hastie 2005） | λ1=0≡Ridge（8.35e-14）；λ2=0≡Lasso（0）；皆0≡OLS（1.49e-14）；不动点 w_j=S(ρ_j,λ1)/(z_j+λ2)（4.88e-15）；KKT 证书；目标单调不增 |
+
+> 选型纪律：v1.11 立项前经 `grep` 查重——`nn/` 已有 `rnn.js`/`lstm.js` 但无 GRU（门控循环单元独立门类，双门 r/z 与 LSTM 三门并立）、`ml/regression.js` 含 OLS/Ridge/逻辑回归但无多类 Softmax 回归（K 类 softmax + 交叉熵，K=2 退化≠多类实现）、`rl/` 已有 `qLearning`（离策略最大）/`sarsa`（在策略采样）但无对 π 求期望的 Expected SARSA（TD 目标独立门类）、`ml/lasso.js`/`regression.js` 分别含纯 L1 与纯 L2 但无 L1+L2 混合的 Elastic Net。四者均为引擎真实缺口，无重复造轮子。变异测试 4/4 有牙齿（GRU Whz 破坏 / Softmax 指标反转 / ExpSARSA γ 符号 / ElasticNet 丢软阈值 各使对应套件变红），stub-DOM 冒烟通过。
+
 ---
 
 ## 0. 设计总览
@@ -128,7 +139,7 @@
 | 运行形态 | 原生 **ES Module**（源码 `.js` + `package.json` 声明 `type:module`，测试入口 `.mjs`），浏览器 `<script type="module">` 与 Node `node test/run.mjs` 双跑 |
 | 依赖 | **零第三方依赖**；测试/服务仅用 Node 内置模块（`node:assert`、`node:process`、`node:http`、`node:fs`、`node:path`） |
 | 可复现 | 全确定性：核心不使用 `Math.random()` / `Date.now()`，统一经 `mulberry32(seed)` 种子随机数 |
-| 验证 | **50 组不变量套件**（v1.0 的 8 组起步，逐版本累积至 v1.10 的 50 组、300 条），每组聚合若干「不变量自检」，全部通过即为 50/50 全绿；CI 中以退出码 0/1 反映 |
+| 验证 | **54 组不变量套件**（v1.0 的 8 组起步，逐版本累积至 v1.11 的 54 组、324 条），每组聚合若干「不变量自检」，全部通过即为 54/54 全绿；CI 中以退出码 0/1 反映 |
 | 展示 | 单文件 `showcase/index.html`，内联 CSS/JS，零外部依赖，实时渲染自检报告 + 算法演示 |
 | 文档 | `README.md` / `ARCHITECTURE.md` / `MATH.md`（数学证明与不变量）/ `LICENSE`(MIT) / `.github/workflows/ci.yml` |
 
