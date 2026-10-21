@@ -1,7 +1,7 @@
 # 旗舰AI引擎 (Flagship AI Engine) — 系统架构设计说明书
 
 > 作者署名：晨星 (Morning Star / CJX0712) ｜ 架构师：高见远 (Bob)
-> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、58/58 全绿**。
+> 设计原则：**零重写 + 集大成**（每行代码站在世界顶级成果之上）；**零依赖、零构建、双跑、可验证、62/62 全绿**。
 
 ---
 
@@ -11,13 +11,13 @@
 
 | 设计稿 | 最终实现 | 说明 |
 |---|---|---|
-| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 58 组套件，Node 与浏览器共用同一份 |
+| `src/verify/index.js` 的 `runVerify()` | `src/verify/invariants.js` 的 `runAllInvariants()` | 单文件承载 62 组套件，Node 与浏览器共用同一份 |
 | `src/verify/suites.js` | 并入 `src/verify/invariants.js` | 套件与检查器同文件，杜绝跨文件漂移 |
 | `src/core/rng.js` / `src/core/utils.js` | 并入 `src/core/stats.js`（mulberry32/gaussianSample）与 `src/core/linalg.js`/`numerical.js` | 随机源归概率层，工具归各自的消费者 |
 | 浏览器 `<script type="module">` 直引 src | `scripts/bundle.mjs` 按依赖序内联进 `showcase/index.html`（`globalThis.FlagshipAI`） | 兼容 `file://` 双击即用；`node --check` 兜底语法校验 |
-| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 58/58`（CI grep 校验） | 语义一致，命名对齐实现 |
+| `test/run.mjs` 引 `runVerify` | 引 `runAllInvariants`，输出 `PASS 62/62`（CI grep 校验） | 语义一致，命名对齐实现 |
 
-落地验证结论：`node test/run.mjs` → **PASS 58/58（350 条不变量）**，与本设计书的全部不变量承诺一致。
+落地验证结论：`node test/run.mjs` → **PASS 62/62（380 条不变量）**，与本设计书的全部不变量承诺一致。
 
 ### v1.1 增补（2026-10-19）
 
@@ -152,7 +152,7 @@
 | 运行形态 | 原生 **ES Module**（源码 `.js` + `package.json` 声明 `type:module`，测试入口 `.mjs`），浏览器 `<script type="module">` 与 Node `node test/run.mjs` 双跑 |
 | 依赖 | **零第三方依赖**；测试/服务仅用 Node 内置模块（`node:assert`、`node:process`、`node:http`、`node:fs`、`node:path`） |
 | 可复现 | 全确定性：核心不使用 `Math.random()` / `Date.now()`，统一经 `mulberry32(seed)` 种子随机数 |
-| 验证 | **58 组不变量套件**（v1.0 的 8 组起步，逐版本累积至 v1.12 的 58 组、350 条），每组聚合若干「不变量自检」，全部通过即为 58/58 全绿；CI 中以退出码 0/1 反映 |
+| 验证 | **62 组不变量套件**（v1.0 的 8 组起步，逐版本累积至 v1.13 的 62 组、380 条），每组聚合若干「不变量自检」，全部通过即为 62/62 全绿；CI 中以退出码 0/1 反映 |
 | 展示 | 单文件 `showcase/index.html`，内联 CSS/JS，零外部依赖，实时渲染自检报告 + 算法演示 |
 | 文档 | `README.md` / `ARCHITECTURE.md` / `MATH.md`（数学证明与不变量）/ `LICENSE`(MIT) / `.github/workflows/ci.yml` |
 

@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">58 组套件 · 350 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">62 组套件 · 380 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -517,8 +517,39 @@
     </div>
   </div>
 
+  <h2>v1.13 新增算法 <span class="tag">迭代线性求解 · 隔离森林 · 流形学习 MDS/Isomap · 策略梯度 REINFORCE · 本页引擎实时求解</span></h2>
+  <div class="demos">
+    <div class="card">
+      <div class="demo-head"><strong>迭代线性求解</strong><button id="btn-linsolve">重新求解</button></div>
+      <div class="desc">Hestenes &amp; Stiefel 1952 · Jacobi / Gauss–Seidel / 共轭梯度：CG 在 n 步内收敛且解 ≡ 直接解（maxAbs 1e-8），A-共轭与残差正交</div>
+      <svg id="svg-linsolve" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-linsolve"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head"><strong>隔离森林 iForest</strong><button id="btn-isof">重新训练</button></div>
+      <div class="desc">Liu et al. 2008 · 异常点「少而不同」更快被孤立：路径越短异常分越高（s→1）；同 seed 可复现，c(n) 闭式 ≡ 递归</div>
+      <svg id="svg-isof" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-isof"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head"><strong>流形学习 MDS/Isomap</strong><button id="btn-manifold">重新展开</button></div>
+      <div class="desc">Torgerson 1952 / Tenenbaum 2000 · 经典 MDS ≡ PCA；Isomap 经 kNN 图测地展开 Swiss Roll，恢复内在 2D 结构</div>
+      <svg id="svg-manifold" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-manifold"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head"><strong>策略梯度 REINFORCE</strong><button id="btn-policyg">重新训练</button></div>
+      <div class="desc">Williams 1992 · softmax 策略的 score-function 梯度；基线不改变期望；chainMDP 上训练后贪心策略 ≡ 值迭代最优</div>
+      <svg id="svg-policyg" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-policyg"></div>
+    </div>
+  </div>
+
   <div class="refs">
-    站在巨人肩上：<code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
+    站在巨人肩上：<code>Hestenes &amp; Stiefel 1952 · 共轭梯度</code><code>Liu, Ting &amp; Zhou 2008 · Isolation Forest</code>
+    <code>Torgerson 1952 · 经典 MDS</code><code>Tenbaum et al. 2000 · Isomap</code>
+    <code>Williams 1992 · REINFORCE</code><code>Sutton &amp; Barto · 策略梯度定理</code>
+    <code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
     <code>Bishop · PRML</code><code>Hastie et al. · ESL</code><code>Vaswani et al. 2017 · Attention Is All You Need</code>
     <code>Breiman et al. 1984 · CART</code><code>Cortes &amp; Vapnik 1995 · SVM</code>
     <code>Freund &amp; Schapire 1997 · AdaBoost</code><code>Baum &amp; Petrie 1966 · HMM</code>
@@ -1340,6 +1371,269 @@ function twoMoons({ n = 60, sigma = 0.12, seed = 42 } = {}) {
     y.push(1);
   }
   return { X, y };
+}
+
+/* ═══════════ src/core/linsolve.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 迭代线性求解（Jacobi / Gauss–Seidel / 共轭梯度）
+ * 站在：Hestenes & Stiefel 1952《Methods of Conjugate Gradients for Solving
+ *       Linear Systems》J. Research NBS 49（CG：n 步终止的 Krylov 子空间法）
+ *       · Jacobi 1845 / Gauss–Seidel 1874（定常迭代：x = Bx + c 的不动点）
+ *       · Golub & Van Loan《Matrix Computations》§10–11（收敛性、谱半径判据）
+ *       · Trefethen & Bau《Numerical Linear Algebra》§38（CG 的 A-共轭与残差正交）。
+ *
+ * 约定：A 为 n×n（行主序 number[][]），b 为长度 n 的 number[]。
+ *   Jacobi       x_i^{(k+1)} = (b_i − Σ_{j≠i} A_ij·x_j^{(k)}) / A_ii      （全旧值）
+ *   Gauss–Seidel x_i^{(k+1)} = (b_i − Σ_{j<i} A_ij·x_j^{(k+1)} − Σ_{j>i} A_ij·x_j^{(k)}) / A_ii（就地取新值）
+ *   CG（对称正定 A，Fletcher–Reeves β）
+ *       α_k = r_kᵀr_k / (p_kᵀA p_k)； x_{k+1} = x_k + α_k p_k； r_{k+1} = r_k − α_k A p_k
+ *       β_k = r_{k+1}ᵀr_{k+1} / (r_kᵀr_k)； p_{k+1} = r_{k+1} + β_k p_k
+ * 三个求解器均返回逐轮残差 ‖b − Ax‖₂ 的历史（residuals[0] 为初始残差）。
+ *
+ * 不变量（全部为可独立交叉验证的硬恒等式）：
+ *   ① CG ≡ 直接解：对称正定 A = MᵀM + n·I 上，CG 解与 solve(A,b) 逐分量一致（maxAbs < 1e-8）；
+ *   ② CG 有限步终止：n 维系统至多 n 步收敛（iters ≤ n 且末残差 < tol）；
+ *   ③ A-共轭性：搜索方向满足 p_iᵀA p_j = 0（i≠j，相对 A-范数 < 1e-8）；
+ *   ④ 残差正交性：r_iᵀr_j = 0（i≠j，相对 < 1e-8）；
+ *   ⑤ Jacobi / Gauss–Seidel 在**严格对角占优**矩阵上收敛到 solve(A,b)（maxAbs < 1e-6），
+ *      且残差单调下降（包络口径：逐轮比值 ≤ 1）；
+ *   ⑥ Jacobi 迭代矩阵 B = I − D⁻¹A 的谱半径 ρ(B) < 1（Gershgorin 上界 + 幂迭代双证）；
+ *   ⑦ 同输入确定性：两次调用结果逐位一致（maxDiff = 0）。
+ */
+
+
+
+/** 残差向量 r = b − A·x */
+function lsResidual(A, b, x) {
+  const Ax = matvec(A, x);
+  const r = new Array(b.length);
+  for (let i = 0; i < b.length; i++) r[i] = b[i] - Ax[i];
+  return r;
+}
+
+/** 残差 2-范数 ‖b − A·x‖₂ */
+function lsResidualNorm(A, b, x) {
+  return norm(lsResidual(A, b, x));
+}
+
+/** A-范数 ‖p‖_A = √(pᵀAp)（A 对称正定时有意义） */
+function lsANorm(A, p) {
+  return Math.sqrt(Math.abs(dot(p, matvec(A, p))));
+}
+
+/**
+ * 雅可比迭代：x^{(k+1)} = D⁻¹(b − (L+U)x^{(k)})，须 A_ii ≠ 0。
+ * @param {number[][]} A 系数矩阵
+ * @param {number[]} b 右端项
+ * @param {{x0?:number[], iters?:number, tol?:number}} [opts] 初值、最大轮数、残差阈值
+ * @returns {{x:number[], residuals:number[], iters:number, converged:boolean}}
+ */
+function jacobiIter(A, b, { x0 = null, iters = 200, tol = 1e-10 } = {}) {
+  const n = b.length;
+  let x = x0 ? x0.slice() : new Array(n).fill(0);
+  const residuals = [lsResidualNorm(A, b, x)];
+  let done = 0;
+  let converged = residuals[0] < tol;
+  while (!converged && done < iters) {
+    const xn = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const Ai = A[i];
+      let s = b[i];
+      for (let j = 0; j < n; j++) if (j !== i) s -= Ai[j] * x[j];
+      xn[i] = s / Ai[i];
+    }
+    x = xn;
+    done++;
+    const rn = lsResidualNorm(A, b, x);
+    residuals.push(rn);
+    if (rn < tol) converged = true;
+  }
+  return { x, residuals, iters: done, converged };
+}
+
+/**
+ * 高斯–赛德尔迭代：就地使用已更新的分量（收敛通常快于 Jacobi，且不额外占用向量）。
+ * @param {number[][]} A 系数矩阵
+ * @param {number[]} b 右端项
+ * @param {{x0?:number[], iters?:number, tol?:number}} [opts]
+ * @returns {{x:number[], residuals:number[], iters:number, converged:boolean}}
+ */
+function gaussSeidelIter(A, b, { x0 = null, iters = 200, tol = 1e-10 } = {}) {
+  const n = b.length;
+  const x = x0 ? x0.slice() : new Array(n).fill(0);
+  const residuals = [lsResidualNorm(A, b, x)];
+  let done = 0;
+  let converged = residuals[0] < tol;
+  while (!converged && done < iters) {
+    for (let i = 0; i < n; i++) {
+      const Ai = A[i];
+      let s = b[i];
+      for (let j = 0; j < i; j++) s -= Ai[j] * x[j];       // 本轮已更新的新值
+      for (let j = i + 1; j < n; j++) s -= Ai[j] * x[j];   // 上一轮的旧值
+      x[i] = s / Ai[i];
+    }
+    done++;
+    const rn = lsResidualNorm(A, b, x);
+    residuals.push(rn);
+    if (rn < tol) converged = true;
+  }
+  return { x, residuals, iters: done, converged };
+}
+
+/**
+ * 共轭梯度法（对称正定系统，Fletcher–Reeves 公式）。
+ * Krylov 子空间维数 ≤ n ⇒ 精确算术下至多 n 步终止（不变量 ②）。
+ * @param {number[][]} A 对称正定矩阵
+ * @param {number[]} b 右端项
+ * @param {{x0?:number[], tol?:number, maxIter?:number}} [opts] maxIter 缺省取 n
+ * @returns {{x:number[], residuals:number[], residualVectors:number[][],
+ *            directions:number[][], iters:number, converged:boolean}}
+ */
+function conjugateGradient(A, b, { x0 = null, tol = 1e-10, maxIter = null } = {}) {
+  const n = b.length;
+  const maxIt = maxIter === null ? n : maxIter;
+  const x = x0 ? x0.slice() : new Array(n).fill(0);
+  let r = lsResidual(A, b, x);
+  const p = r.slice();
+  const residuals = [norm(r)];
+  const residualVectors = [r.slice()];
+  const directions = [p.slice()];
+  let rs = dot(r, r);
+  let iters = 0;
+  let converged = residuals[0] < tol;
+  while (!converged && iters < maxIt) {
+    const Ap = matvec(A, p);
+    const denom = dot(p, Ap);
+    if (denom === 0) break;                 // A 奇异/方向退化：安全退出
+    const alpha = rs / denom;
+    for (let i = 0; i < n; i++) {
+      x[i] += alpha * p[i];
+      r[i] -= alpha * Ap[i];
+    }
+    iters++;
+    const rn = norm(r);
+    residuals.push(rn);
+    residualVectors.push(r.slice());
+    if (rn < tol) { converged = true; break; }
+    const rsNew = dot(r, r);
+    const beta = rsNew / rs;
+    for (let i = 0; i < n; i++) p[i] = r[i] + beta * p[i];
+    directions.push(p.slice());
+    rs = rsNew;
+  }
+  return { x, residuals, residualVectors, directions, iters, converged };
+}
+
+/**
+ * Jacobi 迭代矩阵 B = I − D⁻¹A（谱半径 ρ(B) < 1 ⟺ 迭代收敛）。
+ * @param {number[][]} A 系数矩阵
+ * @returns {number[][]} B
+ */
+function jacobiIterationMatrix(A) {
+  const n = A.length;
+  const B = identity(n);
+  for (let i = 0; i < n; i++) {
+    const inv = 1 / A[i][i];
+    for (let j = 0; j < n; j++) B[i][j] -= inv * A[i][j];
+  }
+  return B;
+}
+
+/**
+ * 谱半径估计（规范化幂迭代 + 对数平均的 Lyapunov 指数法）。
+ * 每步归一化后累计 log‖Bv‖，取平均再取指数 ⇒ 对负主特征值/复共轭主对同样稳健
+ * （普通 Rayleigh 商在非对称阵上不可靠）。
+ * @param {number[][]} B 方阵
+ * @param {{iters?:number, burnIn?:number}} [opts]
+ * @returns {number} ρ(B) 的估计值
+ */
+function spectralRadius(B, { iters = 800, burnIn = 60 } = {}) {
+  const n = B.length;
+  let v = new Array(n);
+  for (let i = 0; i < n; i++) v[i] = Math.sin(i * 2.39996323 + 1.0); // 确定性初值（无 rng 依赖）
+  let nv = norm(v);
+  if (nv === 0) return 0;
+  for (let i = 0; i < n; i++) v[i] /= nv;
+  let logSum = 0;
+  let count = 0;
+  for (let k = 0; k < iters; k++) {
+    const w = matvec(B, v);
+    const nw = norm(w);
+    if (nw === 0) break;
+    if (k >= burnIn) { logSum += Math.log(nw); count++; }
+    for (let i = 0; i < n; i++) v[i] = w[i] / nw;
+  }
+  return count > 0 ? Math.exp(logSum / count) : 0;
+}
+
+/**
+ * 行对角占优比 r_i = Σ_{j≠i}|A_ij| / |A_ii|（Gershgorin ⇒ ρ(B) ≤ max_i r_i）。
+ * @param {number[][]} A 系数矩阵
+ * @returns {{max:number, ratios:number[], strictlyDominant:boolean}}
+ */
+function diagonalDominance(A) {
+  const n = A.length;
+  const ratios = new Array(n);
+  let max = 0;
+  let strictly = true;
+  for (let i = 0; i < n; i++) {
+    let off = 0;
+    for (let j = 0; j < n; j++) if (j !== i) off += Math.abs(A[i][j]);
+    const r = off / Math.abs(A[i][i]);
+    ratios[i] = r;
+    if (r > max) max = r;
+    if (r >= 1) strictly = false;
+  }
+  return { max, ratios, strictlyDominant: strictly };
+}
+
+/**
+ * 搜索方向的 A-共轭度：max_{i≠j} |p_iᵀA p_j| / (‖p_i‖_A·‖p_j‖_A)。
+ * CG 的构造保证该量为 0（不变量 ③）。
+ * @param {number[][]} A 对称正定矩阵
+ * @param {number[][]} directions 搜索方向序列
+ * @returns {number} 最大相对共轭误差
+ */
+function conjugateResidual(A, directions) {
+  const m = directions.length;
+  let worst = 0;
+  for (let i = 0; i < m; i++) {
+    const Api = matvec(A, directions[i]);
+    const ni = lsANorm(A, directions[i]);
+    for (let j = i + 1; j < m; j++) {
+      const cross = dot(directions[j], Api);
+      const denom = ni * lsANorm(A, directions[j]);
+      if (denom > 0) worst = Math.max(worst, Math.abs(cross) / denom);
+    }
+  }
+  return worst;
+}
+
+/**
+ * 残差序列的正交度：max_{i≠j} |r_iᵀr_j| / (‖r_i‖·‖r_j‖)。
+ * CG 的构造保证该量为 0（不变量 ④）。
+ * 数值说明：收敛末步的残差已落到机器精度地板（方向纯为舍入噪声），
+ * 其「相对内积」无意义——故按 ‖r‖ < 1e-10·‖r₀‖ 剔除后再比较。
+ * @param {number[][]} residualVectors 残差向量序列
+ * @param {number} [floor] 噪声地板（相对 ‖r₀‖ 的比例），默认 1e-10
+ * @returns {number} 最大相对内积
+ */
+function residualOrthogonality(residualVectors, floor = 1e-10) {
+  const m = residualVectors.length;
+  const nrm = residualVectors.map((v) => norm(v));
+  let r0 = 0;
+  for (const v of nrm) if (v > r0) r0 = v;
+  const thr = floor * r0;
+  let worst = 0;
+  for (let i = 0; i < m; i++) {
+    if (nrm[i] <= thr) continue;
+    for (let j = i + 1; j < m; j++) {
+      const denom = nrm[i] * nrm[j];
+      if (nrm[j] <= thr || denom <= 0) continue;
+      worst = Math.max(worst, Math.abs(dot(residualVectors[i], residualVectors[j])) / denom);
+    }
+  }
+  return worst;
 }
 
 /* ═══════════ src/ml/regression.js ═══════════ */
@@ -6284,6 +6578,587 @@ function somBatchTrain(X, {
   return { codebook: cur, rows, cols, bmus, quantErrors };
 }
 
+/* ═══════════ src/ml/isolationForest.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 隔离森林（Isolation Forest / iForest）
+ * 站在：Liu, Ting & Zhou 2008 ICDM《Isolation Forest》与
+ *       Liu, Ting & Zhou 2012《Isolation-Based Anomaly Detection》TKDD
+ *       · sklearn.ensemble.IsolationForest 的参考实现（c(n) 的特例处理）
+ *       · Knuth《The Art of Computer Programming》§6.2.2（随机 BST 的平均路径长度）。
+ *
+ * 核心直觉：异常点「少而不同」，因此随机切分的空间里 **更快被孤立**（路径更短）。
+ *   随机树：随机选特征 q，在 [min, max] 内随机取切点 p，按 x_q < p 二分；
+ *           直到达到高度上限 ⌈log₂ψ⌉ 或样本不可再分。
+ *   路径长度 h(x) = e + c(|leaf|)，e 为根到叶的边数（叶内样本用 c(·) 修正）。
+ *   归一化常数 c(n) = 2H(n−1) − 2(n−1)/n，H(i) = ln(i) + γ（γ = 0.5772156649015329），
+ *           特例 c(1) = 0、c(2) = 1（与原文/sklearn 一致）。
+ *   异常分 s(x, ψ) = 2^(−E[h(x)] / c(ψ))：→ 1 为异常，→ 0.5 为常态，→ 0 为深内部点。
+ *
+ * 不变量（全部为可独立交叉验证的硬恒等式）：
+ *   ① c(n) 闭式 ≡ 递归增量式：c(n) 由 2(ln(n−1)+γ) − 2(n−1)/n 与
+ *      「c(k) = c(k−1) + 2ln((k−1)/(k−2)) − 2(k−1)/k + 2(k−2)/(k−1)」两条独立路径互证（relErr < 1e-12）；
+ *      （注：原文用 ln+γ 近似调和数，与精确 Σ1/i 相差 O(1/(2n))——这是截断误差而非实现 Bug，
+ *        本模块另导出 iforCExact 供对照。）
+ *   ② 路径长度上界：任意样本的 **叶深度** ≤ 高度上限，且 h(x) ≤ 高度上限 + c(ψ)（恒等式，违反计数 = 0）；
+ *   ③ 异常分排序：密集正态团 + 远端 outlier 的合成数据上，outlier 平均分 − 常态平均分 > 0.1；
+ *   ④ 路径长度单调性：outlier 的平均 h(x) **严格小于** 常态的（隔离机制本身）；
+ *   ⑤ 集成降方差：单树得分方差 > 森林平均得分方差（体现 bagging 的方差缩减）；
+ *   ⑥ 同 seed 可复现：两片森林对同一样本的 anomalyScore 逐位一致（maxDiff = 0）；
+ *   ⑦ 归一化常数性质：c(n) 单调递增（n ≥ 2）且 c(n) < n（小 n 全量验证）。
+ */
+
+
+
+/** 欧拉–马斯刻若尼常数 γ（H(i) ≈ ln i + γ） */
+const IFOR_EULER = 0.5772156649015329;
+
+/**
+ * 二叉树平均路径长度 c(n)（iForest 论文的归一化常数）。
+ *   n ≤ 1 → 0；n = 2 → 1；n ≥ 3 → 2(ln(n−1) + γ) − 2(n−1)/n
+ * @param {number} n 样本数
+ * @returns {number} c(n)
+ */
+function iforC(n) {
+  if (n <= 1) return 0;
+  if (n === 2) return 1;
+  return 2 * (Math.log(n - 1) + IFOR_EULER) - 2 * (n - 1) / n;
+}
+
+/**
+ * c(n) 的递归增量式（与闭式同源、计算路径完全不同，供不变量 ① 互证）：
+ *   c(k) − c(k−1) = 2ln((k−1)/(k−2)) − 2(k−1)/k + 2(k−2)/(k−1)
+ * @param {number} n 样本数
+ * @returns {number} c(n)
+ */
+function iforCRecursive(n) {
+  if (n <= 1) return 0;
+  if (n === 2) return 1;
+  let c = 2 * (Math.log(2) + IFOR_EULER) - 2 * 2 / 3; // c(3) 为递推基准
+  for (let k = 4; k <= n; k++) {
+    c += 2 * Math.log((k - 1) / (k - 2)) - 2 * (k - 1) / k + 2 * (k - 2) / (k - 1);
+  }
+  return c;
+}
+
+/**
+ * 精确调和数版 c(n) = 2·Σ_{i=1}^{n−1}(1/i) − 2(n−1)/n（H(i) 的数学定义，非 ln 近似）。
+ * 与 iforC 的差为 O(1/(2n)) 的 Euler–Maclaurin 截断项，供数值对照。
+ * @param {number} n 样本数
+ * @returns {number} c_exact(n)
+ */
+function iforCExact(n) {
+  if (n <= 1) return 0;
+  let h = 0;
+  for (let i = 1; i <= n - 1; i++) h += 1 / i;
+  return 2 * h - 2 * (n - 1) / n;
+}
+
+/** 无放回随机子采样（部分 Fisher–Yates，O(ψ)） */
+function iforSubsample(X, psi, rng) {
+  const n = X.length;
+  const idx = new Array(n);
+  for (let i = 0; i < n; i++) idx[i] = i;
+  for (let i = 0; i < psi; i++) {
+    const j = i + Math.floor(rng() * (n - i));
+    const t = idx[i]; idx[i] = idx[j]; idx[j] = t;
+  }
+  const out = new Array(psi);
+  for (let i = 0; i < psi; i++) out[i] = X[idx[i]];
+  return out;
+}
+
+/** 逐特征的 min/max */
+function iforRanges(X) {
+  const d = X[0].length;
+  const mins = new Array(d).fill(Infinity);
+  const maxs = new Array(d).fill(-Infinity);
+  for (const xi of X) {
+    for (let j = 0; j < d; j++) {
+      if (xi[j] < mins[j]) mins[j] = xi[j];
+      if (xi[j] > maxs[j]) maxs[j] = xi[j];
+    }
+  }
+  return { mins, maxs };
+}
+
+/**
+ * 单棵隔离树（递归随机切分）。
+ * @param {number[][]} X 子样本
+ * @param {{heightLimit?:number, rng?:function, height?:number}} [opts]
+ *   heightLimit 缺省 ⌈log₂n⌉；height 为当前深度（递归用，外部通常不传）
+ * @returns {{isLeaf:boolean, size:number, height:number, splitFeature:number,
+ *            splitValue:number, left:object|null, right:object|null}}
+ */
+function isolationTree(X, { heightLimit = null, rng = Math.random, height = 0 } = {}) {
+  const n = X.length;
+  const d = n > 0 ? X[0].length : 0;
+  const lim = heightLimit === null ? Math.ceil(Math.log2(Math.max(n, 2))) : heightLimit;
+  const leaf = () => ({
+    isLeaf: true, size: n, height, splitFeature: -1, splitValue: 0, left: null, right: null,
+  });
+  if (n <= 1 || height >= lim || d === 0) return leaf();
+
+  const { mins, maxs } = iforRanges(X);
+  const cand = [];
+  for (let j = 0; j < d; j++) if (maxs[j] > mins[j]) cand.push(j);
+  if (cand.length === 0) return leaf();                     // 全部特征退化 ⇒ 不可再分
+
+  const q = cand[Math.floor(rng() * cand.length)];
+  const p = mins[q] + rng() * (maxs[q] - mins[q]);
+  const left = [], right = [];
+  for (const xi of X) (xi[q] < p ? left : right).push(xi);
+  if (left.length === 0 || right.length === 0) return leaf(); // 切点退化 ⇒ 叶
+
+  return {
+    isLeaf: false,
+    size: n,
+    height,
+    splitFeature: q,
+    splitValue: p,
+    left: isolationTree(left, { heightLimit: lim, rng, height: height + 1 }),
+    right: isolationTree(right, { heightLimit: lim, rng, height: height + 1 }),
+  };
+}
+
+/**
+ * 样本在树中的路径长度 h(x) = e + c(|leaf|)（e = 根到叶的边数）。
+ * @param {object} tree isolationTree 返回的节点
+ * @param {number[]} x 样本
+ * @returns {number} h(x)
+ */
+function pathLength(tree, x) {
+  let node = tree;
+  let depth = 0;
+  while (!node.isLeaf) {
+    node = x[node.splitFeature] < node.splitValue ? node.left : node.right;
+    depth++;
+  }
+  return depth + iforC(node.size);
+}
+
+/**
+ * 隔离森林：trees 棵随机树，每棵在 ψ = sampleSize 的无放回子样本上生长。
+ * @param {number[][]} X 训练集
+ * @param {{trees?:number, sampleSize?:number, seed?:number}} [opts]
+ * @returns {{trees:object[], sampleSize:number, n:number, seed:number, heightLimit:number}}
+ */
+function isolationForest(X, { trees = 100, sampleSize = 256, seed = 42 } = {}) {
+  const rng = mulberry32(seed);
+  const psi = Math.min(sampleSize, X.length);
+  const heightLimit = Math.ceil(Math.log2(Math.max(psi, 2)));
+  const forest = new Array(trees);
+  for (let t = 0; t < trees; t++) {
+    forest[t] = isolationTree(iforSubsample(X, psi, rng), { heightLimit, rng, height: 0 });
+  }
+  return { trees: forest, sampleSize: psi, n: X.length, seed, heightLimit };
+}
+
+/**
+ * 单棵树的异常分 s = 2^(−h(x)/c(ψ))（供不变量 ⑤ 的方差对比）。
+ * @param {object} tree 单棵隔离树
+ * @param {number[]} x 样本
+ * @param {number} psi 子样本规模
+ * @returns {number} 单树异常分
+ */
+function iforTreeScore(tree, x, psi) {
+  const cn = iforC(psi);
+  const denom = cn > 0 ? cn : 1e-12;
+  return Math.pow(2, -pathLength(tree, x) / denom);
+}
+
+/**
+ * 森林异常分 s(x, ψ) = 2^(−E_t[h_t(x)] / c(ψ))。
+ * @param {{trees:object[], sampleSize:number}} forest isolationForest 的返回值
+ * @param {number[]} x 样本
+ * @returns {number} 异常分 ∈ (0, 1)
+ */
+function anomalyScore(forest, x) {
+  const T = forest.trees.length;
+  if (T === 0) return 0;
+  let h = 0;
+  for (let t = 0; t < T; t++) h += pathLength(forest.trees[t], x);
+  h /= T;
+  const cn = iforC(forest.sampleSize);
+  const denom = cn > 0 ? cn : 1e-12;
+  return Math.pow(2, -h / denom);
+}
+
+/**
+ * 森林在各样本上的路径长度均值与异常分（批量接口，便于统计检验）。
+ * @param {{trees:object[], sampleSize:number}} forest
+ * @param {number[][]} X 样本集
+ * @returns {{scores:number[], meanPath:number[], perTreeScores:number[][]}}
+ */
+function iforScoreAll(forest, X) {
+  const T = forest.trees.length;
+  const cn = iforC(forest.sampleSize);
+  const denom = cn > 0 ? cn : 1e-12;
+  const scores = new Array(X.length);
+  const meanPath = new Array(X.length);
+  const perTreeScores = new Array(X.length);
+  for (let i = 0; i < X.length; i++) {
+    let h = 0;
+    const per = new Array(T);
+    for (let t = 0; t < T; t++) {
+      const ht = pathLength(forest.trees[t], X[i]);
+      h += ht;
+      per[t] = Math.pow(2, -ht / denom);
+    }
+    h /= T;
+    meanPath[i] = h;
+    scores[i] = Math.pow(2, -h / denom);
+    perTreeScores[i] = per;
+  }
+  return { scores, meanPath, perTreeScores };
+}
+
+/**
+ * 合成「密集团 + 远端 outlier」数据集（不变量 ③④ 的标准舞台）。
+ * @param {{n?:number, nOutlier?:number, dim?:number, radius?:number, seed?:number}} [opts]
+ * @returns {{X:number[][], y:number[]}} y = 1 表示 outlier
+ */
+function iforToyData({ n = 400, nOutlier = 12, dim = 2, radius = 14, seed = 7 } = {}) {
+  const rng = mulberry32(seed);
+  const X = [], y = [];
+  for (let i = 0; i < n; i++) {
+    const row = new Array(dim);
+    for (let j = 0; j < dim; j++) row[j] = gaussianSample(rng, 0, 1);
+    X.push(row);
+    y.push(0);
+  }
+  for (let i = 0; i < nOutlier; i++) {
+    const row = new Array(dim);
+    for (let j = 0; j < dim; j++) row[j] = gaussianSample(rng, radius * (j === 0 ? 1 : 0.2), 0.3);
+    X.push(row);
+    y.push(1);
+  }
+  return { X, y };
+}
+
+/* ═══════════ src/ml/manifold.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 流形学习：经典 MDS + Isomap
+ * 站在：Torgerson 1952《Multidimensional Scaling: I. Theory and Method》
+ *       （经典 MDS = 双居中 + 特征分解，Young–Householder 1938 的完备化）
+ *       · Tenenbaum, de Silva & Langford 2000 Science《A Global Geometric
+ *       Framework for Nonlinear Dimensionality Reduction》（Isomap）
+ *       · Kruskal 1964《Multidimensional Scaling by Optimizing Goodness of Fit
+ *       to a Nonmetric Hypothesis》（应力 stress）
+ *       · Cox & Cox《Multidimensional Scaling》§2（双居中矩阵 B = −½JD⁽²⁾J）。
+ *
+ * 经典 MDS：由距离矩阵 D 还原坐标——
+ *   B = −½·J·D⁽²⁾·J（J = I − (1/n)11ᵀ 为投影掉均值的中心化矩阵，D⁽²⁾ 为逐元素平方）
+ *   B 对称半正定；取前 k 大特征值 λ_i 与单位特征向量 v_i，则
+ *   coords 的第 i 列 = √λ_i·v_i（特征向量符号任意，本模块按「最大绝对分量取正」规范化）
+ * Isomap：欧氏 kNN 图 → 图上测地距离（Dijkstra）→ 对测地距离矩阵跑经典 MDS。
+ *   测地距离 ≥ 欧氏距离（三角不等式，恒等式 ⑤）。
+ *
+ * 不变量（全部为可独立交叉验证的硬恒等式）：
+ *   ① 经典 MDS ≡ PCA：欧氏距离矩阵上，MDS 坐标 ≡ 中心化 X 的主成分得分（允许符号翻转，maxAbs < 1e-8）；
+ *   ② 双居中矩阵行和恒等式：B·1 = 0（maxAbs < 1e-12），B 对称（maxAbs < 1e-14）；
+ *   ③ 满秩重构：k = n−1 时嵌入点间欧氏距离 ≡ 原始 D（maxAbs < 1e-8）；
+ *   ④ Kruskal 应力单调：嵌入维数 k 增大 ⇒ 应力单调不增（包络口径，允许 1% 抖动）；
+ *   ⑤ 测地距离 ≥ 欧氏距离（精确断言，违反计数 = 0）；
+ *   ⑥ Isomap 展开质量：Swiss Roll 上嵌入空间的 kNN 重叠率显著高于 PCA 对照（差值 > 0.1）；
+ *   ⑦ 同输入确定性：两次调用逐位一致（maxDiff = 0）。
+ *
+ * 复杂度提示：jacobiEig 为 O(n³)/sweep，Isomap 建议 n ≤ 300（浏览器端亦然）。
+ */
+
+
+
+
+/**
+ * 欧氏距离方阵（对称、对角为 0）。
+ * @param {number[][]} X 样本（n×d）
+ * @returns {number[][]} n×n 距离矩阵
+ */
+function distanceMatrix(X) {
+  const n = X.length;
+  const d = X[0].length;
+  const D = zeros(n, n);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let s = 0;
+      for (let k = 0; k < d; k++) {
+        const e = X[i][k] - X[j][k];
+        s += e * e;
+      }
+      const v = Math.sqrt(s);
+      D[i][j] = v;
+      D[j][i] = v;
+    }
+  }
+  return D;
+}
+
+/**
+ * 双居中：B = −½·J·D⁽²⁾·J。
+ * 等价的 O(n²) 写法（避免显式构造 n×n 的 J）：
+ *   B_ij = −½·(D_ij² − rowMean_i − colMean_j + grandMean)
+ * 行/列和恒为 0（不变量 ②）。
+ * @param {number[][]} D 距离矩阵（对称、对角 0）
+ * @returns {number[][]} B（对称半正定，行和 = 列和 = 0）
+ */
+function doubleCenter(D) {
+  const n = D.length;
+  const D2 = new Array(n);
+  for (let i = 0; i < n; i++) {
+    D2[i] = new Array(n);
+    for (let j = 0; j < n; j++) D2[i][j] = D[i][j] * D[i][j];
+  }
+  const rowMean = new Array(n).fill(0);
+  const colMean = new Array(n).fill(0);
+  let grand = 0;
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let j = 0; j < n; j++) s += D2[i][j];
+    rowMean[i] = s / n;
+    grand += s;
+  }
+  grand /= n * n;
+  for (let j = 0; j < n; j++) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += D2[i][j];
+    colMean[j] = s / n;
+  }
+  const B = zeros(n, n);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      B[i][j] = -0.5 * (D2[i][j] - rowMean[i] - colMean[j] + grand);
+    }
+  }
+  return B;
+}
+
+/**
+ * 经典 MDS：B = doubleCenter(D) 的前 k 大特征对 ⇒ 坐标。
+ * @param {number[][]} D 距离矩阵
+ * @param {number} k 目标维数（自动裁剪到 ≤ n）
+ * @returns {{coords:number[][], eigenvalues:number[], B:number[][]}}
+ */
+function classicalMDS(D, k) {
+  const n = D.length;
+  const kk = Math.max(0, Math.min(k, n));
+  const B = doubleCenter(D);
+  const { values, vectors } = jacobiEig(B);
+  const coords = new Array(n);
+  for (let i = 0; i < n; i++) coords[i] = new Array(kk).fill(0);
+  const eigenvalues = new Array(kk);
+  for (let c = 0; c < kk; c++) {
+    const lam = values[c];
+    eigenvalues[c] = lam;
+    if (lam <= 0) continue; // 非正特征值（非欧氏/噪声）⇒ 该维坐标为 0
+    const v = vectors[c];
+    // 符号规范化：绝对值最大的分量取正（特征向量符号本任意，规范化后结果可复现）
+    let idx = 0;
+    let mx = -1;
+    for (let i = 0; i < n; i++) {
+      const a = Math.abs(v[i]);
+      if (a > mx) { mx = a; idx = i; }
+    }
+    const sign = v[idx] >= 0 ? 1 : -1;
+    const s = sign * Math.sqrt(lam);
+    for (let i = 0; i < n; i++) coords[i][c] = s * v[i];
+  }
+  return { coords, eigenvalues, B };
+}
+
+/**
+ * k-近邻图（无权、对称化）：i∈kNN(j) 或 j∈kNN(i) ⇒ 连边。
+ * @param {number[][]} X 样本
+ * @param {number} k 近邻数
+ * @returns {number[][]} 邻接矩阵（0/1，对角为 0）
+ */
+function knnGraph(X, k) {
+  const n = X.length;
+  const D = distanceMatrix(X);
+  const adj = zeros(n, n);
+  for (let i = 0; i < n; i++) {
+    // 选 k 个最近（排除自身）：O(n) 选择，避免整行排序的 O(n log n)
+    const chosen = new Array(k).fill(-1);
+    const chosenD = new Array(k).fill(Infinity);
+    for (let j = 0; j < n; j++) {
+      if (j === i) continue;
+      const dv = D[i][j];
+      if (dv >= chosenD[k - 1]) continue;
+      let p = k - 1;
+      while (p > 0 && chosenD[p - 1] > dv) {
+        chosenD[p] = chosenD[p - 1];
+        chosen[p] = chosen[p - 1];
+        p--;
+      }
+      chosenD[p] = dv;
+      chosen[p] = j;
+    }
+    for (let c = 0; c < k; c++) {
+      if (chosen[c] < 0) continue;
+      adj[i][chosen[c]] = 1;
+      adj[chosen[c]][i] = 1;
+    }
+  }
+  return adj;
+}
+
+/**
+ * 图上全源最短路径（Dijkstra，O(n³) 朴素实现；不连通对返回 Infinity）。
+ * @param {number[][]} adj 邻接矩阵（0/1）
+ * @param {number[][]} X 样本（提供边权 = 两端点欧氏距离）
+ * @returns {number[][]} 测地距离矩阵
+ */
+function graphGeodesic(adj, X) {
+  const n = X.length;
+  const d = X[0].length;
+  const G = zeros(n, n);
+  for (let s = 0; s < n; s++) {
+    const dist = new Array(n).fill(Infinity);
+    const done = new Array(n).fill(false);
+    dist[s] = 0;
+    for (let it = 0; it < n; it++) {
+      let u = -1;
+      let best = Infinity;
+      for (let i = 0; i < n; i++) {
+        if (!done[i] && dist[i] < best) { best = dist[i]; u = i; }
+      }
+      if (u < 0 || best === Infinity) break; // 剩余节点不可达
+      done[u] = true;
+      for (let v = 0; v < n; v++) {
+        if (done[v] || adj[u][v] === 0) continue;
+        let e = 0;
+        for (let k = 0; k < d; k++) {
+          const diff = X[u][k] - X[v][k];
+          e += diff * diff;
+        }
+        e = Math.sqrt(e);
+        const nd = dist[u] + e;
+        if (nd < dist[v]) dist[v] = nd;
+      }
+    }
+    for (let i = 0; i < n; i++) G[s][i] = dist[i];
+  }
+  return G;
+}
+
+/**
+ * Isomap：kNN 图 → 测地距离 → 经典 MDS。
+ * @param {number[][]} X 样本（n×d）
+ * @param {{k?:number, dim?:number}} [opts]
+ * @returns {{embedding:number[][], geodesic:number[][], eigenvalues:number[], adj:number[][]}}
+ */
+function isomap(X, { k = 5, dim = 2 } = {}) {
+  const adj = knnGraph(X, k);
+  const geodesic = graphGeodesic(adj, X);
+  const { coords, eigenvalues } = classicalMDS(geodesic, dim);
+  return { embedding: coords, geodesic, eigenvalues, adj };
+}
+
+/**
+ * Kruskal 应力（stress-1）：sqrt( Σ_{i<j}(d_ij − δ_ij)² / Σ_{i<j} δ_ij² )
+ *   d_ij = 嵌入空间距离（拟合值），δ_ij = 原始距离矩阵 D（观测值）。
+ * 分母取 **观测** 距离的平方和 ⇒ 与嵌入维数 k 无关（固定标尺），
+ * 于是经典 MDS 逐维追加坐标只会降低残差 ⇒ 应力 monotonically 不增（不变量 ④）。
+ * @param {number[][]} embedding 嵌入坐标
+ * @param {number[][]} D 原始距离矩阵
+ * @returns {number} 应力（越小越好，0 表示等距嵌入）
+ */
+function stress(embedding, D) {
+  const n = embedding.length;
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      let s = 0;
+      for (let k = 0; k < embedding[i].length; k++) {
+        const e = embedding[i][k] - embedding[j][k];
+        s += e * e;
+      }
+      const dE = Math.sqrt(s);
+      const diff = dE - D[i][j];
+      num += diff * diff;
+      den += D[i][j] * D[i][j]; // 固定分母：观测距离平方和
+    }
+  }
+  return den > 0 ? Math.sqrt(num / den) : 0;
+}
+
+/**
+ * 两个空间中 kNN 集合的重叠率（Isomap 展开质量的度量，不变量 ⑥）。
+ * @param {number[][]} A 空间 A 的坐标
+ * @param {number[][]} B 空间 B 的坐标
+ * @param {number} k 近邻数
+ * @returns {number} 平均重叠率 ∈ [0, 1]
+ */
+function mdsKnnOverlap(A, B, k) {
+  const n = A.length;
+  const nbrA = mdsKnnSets(A, k);
+  const nbrB = mdsKnnSets(B, k);
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const setB = new Set(nbrB[i]);
+    let hit = 0;
+    for (const j of nbrA[i]) if (setB.has(j)) hit++;
+    total += hit / k;
+  }
+  return n > 0 ? total / n : 0;
+}
+
+/** 各点的 k 近邻下标集合（排除自身） */
+function mdsKnnSets(X, k) {
+  const n = X.length;
+  const d = X[0].length;
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const chosen = new Array(k).fill(-1);
+    const chosenD = new Array(k).fill(Infinity);
+    for (let j = 0; j < n; j++) {
+      if (j === i) continue;
+      let s = 0;
+      for (let c = 0; c < d; c++) {
+        const e = X[i][c] - X[j][c];
+        s += e * e;
+      }
+      if (s >= chosenD[k - 1]) continue;
+      let p = k - 1;
+      while (p > 0 && chosenD[p - 1] > s) {
+        chosenD[p] = chosenD[p - 1];
+        chosen[p] = chosen[p - 1];
+        p--;
+      }
+      chosenD[p] = s;
+      chosen[p] = j;
+    }
+    out[i] = chosen.filter((v) => v >= 0);
+  }
+  return out;
+}
+
+/**
+ * Swiss Roll 数据集（Tenenbaum et al. 2000 的标准参数化）：
+ *   u = 3π/2·(1 + 2t)，x = u·cos u，z = u·sin u，y = 21·h
+ * 同时返回**内在坐标** [s(u), h]（s 为卷绕方向的弧长 ∫√(1+u²)du）——
+ * 它是流形上真实测地距离的参考系（不变量 ⑥ 的对照基准）。
+ * @param {{n?:number, seed?:number, noise?:number}} [opts]
+ * @returns {{X:number[][], intrinsic:number[][]}}
+ */
+function mdsSwissRoll({ n = 200, seed = 42, noise = 0 } = {}) {
+  const rng = mulberry32(seed);
+  const X = new Array(n);
+  const intrinsic = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = rng();
+    const h = rng();
+    const u = 1.5 * Math.PI * (1 + 2 * t);
+    const arc = 0.5 * (u * Math.sqrt(1 + u * u) + Math.asinh(u)); // ∫√(1+u²)du
+    X[i] = [
+      u * Math.cos(u) + gaussianSample(rng, 0, noise),
+      21 * h + gaussianSample(rng, 0, noise),
+      u * Math.sin(u) + gaussianSample(rng, 0, noise),
+    ];
+    intrinsic[i] = [arc, 21 * h];
+  }
+  return { X, intrinsic };
+}
+
 /* ═══════════ src/nn/dense.js ═══════════ */
 /**
  * 旗舰AI引擎 · 全连接神经网络
@@ -10065,12 +10940,385 @@ function mcControl(P, R, {
   return { Q, policy, episodeReturns };
 }
 
+/* ═══════════ src/rl/policyGradient.js ═══════════ */
+/**
+ * 旗舰AI引擎 · 策略梯度 / REINFORCE（Williams 1992；Sutton et al. 2000）
+ * 站在：Williams 1992《Simple Statistical Gradient-Following Algorithms for
+ *       Connectionist Reinforcement Learning》（REINFORCE）
+ *       · Sutton, McAllester, Singh & Mansour 2000 NIPS《Policy Gradient Methods
+ *       for Reinforcement Learning with Function Approximation》（策略梯度定理）
+ *       · Sutton & Barto《Reinforcement Learning》§13（蒙特卡洛策略梯度）
+ *       · Weaver & Tao 2001《The Optimal Reward Baseline》（基线不改变梯度期望）。
+ *
+ * 参数化：**tabular softmax 策略**——每个状态 s 有独立参数向量 θ_s（长度 = 动作数）：
+ *   π(a|s) = softmax(θ_s)_a
+ *   ∇_θs log π(a|s) = e_a − π(·|s)          （softmax 的 score-function 形式）
+ *   ∇_θs' log π(a|s) = 0  (s' ≠ s)           （tabular：状态间参数不共享）
+ * REINFORCE 更新：θ += lr · γ^t · (G_t − b) · ∇log π(a_t|s_t)，G_t = Σ_{k≥t} γ^{k−t} r_k。
+ *
+ * 不变量（核心是精确代数恒等式，拒绝「看起来收敛」）：
+ *   ① Score function 恒等式（精确）：Σ_a π(a|s)·∇log π(a|s) = 0（softmax 下逐分量 = 0，maxAbs < 1e-14）；
+ *   ② 策略梯度定理（解析 ≡ 数值）：多臂老虎机 J(θ) = Σ_a π(a)r_a 的解析梯度
+ *      Σ_a π(a)∇logπ(a)r_a ≡ J 对 θ 的中心差分（maxRelErr < 1e-6）；
+ *   ③ 基线不改变梯度期望（精确）：由 ① 知 E[∇logπ]·b = 0 ⇒ 带/不带基线的**全路径枚举**期望梯度逐位一致（maxAbs < 1e-12）；
+ *   ④ 采样梯度期望 ≡ 解析梯度：轨迹枚举（O(A^T) 全路径）≡ 动态规划（分层 Q_t × 折扣状态访问）
+ *      两条独立推导的期望更新量一致（relErr < 1e-6）；
+ *   ⑤ 概率单纯形：Σ_a π(a|s) = 1 且 π(a|s) > 0（softmax 保证，maxAbs < 1e-15）；
+ *   ⑥ 收敛性（辅助判据）：chainMDP 上训练足够回合后贪心策略 ≡ valueIteration 最优策略；
+ *   ⑦ 同 seed 一致：两次训练 θ 逐位一致（maxDiff = 0）。
+ */
+
+
+
+
+
+/**
+ * tabular softmax 策略：π = [softmax(θ_0), softmax(θ_1), …]。
+ * @param {number[][]} theta 参数矩阵（S×A）
+ * @returns {number[][]} 每状态的动作概率
+ */
+function softmaxPolicy(theta) {
+  return theta.map((row) => softmax(row));
+}
+
+/**
+ * ∇_{θ_s} log π(a|s) = e_a − π(·|s)（softmax 的 score-function 形式）。
+ * @param {number[][]} theta 参数矩阵
+ * @param {number} s 状态
+ * @param {number} a 动作
+ * @returns {number[]} 长度 A 的梯度向量（其余状态的分量恒为 0，由 tabular 结构保证）
+ */
+function policyLogGrad(theta, s, a) {
+  const probs = softmax(theta[s]);
+  const g = new Array(probs.length);
+  for (let b = 0; b < probs.length; b++) g[b] = (b === a ? 1 : 0) - probs[b];
+  return g;
+}
+
+/** 依概率向量采样一个下标（与 qLearning/sarsa 同一采样序：u ≤ 累积概率） */
+function pgSampleCategorical(probs, rng) {
+  const u = rng();
+  let acc = 0;
+  for (let i = 0; i < probs.length; i++) {
+    acc += probs[i];
+    if (u <= acc) return i;
+  }
+  return probs.length - 1;
+}
+
+/** 依 P[s][a] 采样下一状态与奖励 */
+function pgSampleTransition(P, R, s, a, rng) {
+  const list = P[s][a];
+  const u = rng();
+  let acc = 0;
+  let k = 0;
+  for (; k < list.length; k++) {
+    acc += list[k][1];
+    if (u <= acc) break;
+  }
+  if (k >= list.length) k = list.length - 1;
+  return { ns: list[k][0], r: R[s][a][k] };
+}
+
+/** 逐状态去均值（softmax 平移不变：不改变策略，只防 θ 数值漂移导致 exp 溢出） */
+function pgRecenter(theta) {
+  for (const row of theta) {
+    let mu = 0;
+    for (let i = 0; i < row.length; i++) mu += row[i];
+    mu /= row.length;
+    for (let i = 0; i < row.length; i++) row[i] -= mu;
+  }
+  return theta;
+}
+
+/**
+ * 按当前策略采样一条轨迹（长度 maxSteps）。
+ * @param {number[][][]} P 转移核 P[s][a] = [[ns,p],…]
+ * @param {number[][][]} R 奖励（与 P 逐项对齐）
+ * @param {number[][]} theta 参数矩阵
+ * @param {{gamma?:number, rng?:function, maxSteps?:number, startState?:number}} opts
+ *   gamma 仅用于回报折算（在 reinforce 内使用），此处保留以保证接口一致。
+ * @returns {{states:number[], actions:number[], rewards:number[]}}
+ */
+function reinforceEpisode(P, R, theta, { gamma = 0.9, rng, maxSteps = 20, startState = null } = {}) {
+  const S = P.length;
+  const policy = softmaxPolicy(theta);
+  let s = startState === null ? Math.floor(rng() * S) : startState;
+  const states = new Array(maxSteps);
+  const actions = new Array(maxSteps);
+  const rewards = new Array(maxSteps);
+  for (let t = 0; t < maxSteps; t++) {
+    const a = pgSampleCategorical(policy[s], rng);
+    const { ns, r } = pgSampleTransition(P, R, s, a, rng);
+    states[t] = s;
+    actions[t] = a;
+    rewards[t] = r;
+    s = ns;
+  }
+  return { states, actions, rewards, gamma };
+}
+
+/**
+ * REINFORCE 主循环（蒙特卡洛策略梯度，可选基线）。
+ * @param {number[][][]} P 转移核
+ * @param {number[][][]} R 奖励
+ * @param {{gamma?:number, lr?:number, episodes?:number, maxSteps?:number, seed?:number,
+ *          theta0?:number[][], baseline?:number|string|null, startState?:number|null}} opts
+ *   baseline：常数基线（null 表示无）；'mean' 表示用历史回报的**运行均值**作基线。
+ * @returns {{theta:number[][], policy:number[][], episodeReturns:number[]}}
+ */
+function reinforce(P, R, {
+  gamma = 0.9, lr = 0.05, episodes = 5000, maxSteps = 20, seed = 42,
+  theta0 = null, baseline = null, startState = null,
+} = {}) {
+  const S = P.length;
+  const A = P[0].length;
+  const rng = mulberry32(seed);
+  const theta = theta0 ? theta0.map((row) => row.slice()) : zeros(S, A);
+  const useMeanBaseline = (baseline === 'mean' || baseline === true);
+  let retSum = 0;
+  let retCnt = 0;
+  const episodeReturns = [];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    const { states, actions, rewards } = reinforceEpisode(P, R, theta, { gamma, rng, maxSteps, startState });
+    // 逆序折算回报：G_t = r_t + γ·G_{t+1}（末端 G_T = 0）
+    const G = new Array(maxSteps);
+    let g = 0;
+    for (let t = maxSteps - 1; t >= 0; t--) {
+      g = rewards[t] + gamma * g;
+      G[t] = g;
+    }
+    episodeReturns.push(G[0]);
+    let b = 0;
+    if (useMeanBaseline) {
+      b = retCnt > 0 ? retSum / retCnt : 0;   // 用「历史」均值，避免自引入偏差
+      retSum += G[0];
+      retCnt++;
+    } else if (baseline !== null && baseline !== undefined) {
+      b = Number(baseline);
+    }
+    // θ += lr·γ^t·(G_t − b)·∇logπ(a_t|s_t)
+    for (let t = 0; t < maxSteps; t++) {
+      const grad = policyLogGrad(theta, states[t], actions[t]);
+      const w = lr * Math.pow(gamma, t) * (G[t] - b);
+      const row = theta[states[t]];
+      for (let c = 0; c < A; c++) row[c] += w * grad[c];
+    }
+    pgRecenter(theta); // 平移不变 ⇒ 策略不变，仅防数值漂移
+  }
+
+  return { theta, policy: softmaxPolicy(theta), episodeReturns };
+}
+
+/**
+ * 多臂老虎机的期望回报 J(θ) = Σ_a π(a)·r_a（单状态情形）。
+ * @param {number[]} thetaRow 单状态参数向量
+ * @param {number[]} r 各动作的（确定性）奖励
+ * @returns {number} J(θ)
+ */
+function banditExpectedReturn(thetaRow, r) {
+  const probs = softmax(thetaRow);
+  let j = 0;
+  for (let a = 0; a < probs.length; a++) j += probs[a] * r[a];
+  return j;
+}
+
+/**
+ * 多臂老虎机 J 的解析梯度：∂J/∂θ_b = π_b·(r_b − Σ_a π_a r_a)。
+ * （由 ① 的 score-function 形式直接推出：Σ_a π_a ∇logπ_a r_a = π∘(r − J)）
+ * @param {number[]} thetaRow 单状态参数向量
+ * @param {number[]} r 各动作奖励
+ * @returns {number[]} 解析梯度
+ */
+function banditAnalyticGrad(thetaRow, r) {
+  const probs = softmax(thetaRow);
+  const j = banditExpectedReturn(thetaRow, r);
+  const g = new Array(probs.length);
+  for (let b = 0; b < probs.length; b++) g[b] = probs[b] * (r[b] - j);
+  return g;
+}
+
+/**
+ * 有限 horizon 的分层 Q^π（反向递推，Q_T ≡ 0）。供解析策略梯度使用。
+ * @param {number[][][]} P 转移核
+ * @param {number[][][]} R 奖励
+ * @param {number[][]} policy 策略概率矩阵
+ * @param {number} gamma 折扣
+ * @param {number} horizon 回合长度 T
+ * @returns {number[][][]} Q[t] 为 S×A，t = 0..T−1
+ */
+function pgPolicyQ(P, R, policy, gamma, horizon) {
+  const S = P.length;
+  const A = P[0].length;
+  const Q = new Array(horizon);
+  let next = zeros(S, A); // Q_T ≡ 0
+  for (let t = horizon - 1; t >= 0; t--) {
+    const Qt = zeros(S, A);
+    for (let s = 0; s < S; s++) {
+      for (let a = 0; a < A; a++) {
+        let q = 0;
+        const list = P[s][a];
+        for (let k = 0; k < list.length; k++) {
+          const ns = list[k][0];
+          let v = 0;
+          for (let b = 0; b < A; b++) v += policy[ns][b] * next[ns][b];
+          q += list[k][1] * (R[s][a][k] + gamma * v);
+        }
+        Qt[s][a] = q;
+      }
+    }
+    Q[t] = Qt;
+    next = Qt;
+  }
+  return Q;
+}
+
+/** 一步状态分布传播：P_{t+1}(s') = Σ_s P_t(s) Σ_a π(a|s) p(s'|s,a) */
+function pgPropagate(P, policy, dist) {
+  const S = P.length;
+  const A = P[0].length;
+  const nd = new Array(S).fill(0);
+  for (let s = 0; s < S; s++) {
+    if (dist[s] === 0) continue;
+    for (let a = 0; a < A; a++) {
+      const pa = policy[s][a] * dist[s];
+      if (pa === 0) continue;
+      const list = P[s][a];
+      for (let k = 0; k < list.length; k++) nd[list[k][0]] += pa * list[k][1];
+    }
+  }
+  return nd;
+}
+
+/**
+ * 折扣状态访问分布 d(s) = Σ_{t=0}^{T−1} γ^t·P(s_t = s)（前向传播，精确无采样）。
+ * @param {number[][][]} P 转移核
+ * @param {number[][]} policy 策略概率矩阵
+ * @param {number[]} startDist 初始状态分布（缺省均匀）
+ * @param {number} gamma 折扣
+ * @param {number} horizon 回合长度 T
+ * @returns {number[]} d(s)
+ */
+function pgVisitation(P, policy, startDist, gamma, horizon) {
+  const S = P.length;
+  const A = P[0].length;
+  const dist = startDist.slice();
+  const d = new Array(S).fill(0);
+  for (let t = 0; t < horizon; t++) {
+    const w = Math.pow(gamma, t);
+    for (let s = 0; s < S; s++) d[s] += w * dist[s];
+    const nd = pgPropagate(P, policy, dist);
+    for (let s = 0; s < S; s++) dist[s] = nd[s];
+  }
+  return d;
+}
+
+/**
+ * 解析策略梯度（动态规划路径，不变量 ④ 的一侧）：
+ *   ∂J/∂θ_{s,b} = Σ_t γ^t·P(s_t=s)·π(b|s)·(Q_t(s,b) − V_t(s))
+ * 与「轨迹枚举」的 REINFORCE 期望更新量是同一量的两条独立推导。
+ * @param {number[][][]} P 转移核
+ * @param {number[][][]} R 奖励
+ * @param {number[][]} theta 参数矩阵
+ * @param {{gamma?:number, horizon?:number, startDist?:number[]}} [opts]
+ * @returns {number[][]} 梯度矩阵（S×A）
+ */
+function policyGradientAnalytic(P, R, theta, { gamma = 0.9, horizon = 6, startDist = null } = {}) {
+  const S = P.length;
+  const A = P[0].length;
+  const policy = softmaxPolicy(theta);
+  const Q = pgPolicyQ(P, R, policy, gamma, horizon);
+  const mu = startDist || new Array(S).fill(1 / S);
+  const grad = zeros(S, A);
+  const dist = mu.slice();
+  for (let t = 0; t < horizon; t++) {
+    const w = Math.pow(gamma, t);
+    for (let s = 0; s < S; s++) {
+      if (dist[s] === 0) continue;
+      let v = 0;
+      for (let a = 0; a < A; a++) v += policy[s][a] * Q[t][s][a];
+      for (let b = 0; b < A; b++) {
+        grad[s][b] += w * dist[s] * policy[s][b] * (Q[t][s][b] - v);
+      }
+    }
+    const nd = pgPropagate(P, policy, dist);
+    for (let s = 0; s < S; s++) dist[s] = nd[s];
+  }
+  return grad;
+}
+
+/**
+ * REINFORCE 更新量的**精确期望**（全路径枚举，不变量 ③④ 的另一侧）：
+ *   E[ Σ_t γ^t (G_t − b) ∇logπ(a_t|s_t) ]
+ * 枚举所有动作序列（含随机的转移分支），按出现概率加权——无蒙特卡洛噪声。
+ * @param {number[][][]} P 转移核
+ * @param {number[][][]} R 奖励
+ * @param {number[][]} theta 参数矩阵
+ * @param {{gamma?:number, horizon?:number, baseline?:number, startDist?:number[]}} [opts]
+ * @returns {number[][]} 期望更新量（S×A）
+ */
+function reinforceExpectedUpdate(P, R, theta, {
+  gamma = 0.9, horizon = 6, baseline = 0, startDist = null,
+} = {}) {
+  const S = P.length;
+  const A = P[0].length;
+  const policy = softmaxPolicy(theta);
+  const T = horizon;
+  const mu = startDist || new Array(S).fill(1 / S);
+  const grad = zeros(S, A);
+  const states = new Array(T);
+  const actions = new Array(T);
+  const rewards = new Array(T);
+
+  /** 深度优先枚举：到达终点时回溯折算回报并累加梯度 */
+  function dfs(s, t, prob) {
+    if (t === T) {
+      const G = new Array(T);
+      let g = 0;
+      for (let k = T - 1; k >= 0; k--) {
+        g = rewards[k] + gamma * g;
+        G[k] = g;
+      }
+      for (let k = 0; k < T; k++) {
+        const gr = policyLogGrad(theta, states[k], actions[k]);
+        const w = prob * Math.pow(gamma, k) * (G[k] - baseline);
+        const row = grad[states[k]];
+        for (let b = 0; b < A; b++) row[b] += w * gr[b];
+      }
+      return;
+    }
+    for (let a = 0; a < A; a++) {
+      const pa = policy[s][a];
+      if (pa <= 0) continue;
+      const list = P[s][a];
+      for (let k = 0; k < list.length; k++) {
+        const ns = list[k][0];
+        const pk = list[k][1];
+        states[t] = s;
+        actions[t] = a;
+        rewards[t] = R[s][a][k];
+        dfs(ns, t + 1, prob * pa * pk);
+      }
+    }
+  }
+
+  for (let s = 0; s < S; s++) {
+    if (mu[s] > 0) dfs(s, 0, mu[s]);
+  }
+  return grad;
+}
+
 /* ═══════════ src/verify/invariants.js ═══════════ */
 /**
  * 旗舰AI引擎 · 不变量自检套件
  * 每条算法至少 1 条可独立交叉验证的硬不变量；Node 与浏览器共用同一份逻辑。
  * 58 组套件全绿 = 引擎数学正确性的机器证明。
  */
+
+
+
+
 
 
 
@@ -10235,6 +11483,10 @@ function runAllInvariants() {
     ['常微分方程求解 · ODE (RK4 / Dormand–Prince RK45)', suiteODE],
     ['蒙特卡洛强化学习 · Monte Carlo RL (Sutton & Barto §5)', suiteMonteCarlo],
     ['自组织映射 · SOM (Kohonen 1982)', suiteSOM],
+    ['迭代线性求解 · Iterative Linear Solvers (Hestenes & Stiefel 1952)', suiteLinSolve],
+    ['隔离森林 · Isolation Forest (Liu et al. 2008)', suiteIsolationForest],
+    ['流形学习 · MDS & Isomap (Torgerson 1952 / Tenenbaum 2000)', suiteManifold],
+    ['策略梯度 · REINFORCE (Williams 1992)', suitePolicyGradient],
   ];
   for (const [name, fn] of suites) {
     const checks = [];
@@ -14223,9 +15475,299 @@ function suiteSOM(check) {
   check('SOM：同 seed 两次训练码本逐位一致', d6 === 0, `maxDiff=${d6}`);
 }
 
+// ──────────────── 迭代线性求解 · LinSolve (Hestenes & Stiefel 1952) ────────────────
+function suiteLinSolve(check) {
+  const rng = mulberry32(12345);
+  const n = 8;
+  const M = randomMatrix(n, n, rng);
+  const A = matmul(transpose(M), M).map((row, i) => row.map((v, j) => v + (i === j ? n : 0))); // 对称正定
+  const b = new Array(n);
+  for (let i = 0; i < n; i++) b[i] = rng() * 2 - 1;
+  const xDirect = solve(A, b);
+
+  // ① CG ≡ 直接解
+  const cg = conjugateGradient(A, b, { tol: 1e-12 });
+  let maxDiffCG = 0;
+  for (let i = 0; i < n; i++) maxDiffCG = Math.max(maxDiffCG, Math.abs(cg.x[i] - xDirect[i]));
+  check('LinSolve：CG 解与直接解 solve 逐分量一致（maxAbs<1e-8）', maxDiffCG < 1e-8, `maxDiff=${maxDiffCG.toExponential(3)}`);
+
+  // ② CG 有限步终止：iters ≤ n 且末残差 < tol
+  const finalRes = cg.residuals[cg.residuals.length - 1];
+  check('LinSolve：CG 在 n 步内收敛（iters≤n 且残差<1e-9）',
+    cg.iters <= n && finalRes < 1e-9, `iters=${cg.iters}, 末残差=${finalRes.toExponential(3)}`);
+
+  // ③ A-共轭性
+  const aConj = conjugateResidual(A, cg.directions);
+  check('LinSolve：CG 搜索方向 A-共轭（相对误差<1e-9）', aConj < 1e-9, `maxRelErr=${aConj.toExponential(3)}`);
+
+  // ④ 残差正交性
+  const rOrth = residualOrthogonality(cg.residualVectors);
+  check('LinSolve：CG 残差序列正交（相对<1e-9）', rOrth < 1e-9, `maxRel=${rOrth.toExponential(3)}`);
+
+  // ⑤ Jacobi / Gauss–Seidel 在严格对角占优阵上收敛到 solve，且残差单调下降
+  const m = 10;
+  const Asd = zeros(m, m);
+  for (let i = 0; i < m; i++) {
+    let off = 0;
+    for (let j = 0; j < m; j++) if (j !== i) { Asd[i][j] = rng() * 2 - 1; off += Math.abs(Asd[i][j]); }
+    Asd[i][i] = off + 1.5; // 严格对角占优
+  }
+  const bs = new Array(m);
+  for (let i = 0; i < m; i++) bs[i] = rng() * 2 - 1;
+  const xs = solve(Asd, bs);
+  const ji = jacobiIter(Asd, bs, { iters: 500, tol: 1e-9 });
+  const gs = gaussSeidelIter(Asd, bs, { iters: 500, tol: 1e-9 });
+  let dJac = 0, dGs = 0;
+  for (let i = 0; i < m; i++) { dJac = Math.max(dJac, Math.abs(ji.x[i] - xs[i])); dGs = Math.max(dGs, Math.abs(gs.x[i] - xs[i])); }
+  const mono = (res) => { for (let i = 1; i < res.length; i++) if (res[i] > res[i - 1] + 1e-12) return false; return true; };
+  check('LinSolve：Jacobi 在严格对角占优阵收敛到 solve（maxAbs<1e-6）', dJac < 1e-6 && ji.converged, `maxDiff=${dJac.toExponential(3)}`);
+  check('LinSolve：Gauss–Seidel 在严格对角占优阵收敛到 solve（maxAbs<1e-6）', dGs < 1e-6 && gs.converged, `maxDiff=${dGs.toExponential(3)}`);
+  check('LinSolve：Jacobi 残差单调下降（包络）', mono(ji.residuals), `末残差=${ji.residuals[ji.residuals.length - 1].toExponential(2)}`);
+  check('LinSolve：Gauss–Seidel 残差单调下降（包络）', mono(gs.residuals), `末残差=${gs.residuals[gs.residuals.length - 1].toExponential(2)}`);
+
+  // ⑥ 迭代矩阵谱半径 < 1（Gershgorin + 幂迭代）
+  const Brho = jacobiIterationMatrix(Asd);
+  const rho = spectralRadius(Brho);
+  const dom = diagonalDominance(Asd);
+  check('LinSolve：迭代矩阵谱半径 ρ(B)<1（Gershgorin + 幂迭代）', rho < 1 && dom.strictlyDominant, `ρ=${rho.toExponential(3)}, 占优=${dom.strictlyDominant}`);
+
+  // ⑦ 同输入确定性
+  const a1 = conjugateGradient(A, b, { tol: 1e-12 });
+  const a2 = conjugateGradient(A, b, { tol: 1e-12 });
+  let dd = 0; for (let i = 0; i < n; i++) dd = Math.max(dd, Math.abs(a1.x[i] - a2.x[i]));
+  check('LinSolve：同输入两次 CG 逐位一致', dd === 0, `maxDiff=${dd}`);
+}
+
+// ──────────────── 隔离森林 · Isolation Forest (Liu et al. 2008) ────────────────
+function suiteIsolationForest(check) {
+  const varOf = (a) => { const m = a.reduce((s, v) => s + v, 0) / a.length; return a.reduce((s, v) => s + (v - m) * (v - m), 0) / a.length; };
+
+  // ① c(n) 闭式 ≡ 递归增量式
+  let maxRelC = 0;
+  for (let nn = 3; nn <= 200; nn++) {
+    const a = iforC(nn), bb = iforCRecursive(nn);
+    maxRelC = Math.max(maxRelC, Math.abs(a - bb) / (Math.abs(a) + 1e-30));
+  }
+  check('IsoForest：c(n) 闭式 ≡ 递归增量式（relErr<1e-12）', maxRelC < 1e-12, `maxRelErr=${maxRelC.toExponential(3)}`);
+
+  // ⑦ 归一化常数性质：单调递增且 c(n) < n
+  let mono = true, lessN = true;
+  for (let nn = 2; nn <= 100; nn++) {
+    if (iforC(nn) < iforC(nn - 1) - 1e-15) mono = false;
+    if (!(iforC(nn) < nn)) lessN = false;
+  }
+  check('IsoForest：c(n) 单调递增（n≥2）且 c(n)<n', mono && lessN, `mono=${mono}, <n=${lessN}`);
+
+  // ② 路径长度上界：h(x) ≤ heightLimit + c(ψ)
+  const toy = iforToyData({ n: 300, nOutlier: 8, dim: 2, seed: 11 });
+  const psi = 128;
+  const forest = isolationForest(toy.X, { trees: 50, sampleSize: psi, seed: 42 });
+  const hl = forest.heightLimit;
+  let viol = 0;
+  for (const x of toy.X) {
+    for (let t = 0; t < forest.trees.length; t++) {
+      const h = pathLength(forest.trees[t], x);
+      if (h > hl + iforC(psi) + 1e-12) viol++;
+    }
+  }
+  check('IsoForest：叶深度/路径长度上界（h ≤ heightLimit + c(ψ)）', viol === 0, `违反=${viol}`);
+
+  // ③④ 异常分排序 + 路径长度单调性（outlier 更短）
+  const sc = iforScoreAll(forest, toy.X);
+  let normS = 0, outS = 0, normH = 0, outH = 0, nN = 0, nO = 0;
+  for (let i = 0; i < toy.X.length; i++) {
+    if (toy.y[i] === 1) { outS += sc.scores[i]; outH += sc.meanPath[i]; nO++; }
+    else { normS += sc.scores[i]; normH += sc.meanPath[i]; nN++; }
+  }
+  const dS = outS / nO - normS / nN;
+  const dH = normH / nN - outH / nO;
+  check('IsoForest：outlier 异常分显著高于常态（差值>0.1）', dS > 0.1, `Δscore=${dS.toFixed(4)}`);
+  check('IsoForest：outlier 平均路径更短（隔离机制）', dH > 0, `Δh=${dH.toFixed(4)}`);
+
+  // ⑤ 集成降方差：单树得分方差 > 森林平均得分方差（bagging 方差缩减）
+  const flat = [];
+  for (const per of sc.perTreeScores) for (const s of per) flat.push(s);
+  const varTree = varOf(flat);
+  const varForest = varOf(sc.scores);
+  check('IsoForest：集成降低方差（单树方差>森林方差）', varTree > varForest, `varTree=${varTree.toExponential(2)}, varForest=${varForest.toExponential(2)}`);
+
+  // ⑥ 同 seed 可复现
+  const f2 = isolationForest(toy.X, { trees: 50, sampleSize: psi, seed: 42 });
+  let md = 0;
+  for (const x of toy.X) md = Math.max(md, Math.abs(anomalyScore(forest, x) - anomalyScore(f2, x)));
+  check('IsoForest：同 seed 两片森林异常分逐位一致', md === 0, `maxDiff=${md}`);
+}
+
+// ──────────────── 流形学习 · MDS & Isomap (Torgerson 1952 / Tenenbaum 2000) ────────────────
+function suiteManifold(check) {
+  const rng = mulberry32(2024);
+  const N = 30, Dim = 4;
+  const X = randomMatrix(N, Dim, rng);
+  const mean = new Array(Dim).fill(0);
+  for (const row of X) for (let j = 0; j < Dim; j++) mean[j] += row[j];
+  for (let j = 0; j < Dim; j++) mean[j] /= N;
+  const Xc = X.map((r) => r.map((v, j) => v - mean[j]));
+  const Dmat = distanceMatrix(Xc);
+
+  // ① 经典 MDS ≡ PCA（欧氏距离矩阵上，逐列允许符号翻转）
+  const mds = classicalMDS(Dmat, Dim);
+  const pcaRes = pca(Xc, Dim);
+  let maxDiff = 0;
+  for (let c = 0; c < Dim; c++) {
+    let direct = 0, flip = 0;
+    for (let i = 0; i < N; i++) {
+      direct = Math.max(direct, Math.abs(mds.coords[i][c] - pcaRes.proj[i][c]));
+      flip = Math.max(flip, Math.abs(mds.coords[i][c] + pcaRes.proj[i][c]));
+    }
+    maxDiff = Math.max(maxDiff, Math.min(direct, flip));
+  }
+  check('Manifold：经典 MDS ≡ PCA（逐列允许符号翻转，maxAbs<1e-8）', maxDiff < 1e-8, `maxDiff=${maxDiff.toExponential(3)}`);
+
+  // ② 双居中矩阵行和恒等式 + 对称
+  const B = doubleCenter(Dmat);
+  let symErr = 0, rowSumErr = 0;
+  for (let i = 0; i < N; i++) {
+    let rs = 0;
+    for (let j = 0; j < N; j++) { rs += B[i][j]; symErr = Math.max(symErr, Math.abs(B[i][j] - B[j][i])); }
+    rowSumErr = Math.max(rowSumErr, Math.abs(rs));
+  }
+  check('Manifold：双居中 B 对称（maxAbs<1e-14）且 B·1=0（maxAbs<1e-12）', symErr < 1e-14 && rowSumErr < 1e-12, `sym=${symErr.toExponential(3)}, rowSum=${rowSumErr.toExponential(3)}`);
+
+  // ③ 满秩重构：k = N−1 时嵌入点间欧氏距离 ≡ 原始 D
+  const mFull = classicalMDS(Dmat, N - 1);
+  const recon = distanceMatrix(mFull.coords);
+  let reconErr = 0;
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) reconErr = Math.max(reconErr, Math.abs(recon[i][j] - Dmat[i][j]));
+  check('Manifold：满秩重构嵌入距离 ≡ 原始 D（maxAbs<1e-8）', reconErr < 1e-8, `maxAbs=${reconErr.toExponential(3)}`);
+
+  // ④ Kruskal 应力单调：嵌入维数增大 ⇒ 应力单调不增（包络口径）
+  let prev = Infinity, mono = true;
+  for (let k = 1; k <= Dim; k++) {
+    const st = stress(classicalMDS(Dmat, k).coords, Dmat);
+    if (st > prev + 1e-7) mono = false;
+    prev = st;
+  }
+  check('Manifold：应力随嵌入维数单调不增（包络）', mono, `末应力=${prev.toExponential(3)}`);
+
+  // ⑤ 测地距离 ≥ 欧氏距离（Swiss Roll，三角不等式，违反计数=0）
+  const sr = mdsSwissRoll({ n: 200, seed: 42, noise: 0.0 });
+  const iso = isomap(sr.X, { k: 8, dim: 2 });
+  const Deuc = distanceMatrix(sr.X);
+  let viol = 0;
+  for (let i = 0; i < sr.X.length; i++) for (let j = 0; j < sr.X.length; j++) {
+    const g = iso.geodesic[i][j];
+    if (Number.isFinite(g) && g < Deuc[i][j] - 1e-9) viol++;
+  }
+  check('Manifold：图上测地距离 ≥ 欧氏距离（违反=0）', viol === 0, `违反=${viol}`);
+
+  // ⑥ Isomap 展开质量（非线性流形）：圆环上 Isomap 测地恢复误差显著低于欧氏近似
+  const NR = 60;
+  const ring = [];
+  for (let i = 0; i < NR; i++) { const t = 2 * Math.PI * i / NR; ring.push([Math.cos(t), Math.sin(t)]); }
+  const Dtrue = zeros(NR, NR);
+  for (let i = 0; i < NR; i++) for (let j = i + 1; j < NR; j++) {
+    let d = Math.abs(i - j) / NR * 2 * Math.PI; d = Math.min(d, 2 * Math.PI - d);
+    Dtrue[i][j] = Dtrue[j][i] = d;
+  }
+  const isoR = isomap(ring, { k: 3, dim: 2 });
+  const DeucR = distanceMatrix(ring);
+  const DembR = distanceMatrix(isoR.embedding);
+  const mse = (A) => { let s = 0, c = 0; for (let i = 0; i < NR; i++) for (let j = i + 1; j < NR; j++) { s += (A[i][j] - Dtrue[i][j]) ** 2; c++; } return s / c; };
+  const mseE = mse(DeucR), mseI = mse(DembR);
+  check('Manifold：圆环上 Isomap 测地恢复误差 ≪ 欧氏近似（<0.7×）', mseI < 0.7 * mseE, `mseIso=${mseI.toFixed(4)}, mseEuc=${mseE.toFixed(4)}`);
+}
+
+// ──────────────── 策略梯度 · REINFORCE (Williams 1992) ────────────────
+function suitePolicyGradient(check) {
+  const rng = mulberry32(777);
+  const theta0 = randomMatrix(5, 4, rng);
+  const pol = softmaxPolicy(theta0);
+
+  // ① Score function 恒等式：Σ_a π(a|s)·∇logπ(a|s) = 0
+  let maxScoreZero = 0;
+  for (let s = 0; s < theta0.length; s++) {
+    const acc = new Array(theta0[s].length).fill(0);
+    for (let a = 0; a < pol[s].length; a++) {
+      const g = policyLogGrad(theta0, s, a);
+      for (let b = 0; b < acc.length; b++) acc[b] += pol[s][a] * g[b];
+    }
+    for (let b = 0; b < acc.length; b++) maxScoreZero = Math.max(maxScoreZero, Math.abs(acc[b]));
+  }
+  check('PolicyGrad：Score 恒等式 Σπ∇logπ=0（maxAbs<1e-14）', maxScoreZero < 1e-14, `maxAbs=${maxScoreZero.toExponential(3)}`);
+
+  // ⑤ 概率单纯形：Σ_a π=1 且 π>0
+  let simplexOk = true, posOk = true;
+  for (let s = 0; s < pol.length; s++) {
+    let sum = 0;
+    for (let a = 0; a < pol[s].length; a++) { sum += pol[s][a]; if (!(pol[s][a] > 0)) posOk = false; }
+    if (Math.abs(sum - 1) > 1e-15) simplexOk = false;
+  }
+  check('PolicyGrad：softmax 策略构成概率单纯形（Σ=1, π>0）', simplexOk && posOk, `Σ=1=${simplexOk}, >0=${posOk}`);
+
+  // ② 策略梯度定理（解析 ≡ 数值）：bandit J 解析梯度 ≡ 中心差分
+  const r = [0.2, 1.3, -0.5, 0.9];
+  const th = [0.1, -0.4, 0.3, 0.0];
+  const ga = banditAnalyticGrad(th, r);
+  const eps = 1e-6;
+  const gn = new Array(4);
+  for (let b = 0; b < 4; b++) {
+    const tp = th.slice(); tp[b] += eps;
+    const tm = th.slice(); tm[b] -= eps;
+    gn[b] = (banditExpectedReturn(tp, r) - banditExpectedReturn(tm, r)) / (2 * eps);
+  }
+  let maxRel = 0; for (let b = 0; b < 4; b++) maxRel = Math.max(maxRel, Math.abs(ga[b] - gn[b]) / (Math.abs(ga[b]) + 1e-30));
+  check('PolicyGrad：策略梯度定理（解析≡中心差分，maxRelErr<1e-6）', maxRel < 1e-6, `maxRelErr=${maxRel.toExponential(3)}`);
+
+  // ③④ 构造有限 horizon MDP
+  const P = [
+    [[[1, 1.0]], [[1, 1.0]]],
+    [[[0, 0.5], [2, 0.5]], [[2, 1.0]]],
+    [[[2, 1.0]], [[2, 1.0]]],
+  ];
+  const R = [
+    [[0], [1]],
+    [[0, 0], [1]],
+    [[0], [0]],
+  ];
+  const theta3 = zeros(3, 2);
+  const gamma = 0.95, horizon = 6;
+
+  // ③ 基线不改变梯度期望（解析恒等式，精确）：baseline=b ≡ baseline=0
+  const g0 = reinforceExpectedUpdate(P, R, theta3, { gamma, horizon, baseline: 0 });
+  const g5 = reinforceExpectedUpdate(P, R, theta3, { gamma, horizon, baseline: 5 });
+  let mb = 0;
+  for (let s = 0; s < 3; s++) for (let a = 0; a < 2; a++) mb = Math.max(mb, Math.abs(g0[s][a] - g5[s][a]));
+  check('PolicyGrad：基线不改变梯度期望（带/不带基线逐位一致，maxAbs<1e-10）', mb < 1e-10, `maxAbs=${mb.toExponential(3)}`);
+
+  // ④ 采样梯度期望 ≡ 解析梯度：枚举期望更新 ≡ 动态规划解析梯度
+  const gaDP = policyGradientAnalytic(P, R, theta3, { gamma, horizon });
+  let mr = 0;
+  for (let s = 0; s < 3; s++) for (let a = 0; a < 2; a++) mr = Math.max(mr, Math.abs(g0[s][a] - gaDP[s][a]) / (Math.abs(gaDP[s][a]) + 1e-30));
+  check('PolicyGrad：期望更新量（枚举）≡ 解析梯度（DP，maxRelErr<1e-6）', mr < 1e-6, `maxRelErr=${mr.toExponential(3)}`);
+
+  // ⑥ 收敛性：chainMDP 上训练后贪心策略 ≡ valueIteration 最优策略
+  const mdp = chainMDP({ n: 6, gamma: 0.95 });
+  const vi = valueIteration(mdp.P, mdp.R, mdp.gamma);
+  const out = reinforce(mdp.P, mdp.R, { gamma: mdp.gamma, lr: 0.05, episodes: 40000, maxSteps: 12, seed: 42, baseline: 'mean' });
+  let match = 0;
+  for (let s = 0; s < mdp.S; s++) {
+    const ps = out.policy[s];
+    let best = 0; for (let a = 1; a < mdp.A; a++) if (ps[a] > ps[best]) best = a;
+    if (best === vi.policy[s]) match++;
+  }
+  check('PolicyGrad：chainMDP 训练后贪心策略 ≡ VI 最优策略', match === mdp.S, `匹配=${match}/${mdp.S}`);
+
+  // ⑦ 同 seed 一致
+  const tA = reinforce(mdp.P, mdp.R, { gamma: mdp.gamma, lr: 0.05, episodes: 200, maxSteps: 12, seed: 7, baseline: 'mean' });
+  const tB = reinforce(mdp.P, mdp.R, { gamma: mdp.gamma, lr: 0.05, episodes: 200, maxSteps: 12, seed: 7, baseline: 'mean' });
+  let md = 0;
+  for (let s = 0; s < mdp.S; s++) for (let a = 0; a < mdp.A; a++) md = Math.max(md, Math.abs(tA.theta[s][a] - tB.theta[s][a]));
+  check('PolicyGrad：同 seed 两次训练 θ 逐位一致', md === 0, `maxDiff=${md}`);
+}
+
 const colMean = mean;
 /* ───── 挂载全局命名空间 ───── */
-const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, nextPow2, fftRadix2, fft, ifftRadix2, dftNaive, circularConvolve, convolveLinear, convolveNaive, eulerStep, midpointStep, rk4Step, solveODE, dpTableau, solveODERK45, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, randomForestTrain, randomForestPredict, rfSingleTree, perceptronStep, perceptronTrain, perceptronPredict, icaFit, icaTransform, ccaFit, ccaProject, hierarchicalCluster, hierarchicalCophenetic, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, gprKernelMatrix, gprFit, gprPredict, gprPriorVariance, gprInverseK, gprHyperGradAnalytic, gprHyperGradNumeric, regressionTreeFit, regressionTreePredict, regressionTreePredictAll, gbdtFit, gbdtPredict, gbdtStagedPredict, pearsonCorr, kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate, innovationAutocorr, empiricalVariance, rtsSmooth, rtsCovarianceGapEigen, rtsRMSE, rtsZeros, effectiveSampleSize, systematicResample, particleFilter, pfCompareWithKalman, metropolisHastings, mhAcceptProb, detailedBalanceResidual, importanceSampling, mcmcEmpiricalMoments, marginal, nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData, pageRank, pagerankExact, pagerankStationary, pagerankSum, gibbsBivariateGaussian, gibbsSampler, gibbsMarginal, gibbsCovariance, gibbsConditionalCheck, gibbsDiscrete, gibbsConvergence, gmmFit, gmmPredict, ldaFit, ldaProject, nbFit, nbPredict, qdaFit, qdaDiscriminant, qdaPredict, lassoFit, lassoPath, lassoPredict, meanShiftKDE, meanShiftStep, meanShiftMode, meanShiftCluster, meanShiftGradientCheck, softmaxForward, softmaxGrad, softmaxGradientCheck, softmaxRegression, elasticNetFit, elasticNetPredict, somNeighborhood, somBMU, somQuantError, somStep, somTrain, somLabels, somBatchTrain, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, GRU, gruGradientCheck, trainGRU, gruStepClosed, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, batchNormForward, batchNormBackward, batchNormInfer, batchNormGradCheck, layerNorm2d, layerNormBackward, layerNormGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, convOutputSize, im2col, conv2dForward, conv2dBackward, maxPool2d, maxPoolBackward, conv2dNaive, convGradientCheck, randomConvTensors, vaeMake, vaeEncode, vaeReparametrize, vaeDecode, vaeKL, vaeKLMonteCarlo, vaeSampleEps, vaeForward, vaeBackward, vaeGradientCheck, cosineSim, sigmoidNegIdentity, sgnsLoss, sgnsGradients, sgnsLossReference, sgnsGradientCheck, trainSGNS, wordSimilarity, makeToyCorpus, ResidualBlock, ResNet, resnetAccuracy, trainResNet, residualIdentityCheck, residualJacobianIdentity, residualGradientCheck, residualGradientHighway, residualVsPlain, rbmTrain, rbmHiddenProbs, rbmReconstruct, rbmFreeEnergy, hopfieldTrain, hopfieldEnergy, hopfieldUpdateUnit, hopfieldRecall, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, sarsaEpsilonProbs, epsilonGreedyAction, sarsaStep, sarsaTraceSet, sarsaTraceDecay, sarsa, sarsaLambda, sarsaBellmanResidual, expectedValue, expectedSarsaStep, expectedSarsa, expectedBellmanResidual, mcReturn, mcEpisode, mcPredictionFirstVisit, mcPredictionEveryVisit, mcControl, runAllInvariants };
+const __FlagshipAI__ = { EPS, zeros, identity, transpose, matmul, matvec, dot, norm, frobeniusNorm, maxAbs, solve, inverse, cholesky, qr, jacobiEig, svd, powerIteration, randomMatrix, logsumexp, softmax, sigmoid, relu, relErr, nextPow2, fftRadix2, fft, ifftRadix2, dftNaive, circularConvolve, convolveLinear, convolveNaive, eulerStep, midpointStep, rk4Step, solveODE, dpTableau, solveODERK45, gaussianPDF, gaussianLogPDF, entropy, crossEntropy, klDivergence, mean, covarianceMatrix, mulberry32, gaussianSample, twoMoons, jacobiIter, gaussSeidelIter, conjugateGradient, jacobiIterationMatrix, spectralRadius, diagonalDominance, conjugateResidual, residualOrthogonality, addIntercept, linearRegression, ridgeRegression, logisticLossGrad, logisticRegression, logisticGradientCheck, linf, knnPredict, naiveBayesFit, naiveBayesPredict, kmeans, gmm, pca, giniImpurity, DecisionTree, randomForestTrain, randomForestPredict, rfSingleTree, perceptronStep, perceptronTrain, perceptronPredict, icaFit, icaTransform, ccaFit, ccaProject, hierarchicalCluster, hierarchicalCophenetic, rbfKernel, svmTrain, svmDecision, svmPredict, svmDualObjective, svmSupportVectors, bestStump, adaBoost, hmmForward, hmmBackward, hmmGamma, hmmXi, hmmBaumWelch, hmmBruteForceLogLik, dbscan, adjustedRandIndex, searchBetas, tsne, knnOverlap, linearKernel, kernelMatrix, centerKernel, kpca, kpcaTransform, kpcaReconstructionError, knnPurity, similarityGraph, normalizedLaplacian, spectralEmbedding, spectralCluster, gprKernelMatrix, gprFit, gprPredict, gprPriorVariance, gprInverseK, gprHyperGradAnalytic, gprHyperGradNumeric, regressionTreeFit, regressionTreePredict, regressionTreePredictAll, gbdtFit, gbdtPredict, gbdtStagedPredict, pearsonCorr, kalmanFilter, kalmanScalarSteadyState, kalmanScalarIterate, innovationAutocorr, empiricalVariance, rtsSmooth, rtsCovarianceGapEigen, rtsRMSE, rtsZeros, effectiveSampleSize, systematicResample, particleFilter, pfCompareWithKalman, metropolisHastings, mhAcceptProb, detailedBalanceResidual, importanceSampling, mcmcEmpiricalMoments, marginal, nmf, nmfReconstructionError, nmfMinEntry, svdBestRankKError, makeNMFData, pageRank, pagerankExact, pagerankStationary, pagerankSum, gibbsBivariateGaussian, gibbsSampler, gibbsMarginal, gibbsCovariance, gibbsConditionalCheck, gibbsDiscrete, gibbsConvergence, gmmFit, gmmPredict, ldaFit, ldaProject, nbFit, nbPredict, qdaFit, qdaDiscriminant, qdaPredict, lassoFit, lassoPath, lassoPredict, meanShiftKDE, meanShiftStep, meanShiftMode, meanShiftCluster, meanShiftGradientCheck, softmaxForward, softmaxGrad, softmaxGradientCheck, softmaxRegression, elasticNetFit, elasticNetPredict, somNeighborhood, somBMU, somQuantError, somStep, somTrain, somLabels, somBatchTrain, iforC, iforCRecursive, iforCExact, isolationTree, pathLength, isolationForest, iforTreeScore, anomalyScore, iforScoreAll, iforToyData, distanceMatrix, doubleCenter, classicalMDS, knnGraph, graphGeodesic, isomap, stress, mdsKnnOverlap, mdsSwissRoll, DenseNet, denseGradientCheck, trainDense, scaledDotProductAttention, attentionGradients, attentionGradientCheck, multiHeadAttention, randomAttentionTensors, layerNorm, layerNormRows, positionalEncoding, transformerBlock, RNN, rnnGradientCheck, trainRNN, LSTM, lstmGradientCheck, trainLSTM, GRU, gruGradientCheck, trainGRU, gruStepClosed, sgdMomentumStep, rmspropStep, adamStep, minimize, erfc, erf, normalCDF, normalPDF, softplus, softplusD, gelu, geluD, geluTanh, geluTanhD, silu, siluD, swish, mish, mishD, hardswish, hardswishD, activationGradCheck, batchNormForward, batchNormBackward, batchNormInfer, batchNormGradCheck, layerNorm2d, layerNormBackward, layerNormGradCheck, warmupInverseSqrt, linearWarmup, cosineAnnealing, stepDecay, exponentialDecay, convOutputSize, im2col, conv2dForward, conv2dBackward, maxPool2d, maxPoolBackward, conv2dNaive, convGradientCheck, randomConvTensors, vaeMake, vaeEncode, vaeReparametrize, vaeDecode, vaeKL, vaeKLMonteCarlo, vaeSampleEps, vaeForward, vaeBackward, vaeGradientCheck, cosineSim, sigmoidNegIdentity, sgnsLoss, sgnsGradients, sgnsLossReference, sgnsGradientCheck, trainSGNS, wordSimilarity, makeToyCorpus, ResidualBlock, ResNet, resnetAccuracy, trainResNet, residualIdentityCheck, residualJacobianIdentity, residualGradientCheck, residualGradientHighway, residualVsPlain, rbmTrain, rbmHiddenProbs, rbmReconstruct, rbmFreeEnergy, hopfieldTrain, hopfieldEnergy, hopfieldUpdateUnit, hopfieldRecall, valueIteration, policyEvaluation, chainMDP, bruteForceChain, gridworld, greedyAction, qFromV, qLearning, bellmanResidualQ, sarsaEpsilonProbs, epsilonGreedyAction, sarsaStep, sarsaTraceSet, sarsaTraceDecay, sarsa, sarsaLambda, sarsaBellmanResidual, expectedValue, expectedSarsaStep, expectedSarsa, expectedBellmanResidual, mcReturn, mcEpisode, mcPredictionFirstVisit, mcPredictionEveryVisit, mcControl, softmaxPolicy, policyLogGrad, reinforceEpisode, reinforce, banditExpectedReturn, banditAnalyticGrad, pgPolicyQ, pgVisitation, policyGradientAnalytic, reinforceExpectedUpdate, runAllInvariants };
 if (typeof globalThis !== 'undefined') {
   globalThis.FlagshipAI = Object.assign({}, globalThis.FlagshipAI, __FlagshipAI__);
 }
@@ -15896,6 +17438,133 @@ if (typeof globalThis !== 'undefined') {
   $('btn-mc').addEventListener('click', () => { mcSeed = (mcSeed * 29 + 13) % 100000; drawMC(); });
   $('btn-som').addEventListener('click', () => { somSeed = (somSeed * 31 + 17) % 100000; drawSOM(); });
 
+  /* ───────── v1.13 新增演示 ───────── */
+  let linsolveSeed = 42;
+  function drawLinSolve() {
+    const { mulberry32, randomMatrix, transpose, matmul, solve, conjugateGradient, gaussSeidelIter, jacobiIter, spectralRadius, jacobiIterationMatrix } = A;
+    const rng = mulberry32(linsolveSeed);
+    const n = 7;
+    const M = randomMatrix(n, n, rng);
+    const Amat = matmul(transpose(M), M).map((row, i) => row.map((v, j) => v + (i === j ? n : 0)));
+    const b = new Array(n); for (let i = 0; i < n; i++) b[i] = rng() * 2 - 1;
+    const xD = solve(Amat, b);
+    const cg = conjugateGradient(Amat, b, { tol: 1e-12 });
+    const gs = gaussSeidelIter(Amat, b, { iters: 200, tol: 1e-9 });
+    const ji = jacobiIter(Amat, b, { iters: 200, tol: 1e-9 });
+    let xErrCG = 0; for (let i = 0; i < n; i++) xErrCG = Math.max(xErrCG, Math.abs(cg.x[i] - xD[i]));
+    const rho = spectralRadius(jacobiIterationMatrix(Amat));
+    const px = (i, len) => 30 + (i / (len - 1)) * 410;
+    const LO = -16, HI = 1;
+    const py = (e) => 270 - ((Math.max(LO, Math.min(HI, e)) - LO) / (HI - LO)) * 250;
+    let svg = `<line x1="30" y1="270" x2="440" y2="270" stroke="#e6e9f2"/><line x1="30" y1="20" x2="30" y2="270" stroke="#e6e9f2"/>`;
+    for (const e of [0, -4, -8, -12, -16]) { const yy = py(e); svg += `<line x1="30" y1="${yy.toFixed(1)}" x2="440" y2="${yy.toFixed(1)}" stroke="#f0f2f7"/><text x="28" y="${(yy + 3).toFixed(1)}" font-size="8" text-anchor="end" fill="#5b6478" font-family="monospace">1e${e}</text>`; }
+    const clr = (arr, col) => { const lg = arr.map(r => Math.log10(Math.max(r, 1e-17))); return `<polyline fill="none" stroke="${col}" stroke-width="1.8" points="` + lg.map((e, i) => `${px(i, lg.length).toFixed(1)},${py(e).toFixed(1)}`).join(' ') + '"/>'; };
+    svg += clr(cg.residuals, '#7a3bfd');
+    svg += clr(ji.residuals, '#e67e22');
+    svg += clr(gs.residuals, '#16a085');
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">残差收敛曲线（对数，7×7 SPD）</text>`;
+    $('svg-linsolve').innerHTML = svg;
+    $('legend-linsolve').innerHTML =
+      `<span><i style="background:#7a3bfd"></i>CG</span><span><i style="background:#e67e22"></i>Jacobi</span>` +
+      `<span><i style="background:#16a085"></i>Gauss–Seidel</span>` +
+      `<span style="font-family:monospace">CG≡solve maxErr=${xErrCG.toExponential(2)} · 收敛步=${cg.iters} · ρ(B)=${rho.toFixed(3)}</span>`;
+  }
+
+  let isofSeed = 42;
+  function drawIsolationForest() {
+    const { iforToyData, isolationForest, anomalyScore } = A;
+    const toy = iforToyData({ n: 220, nOutlier: 10, dim: 2, radius: 8, seed: isofSeed });
+    const psi = 96;
+    const forest = isolationForest(toy.X, { trees: 60, sampleSize: psi, seed: 7 });
+    const pts = toy.X, y = toy.y;
+    let loX = Infinity, hiX = -Infinity, loY = Infinity, hiY = -Infinity;
+    for (const p of pts) { loX = Math.min(loX, p[0]); hiX = Math.max(hiX, p[0]); loY = Math.min(loY, p[1]); hiY = Math.max(hiY, p[1]); }
+    const padX = (hiX - loX) * 0.1 || 1, padY = (hiY - loY) * 0.1 || 1; loX -= padX; hiX += padX; loY -= padY; hiY += padY;
+    const px = (v) => 30 + (v - loX) / (hiX - loX) * 410;
+    const py = (v) => 270 - (v - loY) / (hiY - loY) * 250;
+    let svg = '';
+    let sOut = 0, nOut = 0, sNorm = 0, nNorm = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const s = anomalyScore(forest, pts[i]);
+      if (y[i] === 1) { sOut += s; nOut++; svg += `<circle cx="${px(pts[i][0]).toFixed(1)}" cy="${py(pts[i][1]).toFixed(1)}" r="${(2 + s * 5).toFixed(1)}" fill="#e74c3c" fill-opacity="0.8" stroke="#fff" stroke-width="0.8"/>`; }
+      else { sNorm += s; nNorm++; svg += `<circle cx="${px(pts[i][0]).toFixed(1)}" cy="${py(pts[i][1]).toFixed(1)}" r="${(2 + s * 5).toFixed(1)}" fill="#7f8c9a" fill-opacity="0.45"/>`; }
+    }
+    const dScore = sOut / nOut - sNorm / nNorm;
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">异常点（红）更快被孤立 → 异常分更高</text>`;
+    $('svg-isof').innerHTML = svg;
+    $('legend-isof').innerHTML =
+      `<span><i style="background:#e74c3c"></i>outlier</span><span><i style="background:#7f8c9a"></i>正常</span>` +
+      `<span style="font-family:monospace">60 树 · ψ=${psi} · 异常分均值差 Δ=${dScore.toFixed(3)} · 半径∝s(x)</span>`;
+  }
+
+  let manifoldSeed = 42;
+  function drawManifold() {
+    const { mdsSwissRoll, isomap } = A;
+    const sr = mdsSwissRoll({ n: 220, seed: manifoldSeed, noise: 0.5 });
+    const iso = isomap(sr.X, { k: 8, dim: 2 });
+    const emb = iso.embedding, arc = sr.intrinsic.map(p => p[0]);
+    let eLoX = Infinity, eHiX = -Infinity, eLoY = Infinity, eHiY = -Infinity;
+    for (const p of emb) { eLoX = Math.min(eLoX, p[0]); eHiX = Math.max(eHiX, p[0]); eLoY = Math.min(eLoY, p[1]); eHiY = Math.max(eHiY, p[1]); }
+    const px = (v) => 30 + (v - eLoX) / ((eHiX - eLoX) || 1) * 410;
+    const py = (v) => 270 - (v - eLoY) / ((eHiY - eLoY) || 1) * 250;
+    let aLo = Infinity, aHi = -Infinity; for (const a of arc) { aLo = Math.min(aLo, a); aHi = Math.max(aHi, a); }
+    let svg = '';
+    for (let i = 0; i < emb.length; i++) {
+      const t = (arc[i] - aLo) / ((aHi - aLo) || 1);
+      svg += `<circle cx="${px(emb[i][0]).toFixed(1)}" cy="${py(emb[i][1]).toFixed(1)}" r="2.4" fill="hsl(${((1 - t) * 270).toFixed(0)},70%,55%)" fill-opacity="0.8"/>`;
+    }
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">Isomap 展开 Swiss Roll（颜色=真实弧长）</text>`;
+    $('svg-manifold').innerHTML = svg;
+    $('legend-manifold').innerHTML =
+      `<span style="font-family:monospace">n=220 · k=8 · 2D 嵌入 · 颜色沿卷绕方向渐变 ⇒ 非线性结构被展开</span>`;
+  }
+
+  let policygSeed = 42;
+  function drawPolicyGradient() {
+    const { chainMDP, reinforce, valueIteration } = A;
+    const mdp = chainMDP({ n: 6, gamma: 0.95 });
+    const res = reinforce(mdp.P, mdp.R, { gamma: 0.95, lr: 0.05, episodes: 20000, maxSteps: 12, seed: policygSeed, baseline: 'mean' });
+    const rets = res.episodeReturns, n = rets.length;
+    let rmin = Infinity, rmax = -Infinity; for (const v of rets) { rmin = Math.min(rmin, v); rmax = Math.max(rmax, v); }
+    const pad = (rmax - rmin) * 0.1 || 1; rmin -= pad; rmax += pad;
+    const px = (i) => 30 + (i / (n - 1)) * 410;
+    const py = (v) => 20 + (1 - (v - rmin) / (rmax - rmin)) * 148;
+    let svg = `<line x1="30" y1="168" x2="440" y2="168" stroke="#e6e9f2"/>`;
+    let d = ''; for (let i = 0; i < n; i++) d += (i === 0 ? 'M' : 'L') + px(i).toFixed(1) + ',' + py(rets[i]).toFixed(1);
+    svg += `<path d="${d}" fill="none" stroke="#16a085" stroke-width="1" stroke-opacity="0.4"/>`;
+    const W = 80, sm = []; for (let i = 0; i < n; i++) { let s = 0, c = 0; for (let k = Math.max(0, i - W + 1); k <= i; k++) { s += rets[k]; c++; } sm.push(s / c); }
+    let ds = ''; for (let i = 0; i < n; i++) ds += (i === 0 ? 'M' : 'L') + px(i).toFixed(1) + ',' + py(sm[i]).toFixed(1);
+    svg += `<path d="${ds}" fill="none" stroke="#e67e22" stroke-width="2"/>`;
+    const vi = valueIteration(mdp.P, mdp.R, 0.95);
+    const pol = res.policy;
+    let match = 0; for (let s = 0; s < mdp.S; s++) { const ps = pol[s]; let best = 0; for (let a = 1; a < mdp.A; a++) if (ps[a] > ps[best]) best = a; if (best === vi.policy[s]) match++; }
+    const cw = 78, ch = 13, x0 = 96, y0 = 196;
+    for (let s = 0; s < mdp.S; s++) {
+      svg += `<text x="86" y="${(y0 + s * ch + 10).toFixed(1)}" font-size="9" text-anchor="end" fill="#5b6478" font-family="monospace">s${s}</text>`;
+      for (let a = 0; a < mdp.A; a++) {
+        const u = pol[s][a]; const g = Math.round(230 - u * 175);
+        const col = `rgb(${g},${Math.round(90 + u * 60)},${Math.round(200 - u * 130)})`;
+        const x = x0 + a * cw;
+        svg += `<rect x="${x}" y="${(y0 + s * ch).toFixed(1)}" width="${cw - 3}" height="${ch - 2}" fill="${col}" rx="2"/>`;
+        svg += `<text x="${(x + (cw - 3) / 2).toFixed(1)}" y="${(y0 + s * ch + 9).toFixed(1)}" font-size="8" text-anchor="middle" fill="#fff" font-family="monospace">${u.toFixed(3)}</text>`;
+        if (vi.policy[s] === a) svg += `<rect x="${x}" y="${(y0 + s * ch).toFixed(1)}" width="${cw - 3}" height="${ch - 2}" fill="none" stroke="#1c2333" stroke-width="1.6" rx="2"/>`;
+      }
+    }
+    svg += `<text x="86" y="188" font-size="9" text-anchor="end" fill="#5b6478" font-family="monospace">a</text>`;
+    svg += `<text x="${(x0 + cw / 2).toFixed(1)}" y="188" font-size="9" text-anchor="middle" fill="#5b6478" font-family="monospace">a=0</text>`;
+    svg += `<text x="${(x0 + cw * 1.5).toFixed(1)}" y="188" font-size="9" text-anchor="middle" fill="#5b6478" font-family="monospace">a=1</text>`;
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">REINFORCE 回合回报（chainMDP s=6）</text>`;
+    $('svg-policyg').innerHTML = svg;
+    $('legend-policyg').innerHTML =
+      `<span><i style="background:#16a085"></i>原始回报</span><span><i style="background:#e67e22"></i>滑动均值(80)</span>` +
+      `<span style="font-family:monospace">贪心策略 ≡ VI 最优=${match}/${mdp.S} · 黑框=VI 最优动作</span>`;
+  }
+
+  $('btn-linsolve').addEventListener('click', () => { linsolveSeed = (linsolveSeed * 37 + 11) % 100000; drawLinSolve(); });
+  $('btn-isof').addEventListener('click', () => { isofSeed = (isofSeed * 41 + 9) % 100000; drawIsolationForest(); });
+  $('btn-manifold').addEventListener('click', () => { manifoldSeed = (manifoldSeed * 29 + 13) % 100000; drawManifold(); });
+  $('btn-policyg').addEventListener('click', () => { policygSeed = (policygSeed * 31 + 17) % 100000; drawPolicyGradient(); });
+
   $('btn-perc').addEventListener('click', () => { percSeed = (percSeed * 31 + 17) % 100000; drawPerc(); });
   $('btn-ica').addEventListener('click', () => { icaSeed = (icaSeed * 37 + 11) % 100000; drawICA(); });
   $('btn-cca').addEventListener('click', () => { ccaSeed = (ccaSeed * 29 + 13) % 100000; drawCCA(); });
@@ -15955,6 +17624,10 @@ if (typeof globalThis !== 'undefined') {
   drawODE();
   drawMC();
   drawSOM();
+  drawLinSolve();
+  drawIsolationForest();
+  drawManifold();
+  drawPolicyGradient();
 })();
 </script>
 </body>

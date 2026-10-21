@@ -87,7 +87,7 @@
     <div id="banner" class="banner ok">引擎自检中…</div>
   </div>
 
-  <h2>不变量自检 <span class="tag">58 组套件 · 350 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
+  <h2>不变量自检 <span class="tag">62 组套件 · 380 条硬不变量 · 每条算法 ≥ 1 条 · 解析解 vs 数值解交叉验证</span></h2>
   <div class="grid" id="suites"></div>
 
   <h2>实时演示 <span class="tag">全部由引擎实时计算 · 种子化随机可复现</span></h2>
@@ -517,8 +517,39 @@
     </div>
   </div>
 
+  <h2>v1.13 新增算法 <span class="tag">迭代线性求解 · 隔离森林 · 流形学习 MDS/Isomap · 策略梯度 REINFORCE · 本页引擎实时求解</span></h2>
+  <div class="demos">
+    <div class="card">
+      <div class="demo-head"><strong>迭代线性求解</strong><button id="btn-linsolve">重新求解</button></div>
+      <div class="desc">Hestenes &amp; Stiefel 1952 · Jacobi / Gauss–Seidel / 共轭梯度：CG 在 n 步内收敛且解 ≡ 直接解（maxAbs 1e-8），A-共轭与残差正交</div>
+      <svg id="svg-linsolve" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-linsolve"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head"><strong>隔离森林 iForest</strong><button id="btn-isof">重新训练</button></div>
+      <div class="desc">Liu et al. 2008 · 异常点「少而不同」更快被孤立：路径越短异常分越高（s→1）；同 seed 可复现，c(n) 闭式 ≡ 递归</div>
+      <svg id="svg-isof" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-isof"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head"><strong>流形学习 MDS/Isomap</strong><button id="btn-manifold">重新展开</button></div>
+      <div class="desc">Torgerson 1952 / Tenenbaum 2000 · 经典 MDS ≡ PCA；Isomap 经 kNN 图测地展开 Swiss Roll，恢复内在 2D 结构</div>
+      <svg id="svg-manifold" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-manifold"></div>
+    </div>
+    <div class="card">
+      <div class="demo-head"><strong>策略梯度 REINFORCE</strong><button id="btn-policyg">重新训练</button></div>
+      <div class="desc">Williams 1992 · softmax 策略的 score-function 梯度；基线不改变期望；chainMDP 上训练后贪心策略 ≡ 值迭代最优</div>
+      <svg id="svg-policyg" viewBox="0 0 460 300"></svg>
+      <div class="legend" id="legend-policyg"></div>
+    </div>
+  </div>
+
   <div class="refs">
-    站在巨人肩上：<code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
+    站在巨人肩上：<code>Hestenes &amp; Stiefel 1952 · 共轭梯度</code><code>Liu, Ting &amp; Zhou 2008 · Isolation Forest</code>
+    <code>Torgerson 1952 · 经典 MDS</code><code>Tenbaum et al. 2000 · Isomap</code>
+    <code>Williams 1992 · REINFORCE</code><code>Sutton &amp; Barto · 策略梯度定理</code>
+    <code>Golub &amp; Van Loan · Matrix Computations</code><code>Numerical Recipes</code>
     <code>Bishop · PRML</code><code>Hastie et al. · ESL</code><code>Vaswani et al. 2017 · Attention Is All You Need</code>
     <code>Breiman et al. 1984 · CART</code><code>Cortes &amp; Vapnik 1995 · SVM</code>
     <code>Freund &amp; Schapire 1997 · AdaBoost</code><code>Baum &amp; Petrie 1966 · HMM</code>
@@ -2225,6 +2256,133 @@
   $('btn-mc').addEventListener('click', () => { mcSeed = (mcSeed * 29 + 13) % 100000; drawMC(); });
   $('btn-som').addEventListener('click', () => { somSeed = (somSeed * 31 + 17) % 100000; drawSOM(); });
 
+  /* ───────── v1.13 新增演示 ───────── */
+  let linsolveSeed = 42;
+  function drawLinSolve() {
+    const { mulberry32, randomMatrix, transpose, matmul, solve, conjugateGradient, gaussSeidelIter, jacobiIter, spectralRadius, jacobiIterationMatrix } = A;
+    const rng = mulberry32(linsolveSeed);
+    const n = 7;
+    const M = randomMatrix(n, n, rng);
+    const Amat = matmul(transpose(M), M).map((row, i) => row.map((v, j) => v + (i === j ? n : 0)));
+    const b = new Array(n); for (let i = 0; i < n; i++) b[i] = rng() * 2 - 1;
+    const xD = solve(Amat, b);
+    const cg = conjugateGradient(Amat, b, { tol: 1e-12 });
+    const gs = gaussSeidelIter(Amat, b, { iters: 200, tol: 1e-9 });
+    const ji = jacobiIter(Amat, b, { iters: 200, tol: 1e-9 });
+    let xErrCG = 0; for (let i = 0; i < n; i++) xErrCG = Math.max(xErrCG, Math.abs(cg.x[i] - xD[i]));
+    const rho = spectralRadius(jacobiIterationMatrix(Amat));
+    const px = (i, len) => 30 + (i / (len - 1)) * 410;
+    const LO = -16, HI = 1;
+    const py = (e) => 270 - ((Math.max(LO, Math.min(HI, e)) - LO) / (HI - LO)) * 250;
+    let svg = `<line x1="30" y1="270" x2="440" y2="270" stroke="#e6e9f2"/><line x1="30" y1="20" x2="30" y2="270" stroke="#e6e9f2"/>`;
+    for (const e of [0, -4, -8, -12, -16]) { const yy = py(e); svg += `<line x1="30" y1="${yy.toFixed(1)}" x2="440" y2="${yy.toFixed(1)}" stroke="#f0f2f7"/><text x="28" y="${(yy + 3).toFixed(1)}" font-size="8" text-anchor="end" fill="#5b6478" font-family="monospace">1e${e}</text>`; }
+    const clr = (arr, col) => { const lg = arr.map(r => Math.log10(Math.max(r, 1e-17))); return `<polyline fill="none" stroke="${col}" stroke-width="1.8" points="` + lg.map((e, i) => `${px(i, lg.length).toFixed(1)},${py(e).toFixed(1)}`).join(' ') + '"/>'; };
+    svg += clr(cg.residuals, '#7a3bfd');
+    svg += clr(ji.residuals, '#e67e22');
+    svg += clr(gs.residuals, '#16a085');
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">残差收敛曲线（对数，7×7 SPD）</text>`;
+    $('svg-linsolve').innerHTML = svg;
+    $('legend-linsolve').innerHTML =
+      `<span><i style="background:#7a3bfd"></i>CG</span><span><i style="background:#e67e22"></i>Jacobi</span>` +
+      `<span><i style="background:#16a085"></i>Gauss–Seidel</span>` +
+      `<span style="font-family:monospace">CG≡solve maxErr=${xErrCG.toExponential(2)} · 收敛步=${cg.iters} · ρ(B)=${rho.toFixed(3)}</span>`;
+  }
+
+  let isofSeed = 42;
+  function drawIsolationForest() {
+    const { iforToyData, isolationForest, anomalyScore } = A;
+    const toy = iforToyData({ n: 220, nOutlier: 10, dim: 2, radius: 8, seed: isofSeed });
+    const psi = 96;
+    const forest = isolationForest(toy.X, { trees: 60, sampleSize: psi, seed: 7 });
+    const pts = toy.X, y = toy.y;
+    let loX = Infinity, hiX = -Infinity, loY = Infinity, hiY = -Infinity;
+    for (const p of pts) { loX = Math.min(loX, p[0]); hiX = Math.max(hiX, p[0]); loY = Math.min(loY, p[1]); hiY = Math.max(hiY, p[1]); }
+    const padX = (hiX - loX) * 0.1 || 1, padY = (hiY - loY) * 0.1 || 1; loX -= padX; hiX += padX; loY -= padY; hiY += padY;
+    const px = (v) => 30 + (v - loX) / (hiX - loX) * 410;
+    const py = (v) => 270 - (v - loY) / (hiY - loY) * 250;
+    let svg = '';
+    let sOut = 0, nOut = 0, sNorm = 0, nNorm = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const s = anomalyScore(forest, pts[i]);
+      if (y[i] === 1) { sOut += s; nOut++; svg += `<circle cx="${px(pts[i][0]).toFixed(1)}" cy="${py(pts[i][1]).toFixed(1)}" r="${(2 + s * 5).toFixed(1)}" fill="#e74c3c" fill-opacity="0.8" stroke="#fff" stroke-width="0.8"/>`; }
+      else { sNorm += s; nNorm++; svg += `<circle cx="${px(pts[i][0]).toFixed(1)}" cy="${py(pts[i][1]).toFixed(1)}" r="${(2 + s * 5).toFixed(1)}" fill="#7f8c9a" fill-opacity="0.45"/>`; }
+    }
+    const dScore = sOut / nOut - sNorm / nNorm;
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">异常点（红）更快被孤立 → 异常分更高</text>`;
+    $('svg-isof').innerHTML = svg;
+    $('legend-isof').innerHTML =
+      `<span><i style="background:#e74c3c"></i>outlier</span><span><i style="background:#7f8c9a"></i>正常</span>` +
+      `<span style="font-family:monospace">60 树 · ψ=${psi} · 异常分均值差 Δ=${dScore.toFixed(3)} · 半径∝s(x)</span>`;
+  }
+
+  let manifoldSeed = 42;
+  function drawManifold() {
+    const { mdsSwissRoll, isomap } = A;
+    const sr = mdsSwissRoll({ n: 220, seed: manifoldSeed, noise: 0.5 });
+    const iso = isomap(sr.X, { k: 8, dim: 2 });
+    const emb = iso.embedding, arc = sr.intrinsic.map(p => p[0]);
+    let eLoX = Infinity, eHiX = -Infinity, eLoY = Infinity, eHiY = -Infinity;
+    for (const p of emb) { eLoX = Math.min(eLoX, p[0]); eHiX = Math.max(eHiX, p[0]); eLoY = Math.min(eLoY, p[1]); eHiY = Math.max(eHiY, p[1]); }
+    const px = (v) => 30 + (v - eLoX) / ((eHiX - eLoX) || 1) * 410;
+    const py = (v) => 270 - (v - eLoY) / ((eHiY - eLoY) || 1) * 250;
+    let aLo = Infinity, aHi = -Infinity; for (const a of arc) { aLo = Math.min(aLo, a); aHi = Math.max(aHi, a); }
+    let svg = '';
+    for (let i = 0; i < emb.length; i++) {
+      const t = (arc[i] - aLo) / ((aHi - aLo) || 1);
+      svg += `<circle cx="${px(emb[i][0]).toFixed(1)}" cy="${py(emb[i][1]).toFixed(1)}" r="2.4" fill="hsl(${((1 - t) * 270).toFixed(0)},70%,55%)" fill-opacity="0.8"/>`;
+    }
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">Isomap 展开 Swiss Roll（颜色=真实弧长）</text>`;
+    $('svg-manifold').innerHTML = svg;
+    $('legend-manifold').innerHTML =
+      `<span style="font-family:monospace">n=220 · k=8 · 2D 嵌入 · 颜色沿卷绕方向渐变 ⇒ 非线性结构被展开</span>`;
+  }
+
+  let policygSeed = 42;
+  function drawPolicyGradient() {
+    const { chainMDP, reinforce, valueIteration } = A;
+    const mdp = chainMDP({ n: 6, gamma: 0.95 });
+    const res = reinforce(mdp.P, mdp.R, { gamma: 0.95, lr: 0.05, episodes: 20000, maxSteps: 12, seed: policygSeed, baseline: 'mean' });
+    const rets = res.episodeReturns, n = rets.length;
+    let rmin = Infinity, rmax = -Infinity; for (const v of rets) { rmin = Math.min(rmin, v); rmax = Math.max(rmax, v); }
+    const pad = (rmax - rmin) * 0.1 || 1; rmin -= pad; rmax += pad;
+    const px = (i) => 30 + (i / (n - 1)) * 410;
+    const py = (v) => 20 + (1 - (v - rmin) / (rmax - rmin)) * 148;
+    let svg = `<line x1="30" y1="168" x2="440" y2="168" stroke="#e6e9f2"/>`;
+    let d = ''; for (let i = 0; i < n; i++) d += (i === 0 ? 'M' : 'L') + px(i).toFixed(1) + ',' + py(rets[i]).toFixed(1);
+    svg += `<path d="${d}" fill="none" stroke="#16a085" stroke-width="1" stroke-opacity="0.4"/>`;
+    const W = 80, sm = []; for (let i = 0; i < n; i++) { let s = 0, c = 0; for (let k = Math.max(0, i - W + 1); k <= i; k++) { s += rets[k]; c++; } sm.push(s / c); }
+    let ds = ''; for (let i = 0; i < n; i++) ds += (i === 0 ? 'M' : 'L') + px(i).toFixed(1) + ',' + py(sm[i]).toFixed(1);
+    svg += `<path d="${ds}" fill="none" stroke="#e67e22" stroke-width="2"/>`;
+    const vi = valueIteration(mdp.P, mdp.R, 0.95);
+    const pol = res.policy;
+    let match = 0; for (let s = 0; s < mdp.S; s++) { const ps = pol[s]; let best = 0; for (let a = 1; a < mdp.A; a++) if (ps[a] > ps[best]) best = a; if (best === vi.policy[s]) match++; }
+    const cw = 78, ch = 13, x0 = 96, y0 = 196;
+    for (let s = 0; s < mdp.S; s++) {
+      svg += `<text x="86" y="${(y0 + s * ch + 10).toFixed(1)}" font-size="9" text-anchor="end" fill="#5b6478" font-family="monospace">s${s}</text>`;
+      for (let a = 0; a < mdp.A; a++) {
+        const u = pol[s][a]; const g = Math.round(230 - u * 175);
+        const col = `rgb(${g},${Math.round(90 + u * 60)},${Math.round(200 - u * 130)})`;
+        const x = x0 + a * cw;
+        svg += `<rect x="${x}" y="${(y0 + s * ch).toFixed(1)}" width="${cw - 3}" height="${ch - 2}" fill="${col}" rx="2"/>`;
+        svg += `<text x="${(x + (cw - 3) / 2).toFixed(1)}" y="${(y0 + s * ch + 9).toFixed(1)}" font-size="8" text-anchor="middle" fill="#fff" font-family="monospace">${u.toFixed(3)}</text>`;
+        if (vi.policy[s] === a) svg += `<rect x="${x}" y="${(y0 + s * ch).toFixed(1)}" width="${cw - 3}" height="${ch - 2}" fill="none" stroke="#1c2333" stroke-width="1.6" rx="2"/>`;
+      }
+    }
+    svg += `<text x="86" y="188" font-size="9" text-anchor="end" fill="#5b6478" font-family="monospace">a</text>`;
+    svg += `<text x="${(x0 + cw / 2).toFixed(1)}" y="188" font-size="9" text-anchor="middle" fill="#5b6478" font-family="monospace">a=0</text>`;
+    svg += `<text x="${(x0 + cw * 1.5).toFixed(1)}" y="188" font-size="9" text-anchor="middle" fill="#5b6478" font-family="monospace">a=1</text>`;
+    svg += `<text x="30" y="14" font-size="10" fill="#5b6478" font-family="monospace">REINFORCE 回合回报（chainMDP s=6）</text>`;
+    $('svg-policyg').innerHTML = svg;
+    $('legend-policyg').innerHTML =
+      `<span><i style="background:#16a085"></i>原始回报</span><span><i style="background:#e67e22"></i>滑动均值(80)</span>` +
+      `<span style="font-family:monospace">贪心策略 ≡ VI 最优=${match}/${mdp.S} · 黑框=VI 最优动作</span>`;
+  }
+
+  $('btn-linsolve').addEventListener('click', () => { linsolveSeed = (linsolveSeed * 37 + 11) % 100000; drawLinSolve(); });
+  $('btn-isof').addEventListener('click', () => { isofSeed = (isofSeed * 41 + 9) % 100000; drawIsolationForest(); });
+  $('btn-manifold').addEventListener('click', () => { manifoldSeed = (manifoldSeed * 29 + 13) % 100000; drawManifold(); });
+  $('btn-policyg').addEventListener('click', () => { policygSeed = (policygSeed * 31 + 17) % 100000; drawPolicyGradient(); });
+
   $('btn-perc').addEventListener('click', () => { percSeed = (percSeed * 31 + 17) % 100000; drawPerc(); });
   $('btn-ica').addEventListener('click', () => { icaSeed = (icaSeed * 37 + 11) % 100000; drawICA(); });
   $('btn-cca').addEventListener('click', () => { ccaSeed = (ccaSeed * 29 + 13) % 100000; drawCCA(); });
@@ -2284,6 +2442,10 @@
   drawODE();
   drawMC();
   drawSOM();
+  drawLinSolve();
+  drawIsolationForest();
+  drawManifold();
+  drawPolicyGradient();
 })();
 </script>
 </body>

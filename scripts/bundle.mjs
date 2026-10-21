@@ -18,6 +18,7 @@ const FILES = [
   'src/core/fft.js',
   'src/core/ode.js',
   'src/core/stats.js',
+  'src/core/linsolve.js',
   'src/ml/regression.js',
   'src/ml/classification.js',
   'src/ml/clustering.js',
@@ -53,6 +54,8 @@ const FILES = [
   'src/ml/softmaxRegression.js',
   'src/ml/elasticNet.js',
   'src/ml/som.js',
+  'src/ml/isolationForest.js',
+  'src/ml/manifold.js',
   'src/nn/dense.js',
   'src/nn/attention.js',
   'src/nn/transformer.js',
@@ -74,6 +77,7 @@ const FILES = [
   'src/rl/sarsa.js',
   'src/rl/expectedSarsa.js',
   'src/rl/monteCarlo.js',
+  'src/rl/policyGradient.js',
   'src/verify/invariants.js',
 ];
 

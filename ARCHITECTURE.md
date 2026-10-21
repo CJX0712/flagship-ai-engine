@@ -86,14 +86,14 @@ flagship-ai-engine/
 │   │   └── expectedSarsa.js     # Expected SARSA（van Seijen'09，对 π 求期望的 TD）
 │   │   └── monteCarlo.js        # 蒙特卡洛强化学习（Sutton&Barto §5，首访/每访预测 + GLIE 控制）
 │   └── verify/
-│       └── invariants.js        # 58 组不变量自检套件（Node 与浏览器共用同一份）
-├── test/run.mjs                 # 无头自检入口 → PASS 58/58
+│       └── invariants.js        # 62 组不变量自检套件（Node 与浏览器共用同一份）
+├── test/run.mjs                 # 无头自检入口 → PASS 62/62
 ├── showcase/
-│   ├── template.html            # 旗舰展示页模板（43 个实时演示）
+│   ├── template.html            # 旗舰展示页模板（47 个实时演示）
 │   └── index.html               # 生成物：单文件、内联引擎、双击即用
 ├── scripts/
 │   ├── serve.mjs                # 零依赖静态服务器（可选）
-│   └── bundle.mjs               # 把 src 打包内联进 showcase（并 node --check 语法校验）→ 导出 311 个 API / 内联 478.0 KB
+│   └── bundle.mjs               # 把 src 打包内联进 showcase（并 node --check 语法校验）→ 导出 348 个 API / 内联 528.6 KB
 ├── .github/workflows/ci.yml     # 3 个 Node 版本 × 不变量自检
 ├── ARCHITECTURE.md / MATH.md / README.md / LICENSE
 ```
@@ -165,8 +165,8 @@ graph LR
 | T4 | ml/classification + clustering + dimreduction + tree | T1,T2 |
 | T5 | nn/dense（反向传播 + 梯度检验） | T1,T2 |
 | T6 | nn/attention + transformer | T1,T2,T5 |
-| T7 | verify/invariants（58 组套件） | T1–T6 |
-| T8 | test/run.mjs 跑通 58/58 | T7 |
+| T7 | verify/invariants（62 组套件） | T1–T6 |
+| T8 | test/run.mjs 跑通 62/62 | T7 |
 | T9 | bundle + showcase 单文件页 | T7 |
 | T10 | 文档 + GitHub 推送 + CI 绿 | T8,T9 |
 
