@@ -1,5 +1,9 @@
 # 旗舰AI引擎 · Flagship AI Engine
 
+> **从零造 AI，并造尺子证明它没骗你** · 一套开源的"AI 验伪"方法与实物
+> 舰队总览：[apex-flagship](https://github.com/CJX0712/apex-flagship) · 作者：晨星
+
+
 > 零依赖 · 可验证 · 世界顶级 AI 算法集大成引擎
 > 浏览器 + Node 双跑 · 作者：晨星 (CJX0712)
 
